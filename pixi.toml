@@ -30,13 +30,12 @@ rich = ">=14.0.0"
 typer = ">=0.21.0"
 typing-extensions = ">=4.14.0"
 yfinance = ">=1.7.0"
+pandas-ta = "*"
 
 [tasks]
 install-editable = "python -m pip install --no-deps --no-build-isolation -e ."
 install-tradingagents = "python -m pip install --no-deps --no-build-isolation -e ../TradingAgents"
-# Not on conda-forge yet (staged-recipe pending): pure-python, deps (pandas/numpy) come from conda.
-install-non-conda = "python -m pip install --no-deps --no-build-isolation 'stockstats>=0.6.5'"
-setup-dev = { depends-on = ["install-editable", "install-tradingagents", "install-non-conda"] }
+setup-dev = { depends-on = ["install-editable", "install-tradingagents"] }
 
 [feature.ci.dependencies]
 ruff = ">=0.8.4"

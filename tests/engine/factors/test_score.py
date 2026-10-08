@@ -65,6 +65,14 @@ def test_history_before_window_is_ignored() -> None:
     assert score(_snapshot(closes)) == score(_snapshot(closes.iloc[-WINDOW:]))
 
 
+def test_score_does_not_mutate_input() -> None:
+    closes = make_closes(TICKERS)
+    closes.iloc[150, 0] = np.nan
+    before = closes.copy()
+    score(_snapshot(closes))
+    pd.testing.assert_frame_equal(closes, before)
+
+
 # --- exclusions -------------------------------------------------------------
 
 
@@ -126,7 +134,8 @@ def test_all_nonfinite_returns_empty_scores() -> None:
 
 def test_first_failing_reason_wins() -> None:
     closes = make_closes(TICKERS)
-    closes.iloc[:60, 0] = np.nan  # A1: insufficient_history ...
+    # A1: insufficient_history (13/253 NaN in window also exceeds missing_data) ...
+    closes.iloc[:60, 0] = np.nan
     closes.iloc[200, 0] = 0.0  # ... beats nonpositive_price
     closes.iloc[100:120, 1] = np.nan  # A2: missing_data ...
     closes.iloc[200, 1] = -1.0  # ... beats nonpositive_price

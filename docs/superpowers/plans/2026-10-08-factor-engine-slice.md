@@ -915,9 +915,7 @@ def _pre_exclusion_reason(prices: pd.Series, window_size: int) -> str | None:
 def _result(
     snapshot: PriceSnapshot, scores: tuple[FactorScore, ...], excluded: dict[str, str]
 ) -> ScoreResult:
-    return ScoreResult(
-        as_of=snapshot.as_of, scores=scores, excluded=dict(sorted(excluded.items()))
-    )
+    return ScoreResult(as_of=snapshot.as_of, scores=scores, excluded=dict(sorted(excluded.items())))
 ```
 
 - [ ] **Step 4: Run the test and confirm it passes**

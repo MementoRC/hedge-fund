@@ -63,9 +63,17 @@ build = "python -m build"
 [feature.dev.tasks]
 app = "streamlit run app.py"
 
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312.dependencies]
+python = "3.12.*"
+
 [environments]
 default = { solve-group = "default" }
 dev = { features = ["ci", "dev"], solve-group = "default" }
 ci = { features = ["ci"], solve-group = "default" }
+py311 = { features = ["py311", "ci"], solve-group = "py311" }
+py312 = { features = ["py312", "ci"], solve-group = "py312" }
 quality-extended = { features = ["ci"], solve-group = "default" }
 quality-ci = { features = ["ci"], solve-group = "default" }

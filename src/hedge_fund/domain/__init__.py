@@ -1,1 +1,1 @@
-"""Domain models: Security, Signal, Candidate, Position, Decision."""
+"""Domain types: PriceSnapshot (engine input) and FactorScore/ScoreResult (scoring output)."""

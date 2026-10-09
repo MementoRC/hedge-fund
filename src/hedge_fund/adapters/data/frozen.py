@@ -43,15 +43,21 @@ def save_snapshot(snapshot: PriceSnapshot, root: Path) -> Path:
 
 
 def load_snapshot(path: Path) -> PriceSnapshot:
-    """Read a saved pair; constructing PriceSnapshot revalidates its contract."""
+    """Read a saved pair, verifying its content digest against the file name.
+
+    Constructing PriceSnapshot revalidates its contract.
+    """
     parquet = Path(path).with_suffix(".parquet")
     meta = json.loads(parquet.with_suffix(".json").read_text(encoding="utf-8"))
     closes = pd.read_parquet(parquet)[meta["columns"]]
-    return PriceSnapshot(
-        as_of=date.fromisoformat(meta["as_of"]),
-        closes=closes,
-        sectors=meta["sectors"],
-    )
+    as_of = date.fromisoformat(meta["as_of"])
+    actual = _digest(as_of, meta["columns"], meta["sectors"], closes)
+    expected = parquet.stem.rsplit("_", 1)[-1]
+    if actual != expected:
+        raise ValueError(
+            f"{parquet.name}: digest mismatch, name has {expected}, content is {actual}"
+        )
+    return PriceSnapshot(as_of=as_of, closes=closes, sectors=meta["sectors"])
 
 
 def _digest(
@@ -64,5 +70,8 @@ def _digest(
     )
     digest = hashlib.sha256(header.encode("utf-8"))
     digest.update(pd.DatetimeIndex(closes.index).as_unit("ns").asi8.tobytes())
-    digest.update(np.ascontiguousarray(closes.to_numpy(dtype="float64")).tobytes())
+    values = np.array(closes.to_numpy(dtype="float64"), dtype="float64", order="C")
+    # Canonical NaN and +0.0 so logically equal data hashes identically.
+    values = np.where(np.isnan(values), np.nan, values) + 0.0
+    digest.update(values.tobytes())
     return digest.hexdigest()[:12]

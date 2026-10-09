@@ -3,6 +3,9 @@
 import re
 from pathlib import Path
 
+import numpy as np
+import pytest
+
 from hedge_fund.adapters.data.frozen import load_snapshot, save_snapshot
 from hedge_fund.domain.snapshot import PriceSnapshot
 from tests.factories import make_closes, snapshot_from
@@ -51,6 +54,28 @@ def test_different_prices_give_a_different_file(tmp_path: Path) -> None:
 def test_different_sectors_give_a_different_file(tmp_path: Path) -> None:
     other = {**SECTORS, "CCC": "Energy"}
     assert save_snapshot(_snapshot(), tmp_path) != save_snapshot(_snapshot(sectors=other), tmp_path)
+
+
+def test_non_canonical_nan_and_negative_zero_hash_like_canonical(tmp_path: Path) -> None:
+    odd_nan = np.frombuffer(np.uint64(0x7FF8000000000001).tobytes(), dtype=np.float64)[0]
+    assert np.isnan(odd_nan)
+    canonical = make_closes(list(SECTORS))
+    odd = canonical.copy()
+    canonical.iloc[0, 0] = np.nan
+    canonical.iloc[1, 1] = 0.0
+    odd.iloc[0, 0] = odd_nan
+    odd.iloc[1, 1] = -0.0
+    first = save_snapshot(snapshot_from(canonical, SECTORS), tmp_path / "a")
+    second = save_snapshot(snapshot_from(odd, SECTORS), tmp_path / "b")
+    assert first.name == second.name
+
+
+def test_load_rejects_tampered_parquet(tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    path = save_snapshot(snapshot, tmp_path)
+    (snapshot.closes * 2.0).to_parquet(path)
+    with pytest.raises(ValueError, match=path.name):
+        load_snapshot(path)
 
 
 def test_resaving_a_loaded_snapshot_keeps_its_name(tmp_path: Path) -> None:

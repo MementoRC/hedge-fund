@@ -69,6 +69,7 @@ src/hedge_fund/engine/factors/
 
 - `closes` is empty (no rows or no columns);
 - the index is not a `DatetimeIndex`, is not sorted ascending, or has duplicates;
+- the columns contain duplicate tickers;
 - any index date is after `as_of`;
 - any column ticker has no entry in `sectors` (extra `sectors` keys are allowed).
 
@@ -144,8 +145,9 @@ error.
 
 TDD; hand-built, seeded fixtures; no I/O.
 
-- `tests/factories.py`: `make_snapshot(...)` builds geometric price paths per ticker with
-  noise from `numpy.random.default_rng(0)`.
+- `tests/factories.py`: `make_closes(...)` builds geometric price paths per ticker with
+  noise from `numpy.random.default_rng(seed)`; `snapshot_from(closes, sectors)` wraps them
+  in a `PriceSnapshot` whose `as_of` is the last row's date.
 - `tests/domain/test_snapshot.py`: one test per contract violation; valid construction;
   field reassignment raises `FrozenInstanceError`. Frozen dataclasses do not deep-freeze
   the `DataFrame` or `Mapping` they hold, and the engine must not mutate its inputs.

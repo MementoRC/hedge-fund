@@ -30,6 +30,8 @@ class PriceSnapshot:
             raise ValueError("closes index must be sorted ascending")
         if closes.index.has_duplicates:
             raise ValueError("closes index has duplicate dates")
+        if closes.columns.has_duplicates:
+            raise ValueError("closes has duplicate tickers")
         if closes.index[-1].date() > self.as_of:
             raise ValueError("closes has rows after as_of")
         missing = sorted(str(t) for t in closes.columns if t not in self.sectors)

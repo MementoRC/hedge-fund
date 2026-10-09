@@ -63,6 +63,12 @@ def test_duplicate_dates_rejected() -> None:
         PriceSnapshot(as_of=AS_OF, closes=_closes(index), sectors=SECTORS)
 
 
+def test_duplicate_tickers_rejected() -> None:
+    closes = pd.DataFrame([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], index=DATES, columns=["AAA", "AAA"])
+    with pytest.raises(ValueError, match="duplicate tickers"):
+        PriceSnapshot(as_of=AS_OF, closes=closes, sectors=SECTORS)
+
+
 def test_rows_after_as_of_rejected() -> None:
     with pytest.raises(ValueError, match="after as_of"):
         PriceSnapshot(as_of=date(2026, 1, 5), closes=_closes(), sectors=SECTORS)

@@ -35,6 +35,7 @@ class CachingProvider:
     covered range. A request the cache does not fully cover is refetched over the union
     of the requested and cached ranges and replaces the cache: adjusted closes are
     restated after dividends and splits, so fetches are never spliced together.
+    sectors.json caches resolved (non-None) sectors only, so empty vendor answers are retried.
     """
 
     def __init__(
@@ -76,7 +77,24 @@ class CachingProvider:
         return _assemble(requested, served, start, end)
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
-        return self._inner.sectors(tickers)
+        requested = list(tickers)
+        known = self._read_sectors()
+        missing = [ticker for ticker in requested if ticker not in known]
+        if missing:
+            resolved = {t: s for t, s in self._inner.sectors(missing).items() if s is not None}
+            if resolved:
+                known.update(resolved)
+                body = json.dumps(known, indent=2, sort_keys=True)
+                atomic_write(
+                    self._sectors_path, lambda path: path.write_text(body, encoding="utf-8")
+                )
+        return {ticker: known.get(ticker) for ticker in requested}
+
+    def _read_sectors(self) -> dict[str, str]:
+        if not self._sectors_path.is_file():
+            return {}
+        known: dict[str, str] = json.loads(self._sectors_path.read_text(encoding="utf-8"))
+        return known
 
     def _paths(self, ticker: str) -> tuple[Path, Path]:
         if not _SAFE_TICKER.fullmatch(ticker):

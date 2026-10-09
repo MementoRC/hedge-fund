@@ -152,3 +152,22 @@ def test_parquet_without_coverage_is_treated_as_uncached(tmp_path: Path) -> None
 def test_unsafe_ticker_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not safe"):
         _cache(_fake(["AAA"]), tmp_path).closes(["../AAA"], JUN, SEP_END)
+
+
+def test_sectors_are_cached_after_first_lookup(tmp_path: Path) -> None:
+    fake = FakeProvider(make_closes(["AAA"]), {"AAA": "Energy", "BBB": "Financials"})
+    first = _cache(fake, tmp_path).sectors(["AAA", "BBB"])
+    second = _cache(fake, tmp_path).sectors(["BBB", "AAA"])
+    assert first == {"AAA": "Energy", "BBB": "Financials"}
+    assert list(second.items()) == [("BBB", "Financials"), ("AAA", "Energy")]
+    assert fake.sectors_calls == [("AAA", "BBB")]
+
+
+def test_unknown_sectors_are_not_cached_and_are_retried(tmp_path: Path) -> None:
+    fake = FakeProvider(make_closes(["AAA"]), {"AAA": "Energy"})
+    cache = _cache(fake, tmp_path)
+    assert cache.sectors(["AAA", "ZZZ"]) == {"AAA": "Energy", "ZZZ": None}
+    assert cache.sectors(["AAA", "ZZZ"]) == {"AAA": "Energy", "ZZZ": None}
+    assert fake.sectors_calls == [("AAA", "ZZZ"), ("ZZZ",)]
+    stored = json.loads((tmp_path / "sectors.json").read_text(encoding="utf-8"))
+    assert stored == {"AAA": "Energy"}

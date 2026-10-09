@@ -41,6 +41,7 @@ Thumbs.db
 # Project-specific
 .claude/
 CLAUDE.md
+docs/superpowers/
 .mcp.json
 .locks/
 logs/

@@ -149,6 +149,82 @@ def test_parquet_without_coverage_is_treated_as_uncached(tmp_path: Path) -> None
     assert len(fake.closes_calls) == 2
 
 
+def test_corrupt_parquet_is_refetched_and_rewritten(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    cache = _cache(fake, tmp_path)
+    cache.closes(["AAA"], JUN, SEP_END)
+    parquet = tmp_path / "prices" / "AAA.parquet"
+    parquet.write_bytes(b"not a parquet file")
+    result = cache.closes(["AAA"], JUN, SEP_END)
+    assert len(fake.closes_calls) == 2
+    assert_closes_equal(result, _slice(fake.frame, JUN, SEP_END))
+    assert len(pd.read_parquet(parquet)) == len(result)
+
+
+def test_corrupt_coverage_json_is_refetched_and_rewritten(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    cache = _cache(fake, tmp_path)
+    cache.closes(["AAA"], JUN, SEP_END)
+    (tmp_path / "prices" / "AAA.json").write_text("{not json", encoding="utf-8")
+    result = cache.closes(["AAA"], JUN, SEP_END)
+    assert len(fake.closes_calls) == 2
+    assert_closes_equal(result, _slice(fake.frame, JUN, SEP_END))
+    assert _coverage(tmp_path, "AAA") == {"start": "2026-06-01", "end": "2026-09-30"}
+
+
+def test_coverage_json_missing_keys_is_refetched(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    cache = _cache(fake, tmp_path)
+    cache.closes(["AAA"], JUN, SEP_END)
+    (tmp_path / "prices" / "AAA.json").write_text("{}", encoding="utf-8")
+    cache.closes(["AAA"], JUN, SEP_END)
+    assert len(fake.closes_calls) == 2
+
+
+def test_corrupt_sectors_file_is_rewritten(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    (tmp_path / "sectors.json").write_text("{not json", encoding="utf-8")
+    assert _cache(fake, tmp_path).sectors(["AAA"]) == {"AAA": "Energy"}
+    assert fake.sectors_calls == [("AAA",)]
+    stored = json.loads((tmp_path / "sectors.json").read_text(encoding="utf-8"))
+    assert stored == {"AAA": "Energy"}
+
+
+def test_non_dict_sectors_file_is_rewritten(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    (tmp_path / "sectors.json").write_text('["AAA"]', encoding="utf-8")
+    assert _cache(fake, tmp_path).sectors(["AAA"]) == {"AAA": "Energy"}
+    assert fake.sectors_calls == [("AAA",)]
+    stored = json.loads((tmp_path / "sectors.json").read_text(encoding="utf-8"))
+    assert stored == {"AAA": "Energy"}
+
+
+def test_duplicate_tickers_are_fetched_once(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    cache = _cache(fake, tmp_path)
+    result = cache.closes(["AAA", "AAA"], JUN, SEP_END)
+    assert fake.closes_calls == [(("AAA",), JUN, SEP_END)]
+    assert list(result.columns) == ["AAA", "AAA"]
+    cache.sectors(["AAA", "AAA"])
+    assert fake.sectors_calls == [("AAA",)]
+
+
+def test_column_missing_from_inner_frame_is_empty_and_not_cached(tmp_path: Path) -> None:
+    fake = _fake(["AAA", "BBB"])
+    fake.frame = fake.frame.drop(columns=["BBB"])
+    inner_closes = fake.closes
+
+    def without_column(tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        return inner_closes(tickers, start, end).drop(columns=["BBB"])
+
+    fake.closes = without_column  # type: ignore[method-assign]
+    result = _cache(fake, tmp_path).closes(["AAA", "BBB"], JUN, SEP_END)
+    assert list(result.columns) == ["AAA", "BBB"]
+    assert result["BBB"].isna().all()
+    assert result["AAA"].notna().all()
+    assert not (tmp_path / "prices" / "BBB.parquet").exists()
+
+
 def test_unsafe_ticker_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not safe"):
         _cache(_fake(["AAA"]), tmp_path).closes(["../AAA"], JUN, SEP_END)

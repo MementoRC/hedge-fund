@@ -31,6 +31,18 @@ def test_parse_universe_rejects_malformed_text(text: str, message: str) -> None:
         parse_universe("demo", text)
 
 
+def test_parse_universe_names_universe_and_value_for_bad_list_date() -> None:
+    text = "# list_date: soon\nticker,gics_sector\nAAA,Energy\n"
+    with pytest.raises(ValueError, match=r"universe 'demo'.*list_date.*'soon'"):
+        parse_universe("demo", text)
+
+
+def test_parse_universe_names_universe_and_line_for_row_missing_a_column() -> None:
+    text = "# list_date: 2026-10-01\nticker,gics_sector\nAAA,Energy\nXYZ\n"
+    with pytest.raises(ValueError, match=r"universe 'demo'.*line 4"):
+        parse_universe("demo", text)
+
+
 def test_gics_sectors_has_the_eleven_names() -> None:
     assert len(GICS_SECTORS) == 11
     assert "Information Technology" in GICS_SECTORS

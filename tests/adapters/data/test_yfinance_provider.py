@@ -6,7 +6,6 @@ from typing import Any
 
 import pandas as pd
 import pytest
-import yfinance as yf
 
 from hedge_fund.adapters.data.yfinance_provider import YAHOO_TO_GICS, YFinanceProvider
 from hedge_fund.ports.data import DataProviderError
@@ -142,5 +141,7 @@ def test_yahoo_to_gics_covers_every_gics_sector() -> None:
     assert set(YAHOO_TO_GICS.values()) == GICS_SECTORS
 
 
-def test_default_download_is_yfinance() -> None:
-    assert YFinanceProvider()._download is yf.download
+def test_default_construction_needs_no_network_for_empty_request() -> None:
+    result = YFinanceProvider().closes([], START, END)
+    assert result.empty
+    assert isinstance(result.index, pd.DatetimeIndex)

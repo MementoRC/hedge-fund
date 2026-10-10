@@ -34,15 +34,19 @@ class YFinanceProvider:
 
     Vendor calls are injectable so tests never touch the network. yfinance reports
     per-ticker failures as empty data, which surfaces here as all-NaN columns.
+    Bars dated on or after the clock's today are dropped, even after the close, so a
+    session's unfinished bar is never returned.
     """
 
     def __init__(
         self,
         download: Download = yf.download,
         info_fetcher: InfoFetcher = lambda ticker: yf.Ticker(ticker).info,
+        clock: Callable[[], date] = date.today,
     ) -> None:
         self._download = download
         self._info_fetcher = info_fetcher
+        self._clock = clock
 
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
         requested = list(tickers)
@@ -59,7 +63,8 @@ class YFinanceProvider:
             )
         except Exception as exc:
             raise DataProviderError(f"yfinance download failed for {requested}: {exc}") from exc
-        return _normalize_closes(raw, requested)
+        closes = _normalize_closes(raw, requested)
+        return closes.loc[closes.index < pd.Timestamp(self._clock())]
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         result: dict[str, str | None] = {}

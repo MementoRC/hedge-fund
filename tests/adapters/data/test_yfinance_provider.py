@@ -91,6 +91,15 @@ def test_closes_strips_timezone_and_sorts() -> None:
     assert_closes_equal(result, closes)
 
 
+def test_closes_drops_bars_on_or_after_clock_today() -> None:
+    today = date(2026, 9, 10)
+    days = pd.DatetimeIndex(["2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11"])
+    frame = pd.DataFrame({"AAA": [1.0, 2.0, 3.0, 4.0]}, index=days)
+    provider = YFinanceProvider(download=RecordingDownload(yf_multi(frame)), clock=lambda: today)
+    result = provider.closes(["AAA"], date(2026, 9, 1), today)
+    assert_closes_equal(result, frame.iloc[:2])
+
+
 def test_closes_wraps_vendor_exception() -> None:
     boom = RuntimeError("rate limited")
     provider = YFinanceProvider(download=RecordingDownload(error=boom))

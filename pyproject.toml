@@ -33,7 +33,7 @@ warn_unused_configs = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["pandas", "pandas.*"]
+module = ["pandas", "yfinance"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -42,6 +42,8 @@ pythonpath = ["src"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
+addopts = "-m 'not network'"
+markers = ["network: hits real vendor APIs; excluded by default, run with -m network"]
 
 [tool.coverage.run]
 source = ["hedge_fund"]

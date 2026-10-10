@@ -53,7 +53,7 @@ agents/
 .worktrees/
 
 # Local data and caches
-data/
+/data/
 .tradingagents/
 tradingagents_cache/
 eval_results/

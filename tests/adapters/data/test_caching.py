@@ -190,6 +190,15 @@ def test_corrupt_sectors_file_is_rewritten(tmp_path: Path) -> None:
     assert stored == {"AAA": "Energy"}
 
 
+def test_non_dict_sectors_file_is_rewritten(tmp_path: Path) -> None:
+    fake = _fake(["AAA"])
+    (tmp_path / "sectors.json").write_text('["AAA"]', encoding="utf-8")
+    assert _cache(fake, tmp_path).sectors(["AAA"]) == {"AAA": "Energy"}
+    assert fake.sectors_calls == [("AAA",)]
+    stored = json.loads((tmp_path / "sectors.json").read_text(encoding="utf-8"))
+    assert stored == {"AAA": "Energy"}
+
+
 def test_duplicate_tickers_are_fetched_once(tmp_path: Path) -> None:
     fake = _fake(["AAA"])
     cache = _cache(fake, tmp_path)

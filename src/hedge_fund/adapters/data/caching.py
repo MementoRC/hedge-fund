@@ -96,10 +96,10 @@ class CachingProvider:
         if not self._sectors_path.is_file():
             return {}
         try:
-            known: dict[str, str] = json.loads(self._sectors_path.read_text(encoding="utf-8"))
+            known = json.loads(self._sectors_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
-        return known
+        return known if isinstance(known, dict) else {}
 
     def _paths(self, ticker: str) -> tuple[Path, Path]:
         if not _SAFE_TICKER.fullmatch(ticker):

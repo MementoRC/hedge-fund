@@ -5,7 +5,14 @@ import pandas as pd
 import pytest
 
 from hedge_fund.domain.snapshot import PriceSnapshot
-from hedge_fund.engine.factors.definitions import FACTORS, FactorSpec, low_vol, momentum_12_1
+from hedge_fund.engine.factors.definitions import (
+    FACTORS,
+    FactorSpec,
+    high_52w_proximity,
+    low_vol,
+    momentum_12_1,
+    reversal_1m,
+)
 from hedge_fund.engine.factors.score import score
 from tests.factories import make_closes, snapshot_from
 
@@ -21,6 +28,7 @@ SECTORS = {
 }
 TICKERS = list(SECTORS)
 WINDOW = 253
+FACTOR_NAMES = {"momentum_12_1", "low_vol", "reversal_1m", "high_52w_proximity"}
 
 
 def _snapshot(closes: pd.DataFrame) -> PriceSnapshot:
@@ -43,8 +51,9 @@ def test_scores_every_clean_ticker() -> None:
     composites = [s.composite for s in result.scores]
     assert composites == sorted(composites, reverse=True)
     for s in result.scores:
-        assert set(s.raw) == {"momentum_12_1", "low_vol"}
-        assert s.composite == pytest.approx(sum(s.z.values()) / 2)
+        assert set(s.raw) == FACTOR_NAMES
+        assert set(s.z) == FACTOR_NAMES
+        assert s.composite == pytest.approx(sum(s.z.values()) / 4)
         assert s.sector == SECTORS[s.ticker]
         assert s.fallback_universe_z is False
 
@@ -55,9 +64,13 @@ def test_raw_values_match_factor_definitions() -> None:
     window = closes.iloc[-WINDOW:]
     momentum = momentum_12_1(window)
     vol = low_vol(window)
+    reversal = reversal_1m(window)
+    proximity = high_52w_proximity(window)
     for s in result.scores:
         assert s.raw["momentum_12_1"] == pytest.approx(momentum[s.ticker])
         assert s.raw["low_vol"] == pytest.approx(vol[s.ticker])
+        assert s.raw["reversal_1m"] == pytest.approx(reversal[s.ticker])
+        assert s.raw["high_52w_proximity"] == pytest.approx(proximity[s.ticker])
 
 
 def test_history_before_window_is_ignored() -> None:

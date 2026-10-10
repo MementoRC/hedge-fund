@@ -36,6 +36,8 @@ class CachingProvider:
     of the requested and cached ranges and replaces the cache: adjusted closes are
     restated after dividends and splits, so fetches are never spliced together.
     sectors.json caches resolved (non-None) sectors only, so empty vendor answers are retried.
+    Cached sectors are never refreshed automatically; delete sectors.json in the cache dir
+    to refresh them. Unreadable cache files are treated as misses and rewritten.
     """
 
     def __init__(
@@ -51,7 +53,7 @@ class CachingProvider:
 
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
         requested = list(tickers)
-        cached = {ticker: self._read(ticker) for ticker in requested}
+        cached = {ticker: self._read(ticker) for ticker in dict.fromkeys(requested)}
         served: dict[str, pd.Series] = {}
         groups: dict[tuple[date, date], list[str]] = {}
         for ticker, entry in cached.items():
@@ -66,7 +68,7 @@ class CachingProvider:
             fetched = self._inner.closes(group, fetch_start, fetch_end)
             covered_end = min(fetch_end, self._clock() - _ONE_DAY)
             for ticker in group:
-                fresh = fetched[ticker].dropna()
+                fresh = fetched[ticker].dropna() if ticker in fetched.columns else _empty_series()
                 if fresh.empty:
                     entry = cached[ticker]
                     served[ticker] = entry.closes if entry is not None else _empty_series()
@@ -79,7 +81,7 @@ class CachingProvider:
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         requested = list(tickers)
         known = self._read_sectors()
-        missing = [ticker for ticker in requested if ticker not in known]
+        missing = [ticker for ticker in dict.fromkeys(requested) if ticker not in known]
         if missing:
             resolved = {t: s for t, s in self._inner.sectors(missing).items() if s is not None}
             if resolved:
@@ -93,7 +95,10 @@ class CachingProvider:
     def _read_sectors(self) -> dict[str, str]:
         if not self._sectors_path.is_file():
             return {}
-        known: dict[str, str] = json.loads(self._sectors_path.read_text(encoding="utf-8"))
+        try:
+            known: dict[str, str] = json.loads(self._sectors_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
         return known
 
     def _paths(self, ticker: str) -> tuple[Path, Path]:
@@ -105,12 +110,15 @@ class CachingProvider:
         parquet, coverage = self._paths(ticker)
         if not (parquet.is_file() and coverage.is_file()):
             return None
-        span = json.loads(coverage.read_text(encoding="utf-8"))
-        return _CachedSeries(
-            closes=pd.read_parquet(parquet)["close"],
-            start=date.fromisoformat(span["start"]),
-            end=date.fromisoformat(span["end"]),
-        )
+        try:
+            span = json.loads(coverage.read_text(encoding="utf-8"))
+            return _CachedSeries(
+                closes=pd.read_parquet(parquet)["close"],
+                start=date.fromisoformat(span["start"]),
+                end=date.fromisoformat(span["end"]),
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None  # corrupt cache files count as a miss and are overwritten on refetch
 
     def _write(self, ticker: str, closes: pd.Series, start: date, end: date) -> None:
         parquet, coverage = self._paths(ticker)

@@ -41,10 +41,16 @@ def test_tickers_are_normalized_and_deduplicated() -> None:
     assert fake.sectors_calls == [("AAA", "BBB")]
 
 
-def test_requests_450_calendar_days_ending_at_as_of() -> None:
+def test_default_lookback_requests_465_calendar_days_ending_at_as_of() -> None:
     fake = _fake()
     build_snapshot(fake, ["AAA"], AS_OF)
-    assert fake.closes_calls[0][1:] == (AS_OF - timedelta(days=450), AS_OF)
+    assert fake.closes_calls[0][1:] == (AS_OF - timedelta(days=465), AS_OF)
+
+
+def test_larger_lookback_widens_the_requested_window() -> None:
+    fake = _fake()
+    build_snapshot(fake, ["AAA"], AS_OF, lookback=600)
+    assert fake.closes_calls[0][1:] == (AS_OF - timedelta(days=900), AS_OF)
 
 
 def test_rows_after_as_of_are_dropped() -> None:
@@ -73,7 +79,12 @@ def test_missing_sector_drops_ticker_into_unresolved() -> None:
 def test_ticker_without_prices_stays_as_nan_column() -> None:
     build = build_snapshot(_fake({**SECTORS, "NEW": "Energy"}), ["AAA", "NEW"], AS_OF)
     assert build.snapshot.closes["NEW"].isna().all()
-    assert build.unresolved == {}
+    assert dict(build.unresolved) == {"NEW": "no_prices"}
+
+
+def test_no_sector_takes_precedence_over_no_prices() -> None:
+    build = build_snapshot(_fake(), ["AAA", "ZZZ"], AS_OF)
+    assert dict(build.unresolved) == {"ZZZ": "no_sector"}
 
 
 def test_empty_ticker_list_raises() -> None:
@@ -92,7 +103,9 @@ def test_no_rows_at_as_of_raises() -> None:
 
 
 def test_end_to_end_build_then_score_ranks_tickers() -> None:
-    build = build_snapshot(_fake(), list(SECTORS), AS_OF)
+    build = build_snapshot(_fake({**SECTORS, "NEW": "Energy"}), [*SECTORS, "NEW"], AS_OF)
     result = score(build.snapshot)
     assert result.as_of == AS_OF
-    assert len(result.scores) > 0
+    assert dict(build.unresolved) == {"NEW": "no_prices"}
+    assert {s.ticker for s in result.scores} == set(SECTORS)
+    assert dict(result.excluded) == {"NEW": "insufficient_history"}

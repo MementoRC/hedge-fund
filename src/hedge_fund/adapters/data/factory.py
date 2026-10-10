@@ -18,5 +18,5 @@ def default_provider(
     vendor: DataProvider | None = None,
 ) -> DataProvider:
     """Universe sectors over a parquet cache over `vendor` (Yahoo Finance by default)."""
-    cached = CachingProvider(vendor or YFinanceProvider(), cache_dir)
+    cached = CachingProvider(vendor if vendor is not None else YFinanceProvider(), cache_dir)
     return StaticSectorProvider(cached, load_universe(universe))

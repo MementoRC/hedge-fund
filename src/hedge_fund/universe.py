@@ -47,12 +47,20 @@ def parse_universe(name: str, text: str) -> Universe:
     first, _, body = text.partition("\n")
     if not first.startswith(_LIST_DATE_PREFIX):
         raise ValueError(f"universe {name!r}: first line must be '{_LIST_DATE_PREFIX} YYYY-MM-DD'")
-    list_date = date.fromisoformat(first.removeprefix(_LIST_DATE_PREFIX).strip())
+    raw_date = first.removeprefix(_LIST_DATE_PREFIX).strip()
+    try:
+        list_date = date.fromisoformat(raw_date)
+    except ValueError:
+        raise ValueError(
+            f"universe {name!r}: list_date must be YYYY-MM-DD, got {raw_date!r}"
+        ) from None
     reader = csv.DictReader(io.StringIO(body))
     if reader.fieldnames != _HEADER:
         raise ValueError(f"universe {name!r}: header must be 'ticker,gics_sector'")
     sectors: dict[str, str] = {}
     for row in reader:
+        if row["ticker"] is None or row["gics_sector"] is None:
+            raise ValueError(f"universe {name!r}: line {reader.line_num + 1} is missing a column")
         ticker = row["ticker"].strip()
         sector = row["gics_sector"].strip()
         if ticker in sectors:

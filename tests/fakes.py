@@ -52,7 +52,10 @@ def yf_multi(closes: pd.DataFrame) -> pd.DataFrame:
 
 
 def yf_single(closes: pd.Series) -> pd.DataFrame:
-    """Flat yf.download shape for one ticker: one column per price field."""
+    """Flat frame (one column per price field) as yfinance returns with multi_level_index=False.
+
+    Not yfinance's default, which is a (Price, Ticker) MultiIndex even for a single ticker.
+    """
     return pd.DataFrame({"Open": closes * 0.99, "Close": closes, "Volume": 1000.0})
 
 

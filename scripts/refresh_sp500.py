@@ -15,6 +15,7 @@ from pathlib import Path
 
 import requests
 
+from hedge_fund.adapters.data._atomic import atomic_write
 from hedge_fund.universe import GICS_SECTORS
 
 SOURCE_URL = (
@@ -47,7 +48,8 @@ def main() -> int:
     lines = [f"# list_date: {date.today().isoformat()}", "ticker,gics_sector"]
     lines += [f"{ticker},{sectors[ticker]}" for ticker in sorted(sectors)]
     TARGET.parent.mkdir(parents=True, exist_ok=True)
-    TARGET.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    body = "\n".join(lines) + "\n"
+    atomic_write(TARGET, lambda tmp: tmp.write_text(body, encoding="utf-8"))
     print(f"wrote {len(sectors)} tickers to {TARGET}")
     return 0
 

@@ -1,13 +1,16 @@
-"""Deterministic price fixtures for engine tests."""
+"""Deterministic price and fundamentals fixtures for engine tests."""
 
 from collections.abc import Mapping, Sequence
+from datetime import date
 
 import numpy as np
 import pandas as pd
 
+from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS, FundamentalsSnapshot
 from hedge_fund.domain.snapshot import PriceSnapshot
 
 END_DATE = "2026-09-30"
+FUNDAMENTALS_AS_OF = date(2026, 9, 30)
 
 
 def make_closes(tickers: Sequence[str], n_days: int = 300, seed: int = 0) -> pd.DataFrame:
@@ -28,3 +31,22 @@ def make_closes(tickers: Sequence[str], n_days: int = 300, seed: int = 0) -> pd.
 def snapshot_from(closes: pd.DataFrame, sectors: Mapping[str, str]) -> PriceSnapshot:
     """Build a snapshot whose as_of is the date of the last row."""
     return PriceSnapshot(as_of=closes.index[-1].date(), closes=closes, sectors=dict(sectors))
+
+
+def make_fundamentals(
+    tickers: Sequence[str] = ("AAA", "BBB", "CCC"), seed: int = 0
+) -> FundamentalsSnapshot:
+    """Valid snapshot: positive random metrics, E 2026-06-30, E′ 2025-06-30, filed 2026-08-01."""
+    rng = np.random.default_rng(seed)
+    index = sorted(tickers)
+    names = list(METRIC_NAMES)
+    shape = (len(index), len(names))
+    current = pd.DataFrame(rng.uniform(1.0, 1000.0, shape), index=index, columns=names)
+    prior = pd.DataFrame(rng.uniform(1.0, 1000.0, shape), index=index, columns=names)
+    dates = dict(zip(PERIOD_COLUMNS, ["2026-06-30", "2025-06-30", "2026-08-01"], strict=True))
+    periods = pd.DataFrame(
+        {column: pd.Timestamp(value) for column, value in dates.items()}, index=index
+    ).astype("datetime64[ns]")
+    return FundamentalsSnapshot(
+        as_of=FUNDAMENTALS_AS_OF, current=current, prior=prior, periods=periods
+    )

@@ -220,12 +220,36 @@ def test_prior_reference_is_nat_beyond_seven_days_or_for_dei_only() -> None:
     assert pd.isna(prior_reference(dei_only, pd.Timestamp("2024-03-30")))
 
 
+def test_prior_reference_is_nat_on_an_empty_frame() -> None:
+    assert pd.isna(prior_reference(_frame(), pd.Timestamp("2024-03-30")))
+
+
+@pytest.mark.parametrize(
+    ("end", "prior_end"),
+    [
+        ("2024-02-29", "2023-02-28"),  # leap day: E - 1 year clips to Feb 28
+        ("2025-03-01", "2024-03-01"),  # the year back contains a leap day
+    ],
+)
+def test_prior_reference_across_leap_years(end: str, prior_end: str) -> None:
+    facts = _frame(
+        _fact("Assets", prior_end, 1.0, filed="2023-05-01"),
+        _fact("Assets", end, 2.0),
+    )
+    assert prior_reference(facts, pd.Timestamp(end)) == pd.Timestamp(prior_end)
+
+
 def test_last_filed_is_the_latest_filing_among_visible_curated_facts() -> None:
     facts = _frame(
         _fact("Assets", "2023-12-31", 1000.0, filed="2024-02-15", form="10-K"),
         _fact("Assets", "2024-03-31", 1050.0, filed="2024-05-01"),
         _fact(SHARES, "2024-05-05", 49.0, filed="2024-05-10", form="10-K/A"),
-        _fact("Goodwill", "2024-03-31", 5.0, filed="2024-05-20"),
+        # Uncurated tag: pit_filter drops it, so its later filing date does not count.
+        _fact("NotACuratedTag", "2024-03-31", 5.0, filed="2024-05-20"),
         _fact("Assets", "2024-06-30", 1100.0, filed="2024-06-05"),
     )
     assert last_filed(pit_filter(facts, date(2024, 6, 1))) == pd.Timestamp("2024-05-10")
+
+
+def test_last_filed_is_nat_on_an_empty_frame() -> None:
+    assert pd.isna(last_filed(_frame()))

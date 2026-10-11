@@ -72,20 +72,31 @@ def duration_classes(facts: pd.DataFrame) -> pd.Series:
 
 
 def reference_period(versioned: pd.DataFrame) -> pd.Timestamp | None:
-    """E: the latest `end` among curated non-dei facts, or None when there is none."""
+    """E: the latest `end` among curated non-dei facts, or None when there is none.
+
+    Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
+    """
     ends = versioned.loc[_non_dei(versioned), "end"]
     return None if ends.empty else ends.max()
 
 
 def prior_reference(versioned: pd.DataFrame, end: pd.Timestamp) -> pd.Timestamp:
-    """E′: the curated non-dei fact end nearest `end - 1 year` within ±7 days, else NaT."""
+    """E′: the curated non-dei fact end nearest `end - 1 year` within ±7 days.
+
+    Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
+    Returns NaT when no end is within ±7 days (including an empty frame).
+    """
     ends = versioned.loc[_non_dei(versioned), ["end"]].drop_duplicates().sort_values("end")
     hit = _nearest(ends, "end", end - ONE_YEAR)
     return pd.NaT if hit is None else hit["end"]
 
 
 def last_filed(visible: pd.DataFrame) -> pd.Timestamp:
-    """The latest `filed` among the PIT-filtered curated facts (dei included)."""
+    """The latest `filed` among the PIT-filtered curated facts (dei included).
+
+    Precondition: `visible` holds one ticker's facts after `pit_filter`, before version
+    selection. Returns NaT on an empty frame.
+    """
     return visible["filed"].max()
 
 

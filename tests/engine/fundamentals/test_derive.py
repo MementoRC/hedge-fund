@@ -1,5 +1,6 @@
 """Tests for point-in-time fundamentals derivation (pure, hand-built facts)."""
 
+import math
 from datetime import date
 from typing import Any
 
@@ -12,12 +13,15 @@ from hedge_fund.engine.fundamentals.derive import (
     NINE_MONTH,
     QUARTER,
     duration_classes,
+    first_complete,
+    flow_ttm,
     last_filed,
     pit_filter,
     prior_reference,
     reference_period,
     select_versions,
 )
+from hedge_fund.engine.fundamentals.metrics import METRICS, MetricSpec
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts, empty_facts
 
 SHARES = "dei:EntityCommonStockSharesOutstanding"
@@ -253,3 +257,223 @@ def test_last_filed_is_the_latest_filing_among_visible_curated_facts() -> None:
 
 def test_last_filed_is_nat_on_an_empty_frame() -> None:
     assert pd.isna(last_filed(_frame()))
+
+
+def _spec(name: str) -> MetricSpec:
+    return next(spec for spec in METRICS if spec.name == name)
+
+
+def _calendar_revenue(tag: str = "Revenues") -> list[dict[str, Any]]:
+    """Calendar fiscal years 2022-2024 with YTD 10-Qs, a Q2 discrete quarter and 10-Ks."""
+    return [
+        _fact(tag, "2022-12-31", 360.0, start="2022-01-01", filed="2023-02-15", form="10-K"),
+        _fact(tag, "2023-03-31", 100.0, start="2023-01-01", filed="2023-05-01"),
+        _fact(tag, "2023-06-30", 200.0, start="2023-01-01", filed="2023-08-01"),
+        _fact(tag, "2023-09-30", 300.0, start="2023-01-01", filed="2023-11-01"),
+        _fact(tag, "2023-12-31", 400.0, start="2023-01-01", filed="2024-02-15", form="10-K"),
+        _fact(tag, "2024-03-31", 110.0, start="2024-01-01", filed="2024-05-01"),
+        _fact(tag, "2024-06-30", 120.0, start="2024-04-01", filed="2024-08-01"),
+        _fact(tag, "2024-06-30", 230.0, start="2024-01-01", filed="2024-08-01"),
+        _fact(tag, "2024-09-30", 360.0, start="2024-01-01", filed="2024-11-01"),
+        _fact(tag, "2024-12-31", 500.0, start="2024-01-01", filed="2025-02-15", form="10-K"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ("2024-03-31", 410.0),  # Q1: YTD 110 + FY2023 400 - Q1 2023 100
+        ("2024-06-30", 430.0),  # Q2: 6M 230 + 400 - 6M 2023 200 (3M discrete 120 unused)
+        ("2024-09-30", 460.0),  # Q3: 9M 360 + 400 - 9M 2023 300
+        ("2024-12-31", 500.0),  # fiscal year end: the annual value
+    ],
+)
+def test_ttm_identity_at_each_quarter(end: str, expected: float) -> None:
+    assert flow_ttm(_frame(*_calendar_revenue()), pd.Timestamp(end)) == pytest.approx(expected)
+
+
+def test_ttm_is_nan_when_a_piece_is_missing() -> None:
+    # At 2023-06-30 the 6M YTD of 2022 was never reported.
+    assert math.isnan(flow_ttm(_frame(*_calendar_revenue()), pd.Timestamp("2023-06-30")))
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [7, 4, 2],  # YTD(E) 6M 2024, FY(prior) 2023, YTD(E - 1 year) 6M 2023
+)
+def test_ttm_is_nan_without_each_piece_of_the_identity(dropped: int) -> None:
+    rows = _calendar_revenue()
+    del rows[dropped]
+    assert math.isnan(flow_ttm(_frame(*rows), pd.Timestamp("2024-06-30")))
+
+
+def test_ttm_is_nan_on_empty_facts_and_at_nat() -> None:
+    assert math.isnan(flow_ttm(_frame(), pd.Timestamp("2024-06-30")))
+    assert math.isnan(flow_ttm(_frame(*_calendar_revenue()), pd.NaT))
+    assert math.isnan(first_complete(_frame(), _spec("revenue").tags, pd.NaT, flow_ttm))
+
+
+def test_annual_fact_at_e_takes_precedence_over_any_ytd() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-12-31", 500.0, start="2024-01-01", form="10-K"),
+        _fact("Revenues", "2024-12-31", 999.0, start="2024-04-01"),
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-12-31")) == 500.0
+
+
+def test_annual_fact_within_seven_days_beats_a_complete_ytd_identity() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-12-27", 500.0, start="2023-12-28", form="10-K"),  # E - 4 days
+        # A complete nine-month identity at E would give 999 + 800 - 700 = 1099.
+        _fact("Revenues", "2024-12-31", 999.0, start="2024-04-01"),
+        _fact("Revenues", "2024-03-31", 800.0, start="2023-04-01", form="10-K"),
+        _fact("Revenues", "2023-12-31", 700.0, start="2023-04-01"),
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-12-31")) == 500.0
+
+
+def test_discrete_q2_quarter_is_not_used_as_ytd() -> None:
+    facts = _frame(
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+        _fact("Revenues", "2024-06-30", 120.0, start="2024-04-01"),
+        _fact("Revenues", "2023-06-30", 100.0, start="2023-04-01"),
+    )
+    assert math.isnan(flow_ttm(facts, pd.Timestamp("2024-06-30")))
+
+
+def test_quarter_counts_as_ytd_only_right_after_an_annual_fact() -> None:
+    facts = _frame(
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+        _fact("Revenues", "2024-03-28", 110.0, start="2024-01-01"),  # Q1: opens the year
+        # Nearer E, but start - 1 day is 9 days after the annual end: not a YTD candidate.
+        _fact("Revenues", "2024-03-31", 999.0, start="2024-01-10"),
+        _fact("Revenues", "2023-03-31", 100.0, start="2023-01-01"),
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-03-31")) == pytest.approx(410.0)
+
+
+def test_fy_prior_must_be_annual_class() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-06-30", 230.0, start="2024-01-01"),
+        _fact("Revenues", "2023-06-30", 200.0, start="2023-01-01"),
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-04-01", form="10-K"),  # 275 days
+    )
+    assert math.isnan(flow_ttm(facts, pd.Timestamp("2024-06-30")))
+
+
+def test_prior_ytd_start_must_match_within_seven_days() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-06-30", 230.0, start="2024-01-01"),
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+        _fact("Revenues", "2023-06-30", 200.0, start="2023-01-12"),  # 170 days, start +11
+    )
+    assert math.isnan(flow_ttm(facts, pd.Timestamp("2024-06-30")))
+
+
+def test_nearest_end_wins_among_matches_within_seven_days() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-06-30", 230.0, start="2024-01-01"),
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+        _fact("Revenues", "2023-06-25", 190.0, start="2023-01-01"),
+        _fact("Revenues", "2023-06-30", 200.0, start="2023-01-01"),
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-06-30")) == pytest.approx(430.0)
+
+
+def test_nearest_end_wins_for_ytd_and_fy_prior() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-06-26", 225.0, start="2024-01-01"),  # E - 4 days
+        _fact("Revenues", "2024-06-30", 230.0, start="2024-01-01"),
+        _fact("Revenues", "2023-12-27", 390.0, start="2023-01-05", form="10-K"),  # 4 days early
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+        _fact("Revenues", "2023-06-30", 200.0, start="2023-01-01"),
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-06-30")) == pytest.approx(430.0)
+
+
+def _fiscal_52_53_week_revenue() -> list[dict[str, Any]]:
+    """Apple-style fiscal years: 53-week FY2023 (371 days), 52-week FY2024 (364 days)."""
+    return [
+        _fact("Revenues", "2023-09-30", 383.0, start="2022-09-25", filed="2023-11-03", form="10-K"),
+        _fact("Revenues", "2022-12-31", 117.0, start="2022-09-25", filed="2023-02-03"),  # 98 d
+        _fact("Revenues", "2023-04-01", 212.0, start="2022-09-25", filed="2023-05-05"),  # 189 d
+        _fact("Revenues", "2023-07-01", 294.0, start="2022-09-25", filed="2023-08-04"),  # 280 d
+        _fact("Revenues", "2023-12-30", 120.0, start="2023-10-01", filed="2024-02-02"),  # 91 d
+        _fact("Revenues", "2024-03-30", 211.0, start="2023-10-01", filed="2024-05-03"),  # 182 d
+        _fact("Revenues", "2024-06-29", 297.0, start="2023-10-01", filed="2024-08-02"),  # 273 d
+        _fact("Revenues", "2024-09-28", 391.0, start="2023-10-01", filed="2024-11-01", form="10-K"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ("2023-12-30", 120.0 + 383.0 - 117.0),  # prior Q1 ends +1 day, starts -6 days
+        ("2024-03-30", 211.0 + 383.0 - 212.0),  # prior 6M ends +2 days
+        ("2024-06-29", 297.0 + 383.0 - 294.0),  # prior 9M ends +2 days
+        ("2024-09-28", 391.0),  # 52-week fiscal year end
+    ],
+)
+def test_ttm_with_52_53_week_fiscal_years(end: str, expected: float) -> None:
+    facts = _frame(*_fiscal_52_53_week_revenue())
+    assert flow_ttm(facts, pd.Timestamp(end)) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ("2024-03-31", 370.0),  # E' = 2023-03-31: Q1 100 + FY2022 360 - Q1 2022 90
+        ("2024-12-31", 400.0),  # E' = 2023-12-31: the FY2023 annual value
+    ],
+)
+def test_prior_year_ttm_is_the_same_computation_at_e_prime(end: str, expected: float) -> None:
+    facts = _frame(
+        *_calendar_revenue(),
+        _fact("Revenues", "2022-03-31", 90.0, start="2022-01-01", filed="2022-05-01"),
+    )
+    prior_end = prior_reference(facts, pd.Timestamp(end))
+    assert flow_ttm(facts, prior_end) == pytest.approx(expected)
+
+
+def test_tag_fallback_across_the_asc_606_switch() -> None:
+    facts = _frame(
+        _fact("SalesRevenueNet", "2017-12-31", 900.0, start="2017-01-01", form="10-K"),
+        _fact(
+            "RevenueFromContractWithCustomerExcludingAssessedTax",
+            "2018-12-31",
+            1000.0,
+            start="2018-01-01",
+            form="10-K",
+        ),
+    )
+    tags = _spec("revenue").tags
+    assert first_complete(facts, tags, pd.Timestamp("2018-12-31"), flow_ttm) == 1000.0
+    assert first_complete(facts, tags, pd.Timestamp("2017-12-31"), flow_ttm) == 900.0
+
+
+def test_first_tag_with_a_complete_value_wins() -> None:
+    facts = _frame(
+        *_calendar_revenue("SalesRevenueNet"),
+        _fact("Revenues", "2024-12-31", 777.0, start="2024-01-01", form="10-K"),
+    )
+    tags = _spec("revenue").tags
+    assert first_complete(facts, tags, pd.Timestamp("2024-12-31"), flow_ttm) == 777.0
+    # Revenues is incomplete at Q2, so the lower-priority tag supplies every piece.
+    value = first_complete(facts, tags, pd.Timestamp("2024-06-30"), flow_ttm)
+    assert value == pytest.approx(430.0)
+
+
+def test_ttm_pieces_never_mix_tags() -> None:
+    mixed = _frame(
+        _fact("Revenues", "2024-06-30", 230.0, start="2024-01-01"),
+        _fact("Revenues", "2023-06-30", 200.0, start="2023-01-01"),
+        _fact("SalesRevenueNet", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+    )
+    tags = _spec("revenue").tags
+    assert math.isnan(first_complete(mixed, tags, pd.Timestamp("2024-06-30"), flow_ttm))
+    complete_later_tag = pd.concat(
+        [mixed, _frame(*_calendar_revenue("RevenueFromContractWithCustomerExcludingAssessedTax"))],
+        ignore_index=True,
+    )
+    value = first_complete(complete_later_tag, tags, pd.Timestamp("2024-06-30"), flow_ttm)
+    assert value == pytest.approx(430.0)

@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date
 
 import numpy as np
 import pandas as pd
 
-from hedge_fund.engine.fundamentals.metrics import CURATED_TAGS, REPORT_FORMS, SHARES_DEI_TAG
+from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS
+from hedge_fund.engine.fundamentals.metrics import (
+    CURATED_TAGS,
+    METRICS,
+    REPORT_FORMS,
+    SHARES_DEI_TAG,
+)
 
 _VERSION_KEY = ["ticker", "tag", "start", "end"]
 
@@ -34,6 +41,34 @@ ONE_DAY = pd.Timedelta(days=1)
 _YTD_CLASSES = (NINE_MONTH, HALF_YEAR, QUARTER)  # longest first
 
 ValueAt = Callable[[pd.DataFrame, pd.Timestamp], float]
+
+MAX_STALENESS_DAYS = 200
+NO_FILINGS = "no_filings"
+NO_REFERENCE_PERIOD = "no_reference_period"
+STALE_FUNDAMENTALS = "stale_fundamentals"
+_SHARES_METRIC = "shares_outstanding"
+
+
+@dataclass(frozen=True)
+class TickerFundamentals:
+    """One resolved ticker: metrics at E and E′ plus (current_end, prior_end, last_filed)."""
+
+    current: Mapping[str, float]
+    prior: Mapping[str, float]
+    periods: tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]
+
+
+@dataclass(frozen=True)
+class Derived:
+    """Tickers x METRIC_NAMES frames at E and E′, tickers x PERIOD_COLUMNS dates, exclusions.
+
+    Indexes are sorted tickers; `unresolved` maps ticker -> reason, sorted by ticker.
+    """
+
+    current: pd.DataFrame
+    prior: pd.DataFrame
+    periods: pd.DataFrame
+    unresolved: Mapping[str, str]
 
 
 def pit_filter(facts: pd.DataFrame, as_of: date) -> pd.DataFrame:
@@ -194,6 +229,88 @@ def _cover_count(dei: pd.DataFrame) -> float:
         return math.nan
     values = dei.loc[dei["end"] == dei["end"].max(), "value"].unique()
     return float(values[0]) if len(values) == 1 else math.nan
+
+
+def metric_values(versioned: pd.DataFrame, end: pd.Timestamp) -> dict[str, float]:
+    """Every metric at `end` by the tag rule (shares: only the us-gaap fallback tag here).
+
+    Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
+    """
+    values: dict[str, float] = {}
+    for spec in METRICS:
+        value_at: ValueAt = flow_ttm if spec.kind == "flow" else stock_value
+        tags = [tag for tag in spec.tags if tag != SHARES_DEI_TAG]
+        values[spec.name] = first_complete(versioned, tags, end, value_at)
+    return values
+
+
+def derive_ticker(facts: pd.DataFrame, as_of: date) -> TickerFundamentals | str:
+    """One ticker's metrics at E and E′ as of `as_of`, or the reason it is unresolved.
+
+    Flow and stock values come from the version-selected frame; dei shares and `last_filed`
+    from the PIT-filtered frame before version selection. `E` older than
+    `as_of - MAX_STALENESS_DAYS` is stale; exactly at the limit is kept. Without an E′ the
+    prior metrics are all NaN.
+    """
+    visible = pit_filter(facts, as_of)
+    versioned = select_versions(visible)
+    end = reference_period(versioned)
+    if end is None:
+        return NO_REFERENCE_PERIOD
+    if end < pd.Timestamp(as_of) - pd.Timedelta(days=MAX_STALENESS_DAYS):
+        return STALE_FUNDAMENTALS
+    prior_end = prior_reference(versioned, end)
+    current = metric_values(versioned, end)
+    _prefer_dei_shares(current, current_shares(visible))
+    prior = dict.fromkeys(METRIC_NAMES, math.nan)
+    if not pd.isna(prior_end):
+        prior = metric_values(versioned, prior_end)
+        _prefer_dei_shares(prior, prior_shares(visible, prior_end))
+    return TickerFundamentals(
+        current=current, prior=prior, periods=(end, prior_end, last_filed(visible))
+    )
+
+
+def derive_fundamentals(facts: pd.DataFrame, tickers: Sequence[str], as_of: date) -> Derived:
+    """Derive every requested ticker from a multi-ticker facts frame.
+
+    Tickers without rows are `no_filings`; see derive_ticker for the other reasons. Duplicate
+    tickers count once.
+    """
+    by_ticker = dict(list(facts.reset_index(drop=True).groupby("ticker", sort=False)))
+    resolved: dict[str, TickerFundamentals] = {}
+    unresolved: dict[str, str] = {}
+    for ticker in dict.fromkeys(tickers):
+        group = by_ticker.get(ticker)
+        result = NO_FILINGS if group is None else derive_ticker(group, as_of)
+        if isinstance(result, str):
+            unresolved[ticker] = result
+        else:
+            resolved[ticker] = result
+    index = sorted(resolved)
+    return Derived(
+        current=_metric_frame([resolved[t].current for t in index], index),
+        prior=_metric_frame([resolved[t].prior for t in index], index),
+        periods=pd.DataFrame(
+            [list(resolved[t].periods) for t in index], index=index, columns=list(PERIOD_COLUMNS)
+        ).astype("datetime64[ns]"),
+        unresolved=dict(sorted(unresolved.items())),
+    )
+
+
+def _prefer_dei_shares(values: dict[str, float], dei_shares: float) -> None:
+    """The dei cover count wins; the us-gaap value stays only when no dei count qualifies."""
+    if not math.isnan(dei_shares):
+        values[_SHARES_METRIC] = dei_shares
+
+
+def _metric_frame(rows: list[Mapping[str, float]], index: list[str]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [[row[name] for name in METRIC_NAMES] for row in rows],
+        index=index,
+        columns=list(METRIC_NAMES),
+        dtype="float64",
+    )
 
 
 def _ytd(

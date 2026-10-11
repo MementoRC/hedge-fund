@@ -1,18 +1,24 @@
 """Tests for point-in-time fundamentals derivation (pure, hand-built facts)."""
 
 import math
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
 import pytest
 
+from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS
 from hedge_fund.engine.fundamentals.derive import (
     ANNUAL,
     HALF_YEAR,
+    MAX_STALENESS_DAYS,
     NINE_MONTH,
+    NO_FILINGS,
+    NO_REFERENCE_PERIOD,
     QUARTER,
+    STALE_FUNDAMENTALS,
     current_shares,
+    derive_fundamentals,
     duration_classes,
     first_complete,
     flow_ttm,
@@ -713,3 +719,169 @@ def test_us_gaap_shares_fallback_at_instant() -> None:
     assert first_complete(facts, tags, pd.Timestamp("2024-03-31"), stock_value) == 48.0
     assert first_complete(facts, tags, pd.Timestamp("2023-03-31"), stock_value) == 51.0
     assert math.isnan(first_complete(facts, tags, pd.Timestamp("2022-03-31"), stock_value))
+
+
+AS_OF = date(2024, 6, 1)
+
+
+def _history(ticker: str) -> list[dict[str, Any]]:
+    """Calendar-year filer: 10-K FY2022, 10-Q Q1 2023, 10-K FY2023, 10-Q Q1 2024."""
+
+    def fact(
+        tag: str, end: str, value: float, filing: str, filed: str, **kw: Any
+    ) -> dict[str, Any]:
+        form = "10-K" if filing.startswith("k") else "10-Q"
+        accn = f"{ticker}-{filing}"
+        return _fact(tag, end, value, filed=filed, form=form, accn=accn, ticker=ticker, **kw)
+
+    return [
+        fact("Revenues", "2022-12-31", 360.0, "k22", "2023-02-15", start="2022-01-01"),
+        fact("Assets", "2022-12-31", 900.0, "k22", "2023-02-15"),
+        fact(SHARES, "2023-02-01", 53.0, "k22", "2023-02-15"),
+        fact("Revenues", "2023-03-31", 100.0, "q123", "2023-05-01", start="2023-01-01"),
+        fact("Revenues", "2022-03-31", 90.0, "q123", "2023-05-01", start="2022-01-01"),
+        fact("Assets", "2023-03-31", 950.0, "q123", "2023-05-01"),
+        fact(SHARES, "2023-04-25", 52.0, "q123", "2023-05-01"),
+        fact("Revenues", "2023-12-31", 400.0, "k23", "2024-02-15", start="2023-01-01"),
+        fact("Assets", "2023-12-31", 1000.0, "k23", "2024-02-15"),
+        fact(SHARES, "2024-02-01", 50.0, "k23", "2024-02-15"),
+        fact("Revenues", "2024-03-31", 110.0, "q124", "2024-05-01", start="2024-01-01"),
+        fact("Revenues", "2023-03-31", 100.0, "q124", "2024-05-01", start="2023-01-01"),
+        fact("Assets", "2024-03-31", 1050.0, "q124", "2024-05-01"),
+        fact(SHARES, "2024-04-25", 49.0, "q124", "2024-05-01"),
+    ]
+
+
+def test_derive_fundamentals_computes_current_and_prior_metrics() -> None:
+    derived = derive_fundamentals(_frame(*_history("AAA")), ["AAA"], AS_OF)
+    current, prior, periods = derived.current.loc["AAA"], derived.prior.loc["AAA"], derived.periods
+    assert current["revenue"] == pytest.approx(410.0)  # 110 + 400 - 100
+    assert prior["revenue"] == pytest.approx(370.0)  # 100 + 360 - 90
+    assert current["total_assets"] == 1050.0
+    assert prior["total_assets"] == 950.0
+    assert current["shares_outstanding"] == 49.0
+    assert prior["shares_outstanding"] == 52.0
+    assert math.isnan(current["cash"])  # a missing metric leaves the ticker resolved
+    assert periods.loc["AAA"].tolist() == [
+        pd.Timestamp("2024-03-31"),
+        pd.Timestamp("2023-03-31"),
+        pd.Timestamp("2024-05-01"),
+    ]
+    assert derived.unresolved == {}
+
+
+def test_dei_shares_win_over_us_gaap_and_us_gaap_is_the_fallback() -> None:
+    both = [*_history("AAA"), _fact("CommonStockSharesOutstanding", "2024-03-31", 47.0)]
+    gaap_only = [row for row in _history("BBB") if row["tag"] != SHARES] + [
+        _fact("CommonStockSharesOutstanding", "2024-03-31", 48.0, ticker="BBB"),
+    ]
+    derived = derive_fundamentals(_frame(*both, *gaap_only), ["AAA", "BBB"], AS_OF)
+    assert derived.current.loc["AAA", "shares_outstanding"] == 49.0
+    assert derived.current.loc["BBB", "shares_outstanding"] == 48.0
+    assert math.isnan(derived.prior.loc["BBB", "shares_outstanding"])
+
+
+def test_ambiguous_dei_shares_fall_back_to_us_gaap() -> None:
+    facts = _frame(
+        *_history("AAA"),
+        _fact(SHARES, "2024-04-25", 9.0, accn="AAA-q124"),  # a second class, undimensioned
+        _fact("CommonStockSharesOutstanding", "2024-03-31", 47.0, accn="AAA-q124"),
+    )
+    derived = derive_fundamentals(facts, ["AAA"], AS_OF)
+    assert derived.current.loc["AAA", "shares_outstanding"] == 47.0
+
+
+def test_frames_are_sorted_typed_and_unresolved_is_reported() -> None:
+    near_only = [
+        row
+        for row in _history("CCC")
+        if row["accn"] == "CCC-q124" and row["tag"] != "us-gaap:Revenues"
+    ]
+    facts = pd.concat([_frame(*_history("AAA")), _frame(*near_only)])  # duplicate index labels
+    derived = derive_fundamentals(facts, ["ZZZ", "CCC", "AAA", "AAA"], AS_OF)
+    assert list(derived.current.index) == ["AAA", "CCC"]
+    assert list(derived.prior.index) == ["AAA", "CCC"]
+    assert list(derived.periods.index) == ["AAA", "CCC"]
+    assert list(derived.current.columns) == list(METRIC_NAMES)
+    assert list(derived.prior.columns) == list(METRIC_NAMES)
+    assert list(derived.periods.columns) == list(PERIOD_COLUMNS)
+    assert (derived.current.dtypes == "float64").all()
+    assert (derived.prior.dtypes == "float64").all()
+    assert (derived.periods.dtypes == "datetime64[ns]").all()
+    assert dict(derived.unresolved) == {"ZZZ": NO_FILINGS}
+    assert derived.prior.loc["CCC"].isna().all()
+    assert pd.isna(derived.periods.loc["CCC", "prior_end"])
+    assert derived.current.loc["CCC", "total_assets"] == 1050.0
+
+
+def test_prior_shares_see_the_filing_that_version_selection_discards() -> None:
+    # Without the Q1 2023 Assets fact, only Revenues ends at E' and q124 restates it, so the
+    # version-selected frame would credit E' to q124 (49) instead of its first reporter (52).
+    rows = [
+        row
+        for row in _history("AAA")
+        if not (row["tag"] == "us-gaap:Assets" and row["end"] == "2023-03-31")
+    ]
+    derived = derive_fundamentals(_frame(*rows), ["AAA"], AS_OF)
+    assert derived.prior.loc["AAA", "shares_outstanding"] == 52.0
+
+
+def test_values_use_the_latest_visible_restatement() -> None:
+    restated = _fact("Assets", "2024-03-31", 1060.0, filed="2024-05-15", form="10-Q/A")
+    derived = derive_fundamentals(_frame(*_history("AAA"), restated), ["AAA"], AS_OF)
+    assert derived.current.loc["AAA", "total_assets"] == 1060.0
+    assert derived.periods.loc["AAA", "last_filed"] == pd.Timestamp("2024-05-15")
+
+
+def test_last_filed_ignores_later_filings_and_uncurated_tags() -> None:
+    facts = _frame(
+        *_history("AAA"),
+        _fact("Assets", "2024-06-30", 1100.0, filed="2024-08-01"),
+        _fact("NotACuratedTag", "2024-03-31", 5.0, filed="2024-05-20"),
+    )
+    derived = derive_fundamentals(facts, ["AAA"], AS_OF)
+    assert derived.periods.loc["AAA"].tolist() == [
+        pd.Timestamp("2024-03-31"),
+        pd.Timestamp("2023-03-31"),
+        pd.Timestamp("2024-05-01"),
+    ]
+
+
+def test_no_visible_filing_is_no_reference_period() -> None:
+    derived = derive_fundamentals(_frame(*_history("AAA")), ["AAA"], date(2023, 2, 15))
+    assert dict(derived.unresolved) == {"AAA": NO_REFERENCE_PERIOD}
+    assert derived.current.empty
+
+
+def test_dei_only_filings_are_no_reference_period() -> None:
+    facts = _frame(_fact(SHARES, "2024-04-25", 49.0))
+    assert dict(derive_fundamentals(facts, ["AAA"], AS_OF).unresolved) == {
+        "AAA": NO_REFERENCE_PERIOD
+    }
+
+
+def test_staleness_boundary_keeps_exactly_max_days_and_drops_one_more() -> None:
+    facts = _frame(*_history("AAA"))
+    boundary = date(2024, 3, 31) + timedelta(days=MAX_STALENESS_DAYS)
+    kept = derive_fundamentals(facts, ["AAA"], boundary)
+    stale = derive_fundamentals(facts, ["AAA"], boundary + timedelta(days=1))
+    assert MAX_STALENESS_DAYS == 200
+    assert list(kept.current.index) == ["AAA"]
+    assert dict(kept.unresolved) == {}
+    assert dict(stale.unresolved) == {"AAA": STALE_FUNDAMENTALS}
+    assert stale.current.empty
+
+
+def test_all_unresolved_gives_empty_frames_with_the_contract_columns() -> None:
+    derived = derive_fundamentals(_frame(), ["AAA"], AS_OF)
+    assert derived.current.empty
+    assert derived.prior.empty
+    assert list(derived.current.columns) == list(METRIC_NAMES)
+    assert list(derived.prior.columns) == list(METRIC_NAMES)
+    assert list(derived.periods.columns) == list(PERIOD_COLUMNS)
+    assert dict(derived.unresolved) == {"AAA": NO_FILINGS}
+
+
+def test_unresolved_is_sorted_by_ticker() -> None:
+    derived = derive_fundamentals(_frame(*_history("AAA")), ["ZZZ", "AAA", "MMM"], AS_OF)
+    assert list(derived.unresolved) == ["MMM", "ZZZ"]

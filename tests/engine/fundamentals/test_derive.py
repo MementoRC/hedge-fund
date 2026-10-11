@@ -814,6 +814,16 @@ def test_frames_are_sorted_typed_and_unresolved_is_reported() -> None:
     assert derived.current.loc["CCC", "total_assets"] == 1050.0
 
 
+def test_prior_year_us_gaap_shares_are_the_fallback_when_dei_is_absent_at_e_prime() -> None:
+    rows = [
+        row for row in _history("AAA") if not (row["tag"] == SHARES and row["accn"] == "AAA-q123")
+    ]
+    rows.append(_fact("CommonStockSharesOutstanding", "2023-03-31", 51.0, accn="AAA-q123"))
+    derived = derive_fundamentals(_frame(*rows), ["AAA"], AS_OF)
+    assert derived.prior.loc["AAA", "shares_outstanding"] == 51.0
+    assert derived.current.loc["AAA", "shares_outstanding"] == 49.0
+
+
 def test_prior_shares_see_the_filing_that_version_selection_discards() -> None:
     # Without the Q1 2023 Assets fact, only Revenues ends at E' and q124 restates it, so the
     # version-selected frame would credit E' to q124 (49) instead of its first reporter (52).

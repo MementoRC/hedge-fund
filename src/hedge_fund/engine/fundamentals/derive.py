@@ -55,7 +55,7 @@ class TickerFundamentals:
 
     current: Mapping[str, float]
     prior: Mapping[str, float]
-    periods: tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp]
+    periods: tuple[pd.Timestamp, pd.Timestamp | pd.NaTType, pd.Timestamp]
 
 
 @dataclass(frozen=True)

@@ -4,8 +4,17 @@ from datetime import date
 from typing import Any
 
 import pandas as pd
+import pytest
 
-from hedge_fund.engine.fundamentals.derive import pit_filter, select_versions
+from hedge_fund.engine.fundamentals.derive import (
+    ANNUAL,
+    HALF_YEAR,
+    NINE_MONTH,
+    QUARTER,
+    duration_classes,
+    pit_filter,
+    select_versions,
+)
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts, empty_facts
 
 SHARES = "dei:EntityCommonStockSharesOutstanding"
@@ -125,3 +134,36 @@ def test_same_day_versions_break_ties_by_accession() -> None:
         _fact("Assets", "2023-12-31", 2.0, filed="2024-02-15", accn="0001-24-000001"),
     )
     assert select_versions(facts)["value"].tolist() == [1.0]
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"),
+    [
+        (79, ""),
+        (80, QUARTER),
+        (100, QUARTER),
+        (101, ""),
+        (169, ""),
+        (170, HALF_YEAR),
+        (190, HALF_YEAR),
+        (191, ""),
+        (259, ""),
+        (260, NINE_MONTH),
+        (280, NINE_MONTH),
+        (281, ""),
+        (349, ""),
+        (350, ANNUAL),
+        (371, ANNUAL),
+        (380, ANNUAL),
+        (381, ""),
+    ],
+)
+def test_duration_classes_by_inclusive_length(days: int, expected: str) -> None:
+    start = pd.Timestamp("2024-01-01")
+    end = start + pd.Timedelta(days=days - 1)
+    facts = _frame(_fact("Revenues", end.date().isoformat(), 1.0, start="2024-01-01"))
+    assert duration_classes(facts).tolist() == [expected]
+
+
+def test_instant_facts_have_no_duration_class() -> None:
+    assert duration_classes(_frame(_fact("Assets", "2024-03-31", 1.0))).tolist() == [""]

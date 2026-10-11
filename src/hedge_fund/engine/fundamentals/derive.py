@@ -7,13 +7,26 @@ NaT `start` for instant facts.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 from hedge_fund.engine.fundamentals.metrics import CURATED_TAGS, REPORT_FORMS
 
 _VERSION_KEY = ["ticker", "tag", "start", "end"]
+
+QUARTER = "quarter"
+HALF_YEAR = "half_year"
+NINE_MONTH = "nine_month"
+ANNUAL = "annual"
+DURATION_CLASSES: Mapping[str, tuple[int, int]] = {
+    QUARTER: (80, 100),
+    HALF_YEAR: (170, 190),
+    NINE_MONTH: (260, 280),
+    ANNUAL: (350, 380),
+}
 
 
 def pit_filter(facts: pd.DataFrame, as_of: date) -> pd.DataFrame:
@@ -42,3 +55,15 @@ def select_versions(facts: pd.DataFrame) -> pd.DataFrame:
     return latest.sort_values(["ticker", "tag", "end", "start"], kind="stable").reset_index(
         drop=True
     )
+
+
+def duration_classes(facts: pd.DataFrame) -> pd.Series:
+    """Duration class per fact by `end - start + 1` days; "" for instants and other lengths.
+
+    Quarter 80-100, half-year YTD 170-190, nine-month YTD 260-280, annual 350-380 days
+    (inclusive), so 52/53-week years (364/371 days) are annual.
+    """
+    days = (facts["end"] - facts["start"]).dt.days + 1
+    conditions = [days.between(low, high).to_numpy() for low, high in DURATION_CLASSES.values()]
+    labels = np.select(conditions, list(DURATION_CLASSES), default="")
+    return pd.Series(labels, index=facts.index, dtype="str")

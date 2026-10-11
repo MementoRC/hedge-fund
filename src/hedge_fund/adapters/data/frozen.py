@@ -126,8 +126,12 @@ def load_fundamentals(path: Path) -> FundamentalsSnapshot:
     columns = _fundamentals_columns(meta["metrics"], meta["periods"])
     combined = pd.read_parquet(parquet).set_axis(columns, axis=1)
     as_of = date.fromisoformat(meta["as_of"])
+    name_as_of, expected = parquet.stem.rsplit("_", 1)
+    if name_as_of != as_of.isoformat():
+        raise ValueError(
+            f"{parquet.name}: as_of mismatch, name has {name_as_of}, sidecar has {as_of}"
+        )
     actual = _fundamentals_digest(as_of, combined)
-    expected = parquet.stem.rsplit("_", 1)[-1]
     if actual != expected:
         raise ValueError(
             f"{parquet.name}: digest mismatch, name has {expected}, content is {actual}"

@@ -108,6 +108,35 @@ def test_load_rejects_tampered_parquet(tmp_path: Path) -> None:
         load_fundamentals(path)
 
 
+def test_load_rejects_a_renamed_date_prefix(tmp_path: Path) -> None:
+    path = save_fundamentals(make_fundamentals(), tmp_path)
+    renamed = path.with_name(path.name.replace("2026-09-30", "2026-08-31"))
+    path.rename(renamed)
+    path.with_suffix(".json").rename(renamed.with_suffix(".json"))
+    with pytest.raises(ValueError, match="as_of"):
+        load_fundamentals(renamed)
+
+
+def test_load_rejects_swapped_metric_names_in_sidecar(tmp_path: Path) -> None:
+    path = save_fundamentals(make_fundamentals(), tmp_path)
+    meta_path = path.with_suffix(".json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["metrics"][0], meta["metrics"][1] = meta["metrics"][1], meta["metrics"][0]
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match=path.name):
+        load_fundamentals(path)
+
+
+def test_load_rejects_edited_as_of_in_sidecar(tmp_path: Path) -> None:
+    path = save_fundamentals(make_fundamentals(), tmp_path)
+    meta_path = path.with_suffix(".json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["as_of"] = "2026-10-01"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match=path.name):
+        load_fundamentals(path)
+
+
 def test_resaving_a_loaded_snapshot_keeps_its_name(tmp_path: Path) -> None:
     path = save_fundamentals(make_fundamentals(), tmp_path)
     assert save_fundamentals(load_fundamentals(path), tmp_path / "copy").name == path.name

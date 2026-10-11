@@ -1,9 +1,11 @@
 """Tests for content-addressed frozen snapshot files."""
 
 import re
+from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from hedge_fund.adapters.data.frozen import load_snapshot, save_snapshot
@@ -12,6 +14,7 @@ from tests.factories import make_closes, snapshot_from
 from tests.fakes import assert_closes_equal
 
 SECTORS = {"AAA": "Energy", "BBB": "Energy", "CCC": "Financials"}
+SECTORS_AB = {"AAA": "Energy", "BBB": "Financials"}
 
 
 def _snapshot(scale: float = 1.0, sectors: dict[str, str] = SECTORS) -> PriceSnapshot:
@@ -68,6 +71,17 @@ def test_non_canonical_nan_and_negative_zero_hash_like_canonical(tmp_path: Path)
     first = save_snapshot(snapshot_from(canonical, SECTORS), tmp_path / "a")
     second = save_snapshot(snapshot_from(odd, SECTORS), tmp_path / "b")
     assert first.name == second.name
+
+
+def test_price_digest_is_pinned(tmp_path: Path) -> None:
+    # Changing the price digest orphans every existing frozen price snapshot: update this
+    # literal only with a deliberate migration.
+    closes = pd.DataFrame(
+        {"AAA": [10.0, np.nan, 12.5], "BBB": [-0.0, 20.25, 21.0]},
+        index=pd.to_datetime(["2026-09-28", "2026-09-29", "2026-09-30"]),
+    )
+    snapshot = PriceSnapshot(as_of=date(2026, 9, 30), closes=closes, sectors=SECTORS_AB)
+    assert save_snapshot(snapshot, tmp_path).name == "2026-09-30_baebe88ef290.parquet"
 
 
 def test_load_rejects_tampered_parquet(tmp_path: Path) -> None:

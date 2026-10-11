@@ -644,6 +644,66 @@ def test_prior_shares_are_nan_when_no_filing_reported_the_period() -> None:
     assert math.isnan(prior_shares(_share_history(), pd.Timestamp("2019-01-01")))
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_current_shares_same_day_filings_go_to_the_greater_accession(reverse: bool) -> None:
+    rows = [
+        _fact(SHARES, "2024-04-25", 49.0, accn="0001-24-000002"),
+        _fact(SHARES, "2024-04-25", 48.0, accn="0001-24-000001"),
+    ]
+    visible = _frame(*(reversed(rows) if reverse else rows))
+    assert current_shares(visible) == 49.0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_prior_shares_first_reporter_and_cover_date_ignore_row_order(reverse: bool) -> None:
+    rows = [
+        _fact("Assets", "2023-03-31", 1.0, filed="2023-05-01", accn="0001-23-000002"),
+        _fact(SHARES, "2023-04-25", 60.0, filed="2023-05-01", accn="0001-23-000002"),
+        _fact("Assets", "2023-03-31", 1.0, filed="2023-05-01", accn="0001-23-000001"),
+        _fact(SHARES, "2023-04-20", 51.0, filed="2023-05-01", accn="0001-23-000001"),
+        _fact(SHARES, "2023-04-25", 52.0, filed="2023-05-01", accn="0001-23-000001"),
+    ]
+    visible = _frame(*(reversed(rows) if reverse else rows))
+    assert prior_shares(visible, pd.Timestamp("2023-03-31")) == 52.0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_shares_use_the_later_cover_date_of_the_chosen_filing(reverse: bool) -> None:
+    rows = [
+        _fact("Assets", "2024-03-31", 1.0, accn="q1-24"),
+        _fact(SHARES, "2024-04-25", 49.0, accn="q1-24"),
+        _fact(SHARES, "2024-04-20", 47.0, accn="q1-24"),
+    ]
+    visible = _frame(*(reversed(rows) if reverse else rows))
+    assert current_shares(visible) == 49.0
+    assert prior_shares(visible, pd.Timestamp("2024-03-31")) == 49.0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_shares_are_nan_when_the_filing_has_distinct_counts_at_the_cover_date(
+    reverse: bool,
+) -> None:
+    rows = [
+        _fact("Assets", "2024-03-31", 1.0, accn="q1-24"),
+        _fact(SHARES, "2024-04-25", 40.0, accn="q1-24"),  # e.g. class A leaking in undimensioned
+        _fact(SHARES, "2024-04-25", 9.0, accn="q1-24"),  # class B
+        _fact(SHARES, "2024-04-20", 49.0, accn="q1-24"),  # earlier cover date: not a fallback
+    ]
+    visible = _frame(*(reversed(rows) if reverse else rows))
+    assert math.isnan(current_shares(visible))
+    assert math.isnan(prior_shares(visible, pd.Timestamp("2024-03-31")))
+
+
+def test_shares_identical_duplicate_counts_are_not_ambiguous() -> None:
+    visible = _frame(
+        _fact("Assets", "2024-03-31", 1.0, accn="q1-24"),
+        _fact(SHARES, "2024-04-25", 49.0, accn="q1-24"),
+        _fact(SHARES, "2024-04-25", 49.0, accn="q1-24"),
+    )
+    assert current_shares(visible) == 49.0
+    assert prior_shares(visible, pd.Timestamp("2024-03-31")) == 49.0
+
+
 def test_us_gaap_shares_fallback_at_instant() -> None:
     tags = [tag for tag in _spec("shares_outstanding").tags if tag != SHARES]
     facts = _frame(

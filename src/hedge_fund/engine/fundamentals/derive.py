@@ -158,13 +158,15 @@ def stock_value(facts: pd.DataFrame, end: pd.Timestamp) -> float:
 def current_shares(visible: pd.DataFrame) -> float:
     """Cover-page share count from the most recently filed report that carries one, else NaN.
 
-    Precondition: `visible` holds one ticker's facts after `pit_filter`. Ties on `filed` go
-    to the later cover date.
+    Precondition: `visible` holds one ticker's facts after `pit_filter`. The filing is the dei
+    fact with the greatest (`filed`, `end`, `accn`), so ties on `filed` go to the later cover
+    date, then the greater accession, in any row order. See `_cover_count` for the value.
     """
     dei = visible.loc[visible["tag"] == SHARES_DEI_TAG]
     if dei.empty:
         return math.nan
-    return float(dei.sort_values(["filed", "end"], kind="stable").iloc[-1]["value"])
+    accn = dei.sort_values(["filed", "end", "accn"], kind="stable").iloc[-1]["accn"]
+    return _cover_count(dei.loc[dei["accn"] == accn])
 
 
 def prior_shares(visible: pd.DataFrame, prior_end: pd.Timestamp) -> float:
@@ -172,16 +174,26 @@ def prior_shares(visible: pd.DataFrame, prior_end: pd.Timestamp) -> float:
 
     The first reporter is the smallest (`filed`, `accn`) among non-dei facts ending exactly at
     `prior_end`. Precondition: `visible` is one ticker's PIT-filtered frame before version
-    selection, which would otherwise discard that earlier filing's accession number.
+    selection, which would otherwise discard that earlier filing's accession number. See
+    `_cover_count` for the value.
     """
     reporting = visible.loc[(visible["end"] == prior_end) & _non_dei(visible)]
     if reporting.empty:
         return math.nan
     accn = reporting.sort_values(["filed", "accn"], kind="stable").iloc[0]["accn"]
-    dei = visible.loc[(visible["tag"] == SHARES_DEI_TAG) & (visible["accn"] == accn)]
+    return _cover_count(visible.loc[(visible["tag"] == SHARES_DEI_TAG) & (visible["accn"] == accn)])
+
+
+def _cover_count(dei: pd.DataFrame) -> float:
+    """One filing's dei share count at its latest cover date; NaN if none or ambiguous.
+
+    More than one distinct value at that date (e.g. per-class counts reported undimensioned)
+    gives NaN rather than an arbitrary pick; identical duplicates are one value.
+    """
     if dei.empty:
         return math.nan
-    return float(dei.sort_values("end", kind="stable").iloc[-1]["value"])
+    values = dei.loc[dei["end"] == dei["end"].max(), "value"].unique()
+    return float(values[0]) if len(values) == 1 else math.nan
 
 
 def _ytd(

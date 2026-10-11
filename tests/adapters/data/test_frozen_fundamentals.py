@@ -2,6 +2,7 @@
 
 import json
 import re
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -135,6 +136,29 @@ def test_load_rejects_edited_as_of_in_sidecar(tmp_path: Path) -> None:
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
     with pytest.raises(ValueError, match=path.name):
         load_fundamentals(path)
+
+
+def test_fundamentals_digest_is_pinned(tmp_path: Path) -> None:
+    # Changing the fundamentals digest orphans every existing frozen fundamentals snapshot:
+    # update this literal only with a deliberate migration.
+    tickers = pd.Index(["AAA", "BBB"])
+    values = np.arange(2 * len(METRIC_NAMES), dtype="float64").reshape(2, -1) * 1.5 + 1.0
+    current = pd.DataFrame(values, index=tickers, columns=list(METRIC_NAMES))
+    prior = current * 0.5
+    current.iloc[0, 0] = np.nan
+    prior.iloc[1, 1] = -0.0
+    periods = pd.DataFrame(
+        {
+            "current_end": pd.to_datetime(["2026-06-30", "2026-06-30"]),
+            "prior_end": pd.to_datetime(["2025-06-30", None]),
+            "last_filed": pd.to_datetime(["2026-08-01", "2026-08-02"]),
+        },
+        index=tickers,
+    )
+    snapshot = FundamentalsSnapshot(
+        as_of=date(2026, 9, 30), current=current, prior=prior, periods=periods
+    )
+    assert save_fundamentals(snapshot, tmp_path).name == "2026-09-30_7a62b8064c4d.parquet"
 
 
 def test_resaving_a_loaded_snapshot_keeps_its_name(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ import pytest
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
 from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
 from hedge_fund.adapters.data.fundamentals_caching import CachingFundamentalsProvider
+from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.universe import load_universe
 from tests.factories import make_facts
 from tests.fakes import FakeFundamentalsProvider, FakeProvider, assert_closes_equal
@@ -65,6 +66,14 @@ def test_default_fundamentals_vendor_is_edgar_with_universe_ciks(
     assert isinstance(provider, CachingFundamentalsProvider)
     assert isinstance(provider._inner, EdgarProvider)
     assert provider._inner._ciks == dict(load_universe("sp500").ciks)
+
+
+def test_default_fundamentals_provider_requires_sec_user_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    with pytest.raises(FundamentalsProviderError, match="SEC_USER_AGENT"):
+        default_fundamentals_provider(tmp_path)
 
 
 def test_default_fundamentals_provider_rejects_unknown_universe(tmp_path: Path) -> None:

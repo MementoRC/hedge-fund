@@ -12,14 +12,17 @@ from hedge_fund.engine.fundamentals.derive import (
     HALF_YEAR,
     NINE_MONTH,
     QUARTER,
+    current_shares,
     duration_classes,
     first_complete,
     flow_ttm,
     last_filed,
     pit_filter,
     prior_reference,
+    prior_shares,
     reference_period,
     select_versions,
+    stock_value,
 )
 from hedge_fund.engine.fundamentals.metrics import METRICS, MetricSpec
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts, empty_facts
@@ -529,3 +532,124 @@ def test_ttm_pieces_never_mix_tags() -> None:
     )
     value = first_complete(complete_later_tag, tags, pd.Timestamp("2024-06-30"), flow_ttm)
     assert value == pytest.approx(430.0)
+
+
+def test_stock_value_at_instant_within_seven_days() -> None:
+    facts = _frame(
+        _fact("Assets", "2024-03-30", 1050.0),
+        _fact("Assets", "2023-12-31", 1000.0, filed="2024-02-15", form="10-K"),
+    )
+    assert stock_value(facts, pd.Timestamp("2024-03-31")) == 1050.0
+    assert stock_value(facts, pd.Timestamp("2023-12-31")) == 1000.0
+    assert math.isnan(stock_value(facts, pd.Timestamp("2024-06-30")))
+
+
+def test_stock_value_ignores_duration_facts() -> None:
+    facts = _frame(_fact("Assets", "2024-03-31", 5.0, start="2024-01-01"))
+    assert math.isnan(stock_value(facts, pd.Timestamp("2024-03-31")))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_stock_value_nearest_instant_wins_and_ties_prefer_the_earlier_end(reverse: bool) -> None:
+    rows = [
+        _fact("Assets", "2024-03-26", 1.0),  # E - 5 days
+        _fact("Assets", "2024-03-28", 2.0),  # E - 3 days: tie with E + 3, earlier wins
+        _fact("Assets", "2024-04-03", 3.0),  # E + 3 days
+    ]
+    facts = _frame(*(reversed(rows) if reverse else rows))
+    assert stock_value(facts, pd.Timestamp("2024-03-31")) == 2.0
+    assert stock_value(facts, pd.Timestamp("2024-03-25")) == 1.0
+
+
+def test_stock_fallback_tag_is_used_per_reference_period() -> None:
+    facts = _frame(
+        _fact("DebtCurrent", "2024-03-31", 70.0),
+        _fact("LongTermDebtCurrent", "2023-12-31", 50.0, filed="2024-02-15", form="10-K"),
+    )
+    tags = _spec("debt_current").tags
+    assert first_complete(facts, tags, pd.Timestamp("2024-03-31"), stock_value) == 70.0
+    assert first_complete(facts, tags, pd.Timestamp("2023-12-31"), stock_value) == 50.0
+
+
+def test_first_stock_tag_in_priority_order_with_a_value_wins() -> None:
+    facts = _frame(
+        _fact("DebtCurrent", "2024-03-31", 70.0),
+        _fact("LongTermDebtCurrent", "2024-03-29", 50.0),
+    )
+    tags = _spec("debt_current").tags
+    assert first_complete(facts, tags, pd.Timestamp("2024-03-31"), stock_value) == 50.0
+
+
+def _share_history() -> pd.DataFrame:
+    """Q1 2023 first reported in accn q1-23, then repeated (and versioned) by q1-24."""
+    return _frame(
+        _fact(
+            "Revenues", "2023-03-31", 100.0, start="2023-01-01", filed="2023-05-01", accn="q1-23"
+        ),
+        _fact(SHARES, "2023-04-25", 52.0, filed="2023-05-01", accn="q1-23"),
+        _fact(
+            "Revenues", "2023-03-31", 100.0, start="2023-01-01", filed="2024-05-01", accn="q1-24"
+        ),
+        _fact(
+            "Revenues", "2024-03-31", 110.0, start="2024-01-01", filed="2024-05-01", accn="q1-24"
+        ),
+        _fact(SHARES, "2024-04-25", 49.0, filed="2024-05-01", accn="q1-24"),
+    )
+
+
+def test_current_shares_come_from_the_latest_filing_with_a_cover_count() -> None:
+    assert current_shares(_share_history()) == 49.0
+
+
+def test_current_shares_ignore_a_filing_made_on_as_of() -> None:
+    assert current_shares(pit_filter(_share_history(), date(2024, 5, 1))) == 52.0
+
+
+def test_current_shares_are_chosen_by_filing_date_not_cover_date() -> None:
+    visible = pd.concat(
+        [
+            _share_history(),
+            _frame(_fact(SHARES, "2024-02-01", 47.0, filed="2024-06-01", form="10-K/A")),
+        ],
+        ignore_index=True,
+    )
+    assert current_shares(visible) == 47.0
+
+
+def test_prior_shares_come_from_the_filing_that_first_reported_prior_end() -> None:
+    visible = _share_history()
+    assert prior_shares(visible, pd.Timestamp("2023-03-31")) == 52.0
+    versioned = select_versions(visible)
+    discarded = versioned.loc[versioned["end"] == pd.Timestamp("2023-03-31"), "accn"]
+    assert discarded.tolist() == ["q1-24"]  # version selection alone would lose q1-23
+
+
+def test_shares_are_nan_without_a_dei_fact() -> None:
+    visible = _frame(_fact("Revenues", "2024-03-31", 110.0, start="2024-01-01"))
+    assert math.isnan(current_shares(visible))
+    assert math.isnan(prior_shares(visible, pd.Timestamp("2024-03-31")))
+
+
+def test_prior_shares_are_nan_when_the_reporting_filing_has_no_cover_count() -> None:
+    visible = _frame(
+        _fact(
+            "Revenues", "2023-03-31", 100.0, start="2023-01-01", filed="2023-05-01", accn="q1-23"
+        ),
+        _fact(SHARES, "2023-02-01", 53.0, filed="2023-02-15", form="10-K", accn="k22"),
+    )
+    assert math.isnan(prior_shares(visible, pd.Timestamp("2023-03-31")))
+
+
+def test_prior_shares_are_nan_when_no_filing_reported_the_period() -> None:
+    assert math.isnan(prior_shares(_share_history(), pd.Timestamp("2019-01-01")))
+
+
+def test_us_gaap_shares_fallback_at_instant() -> None:
+    tags = [tag for tag in _spec("shares_outstanding").tags if tag != SHARES]
+    facts = _frame(
+        _fact("CommonStockSharesOutstanding", "2024-03-31", 48.0),
+        _fact("CommonStockSharesOutstanding", "2023-03-31", 51.0, filed="2023-05-01"),
+    )
+    assert first_complete(facts, tags, pd.Timestamp("2024-03-31"), stock_value) == 48.0
+    assert first_complete(facts, tags, pd.Timestamp("2023-03-31"), stock_value) == 51.0
+    assert math.isnan(first_complete(facts, tags, pd.Timestamp("2022-03-31"), stock_value))

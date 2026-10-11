@@ -14,7 +14,7 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
-from hedge_fund.engine.fundamentals.metrics import CURATED_TAGS, REPORT_FORMS
+from hedge_fund.engine.fundamentals.metrics import CURATED_TAGS, REPORT_FORMS, SHARES_DEI_TAG
 
 _VERSION_KEY = ["ticker", "tag", "start", "end"]
 
@@ -147,6 +147,41 @@ def first_complete(
         if not math.isnan(value):
             return value
     return math.nan
+
+
+def stock_value(facts: pd.DataFrame, end: pd.Timestamp) -> float:
+    """Instant value nearest `end` (±7 days) from ONE tag's versioned facts, else NaN."""
+    hit = _nearest(facts.loc[facts["start"].isna()], "end", end)
+    return math.nan if hit is None else float(hit["value"])
+
+
+def current_shares(visible: pd.DataFrame) -> float:
+    """Cover-page share count from the most recently filed report that carries one, else NaN.
+
+    Precondition: `visible` holds one ticker's facts after `pit_filter`. Ties on `filed` go
+    to the later cover date.
+    """
+    dei = visible.loc[visible["tag"] == SHARES_DEI_TAG]
+    if dei.empty:
+        return math.nan
+    return float(dei.sort_values(["filed", "end"], kind="stable").iloc[-1]["value"])
+
+
+def prior_shares(visible: pd.DataFrame, prior_end: pd.Timestamp) -> float:
+    """Cover-page share count of the filing that first reported `prior_end`, else NaN.
+
+    The first reporter is the smallest (`filed`, `accn`) among non-dei facts ending exactly at
+    `prior_end`. Precondition: `visible` is one ticker's PIT-filtered frame before version
+    selection, which would otherwise discard that earlier filing's accession number.
+    """
+    reporting = visible.loc[(visible["end"] == prior_end) & _non_dei(visible)]
+    if reporting.empty:
+        return math.nan
+    accn = reporting.sort_values(["filed", "accn"], kind="stable").iloc[0]["accn"]
+    dei = visible.loc[(visible["tag"] == SHARES_DEI_TAG) & (visible["accn"] == accn)]
+    if dei.empty:
+        return math.nan
+    return float(dei.sort_values("end", kind="stable").iloc[-1]["value"])
 
 
 def _ytd(

@@ -55,6 +55,41 @@ def test_coerce_facts_orders_columns_drops_extras_and_casts() -> None:
     assert facts["filed"].dtype == "datetime64[ns]"
 
 
+def _one_row() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "ticker": ["AAA"],
+            "tag": ["us-gaap:Assets"],
+            "start": [None],
+            "end": ["2024-03-31"],
+            "value": [1.0],
+            "filed": ["2024-05-01"],
+            "form": ["10-Q"],
+            "accn": ["0001-24-000001"],
+        }
+    )
+
+
+@pytest.mark.parametrize("null", [None, float("nan")])
+@pytest.mark.parametrize("column", ["ticker", "tag", "form", "accn"])
+def test_coerce_facts_rejects_missing_text_values(column: str, null: object) -> None:
+    raw = _one_row()
+    raw[column] = [null]
+    with pytest.raises(ValueError, match=column):
+        coerce_facts(raw)
+
+
+def test_coerce_facts_mixed_null_starts_keep_order_and_dtypes() -> None:
+    raw = pd.concat([_one_row()] * 3, ignore_index=True)
+    raw["ticker"] = ["A", "B", "C"]
+    raw["start"] = [pd.NaT, "2024-01-01", None]
+    facts = coerce_facts(raw)
+    assert facts["ticker"].tolist() == ["A", "B", "C"]
+    assert facts["start"].isna().tolist() == [True, False, True]
+    assert facts["start"].dtype == "datetime64[ns]"
+    assert facts["value"].dtype == "float64"
+
+
 def test_coerce_facts_rejects_missing_columns() -> None:
     with pytest.raises(ValueError, match="accn"):
         coerce_facts(empty_facts().drop(columns=["accn"]))

@@ -42,6 +42,8 @@ def coerce_facts(frame: pd.DataFrame) -> pd.DataFrame:
         facts[column] = pd.to_datetime(facts[column]).astype("datetime64[ns]")
     facts["value"] = facts["value"].astype("float64")
     for column in _TEXT_COLUMNS:
+        if facts[column].isna().any():
+            raise ValueError(f"facts column {column!r} has missing values")
         facts[column] = facts[column].astype("str")
     return facts.reset_index(drop=True)
 

@@ -45,7 +45,7 @@ def build_snapshot(
     sector but no prices stay as all-NaN columns (the factor engine excludes them as
     insufficient_history) and are also reported in `unresolved` as "no_prices".
     """
-    requested = _normalize(tickers)
+    requested = normalize_tickers(tickers)
     if not requested:
         raise ValueError("no tickers requested")
     closes = provider.closes(requested, as_of - _calendar_window(lookback), as_of)
@@ -69,7 +69,7 @@ def build_snapshot(
     )
 
 
-def _normalize(tickers: Sequence[str]) -> list[str]:
+def normalize_tickers(tickers: Sequence[str]) -> list[str]:
     """Strip, upper-case and de-duplicate, keeping first occurrence order."""
     seen: dict[str, None] = {}
     for raw in tickers:

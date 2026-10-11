@@ -5,10 +5,13 @@ import pytest
 
 from hedge_fund.ports.fundamentals import (
     FACT_COLUMNS,
+    FundamentalsProvider,
     FundamentalsProviderError,
     coerce_facts,
     empty_facts,
 )
+from tests.factories import make_facts
+from tests.fakes import FakeFundamentalsProvider
 
 
 def test_fundamentals_provider_error_is_an_exception() -> None:
@@ -93,3 +96,10 @@ def test_coerce_facts_mixed_null_starts_keep_order_and_dtypes() -> None:
 def test_coerce_facts_rejects_missing_columns() -> None:
     with pytest.raises(ValueError, match="accn"):
         coerce_facts(empty_facts().drop(columns=["accn"]))
+
+
+def test_fake_fundamentals_provider_satisfies_the_port() -> None:
+    provider: FundamentalsProvider = FakeFundamentalsProvider(make_facts(["AAA", "BBB"]))
+    facts = provider.facts(["BBB"])
+    assert set(facts["ticker"]) == {"BBB"}
+    assert tuple(facts.columns) == FACT_COLUMNS

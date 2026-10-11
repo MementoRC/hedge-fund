@@ -272,6 +272,12 @@ def test_non_list_unit_entries_raise_provider_error() -> None:
         _provider(FakeGet(FakeResponse(200, payload))).facts(["AAA"])
 
 
+@pytest.mark.parametrize("cik", [None, 320193, b"0000320193"])
+def test_non_string_cik_rejected_at_construction(cik: Any) -> None:
+    with pytest.raises(FundamentalsProviderError, match="AAA"):
+        _provider(FakeGet(), ciks={"AAA": cik})
+
+
 @pytest.mark.parametrize("cik", ["../x", "1?x", "123", "００００００００００", "0000320193\n"])
 def test_invalid_cik_rejected_at_construction_without_request(cik: str) -> None:
     get = FakeGet()

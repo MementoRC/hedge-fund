@@ -26,9 +26,11 @@ class CachingFundamentalsProvider:
 
     Each ticker has fundamentals/<TICKER>.parquet (its facts) plus <TICKER>.json holding
     {"fetched": ISO time, "tags_hash": hash of the curated tag list}. An entry is fresh while
-    clock() - fetched < ttl and its tags_hash matches TAGS_HASH; otherwise the whole entry is
-    refetched and replaced. EDGAR facts are append-only, so there is no date-range logic.
-    Empty results are not cached. Unreadable entries count as misses and are overwritten.
+    timedelta(0) <= clock() - fetched < ttl and its tags_hash matches TAGS_HASH; otherwise the
+    whole entry is refetched and replaced. EDGAR facts are append-only, so there is no
+    date-range logic. Empty results are not cached. Unreadable entries (including future-dated
+    or timezone-less ones) count as misses and are overwritten. Rows the inner provider returns
+    for tickers that were not requested are dropped.
     Duplicate CIKs across tickers (GOOG/GOOGL) simply get one entry per ticker.
     """
 
@@ -84,8 +86,9 @@ class CachingFundamentalsProvider:
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             fetched = datetime.fromisoformat(meta["fetched"])
-            if meta["tags_hash"] != TAGS_HASH or self._clock() - fetched >= self._ttl:
-                return None
+            age = self._clock() - fetched  # naive fetched raises TypeError: a miss
+            if meta["tags_hash"] != TAGS_HASH or not timedelta(0) <= age < self._ttl:
+                return None  # stale, or dated in the clock's future
             return coerce_facts(pd.read_parquet(parquet))
         except (OSError, ValueError, KeyError, TypeError):
             return None  # corrupt cache files count as a miss and are overwritten on refetch

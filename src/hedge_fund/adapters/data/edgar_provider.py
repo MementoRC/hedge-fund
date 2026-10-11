@@ -50,9 +50,9 @@ class EdgarProvider:
                 f"{USER_AGENT_ENV} is not set; SEC requires a User-Agent like 'Name email@host'"
             )
         for ticker, cik in ciks.items():
-            if not _CIK.fullmatch(cik):
+            if not isinstance(cik, str) or not _CIK.fullmatch(cik):
                 raise FundamentalsProviderError(
-                    f"invalid CIK for {ticker!r}: {cik[:20]!r} (expected 10 digits)"
+                    f"invalid CIK for {ticker!r}: {str(cik)[:20]!r} (expected 10 digits)"
                 )
         self._ciks = dict(ciks)
         self._headers = {"User-Agent": agent}

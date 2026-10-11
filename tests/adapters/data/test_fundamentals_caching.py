@@ -86,6 +86,26 @@ def test_tags_hash_mismatch_is_a_miss(tmp_path: Path) -> None:
     assert _meta(tmp_path, "AAA")["tags_hash"] == TAGS_HASH
 
 
+def test_future_dated_entry_is_a_miss_and_is_overwritten(tmp_path: Path) -> None:
+    fake = FakeFundamentalsProvider(make_facts(["AAA"]))
+    _cache(fake, tmp_path).facts(["AAA"])
+    earlier = NOW - timedelta(hours=1)  # the cached entry now lies in the clock's future
+    _cache(fake, tmp_path, earlier).facts(["AAA"])
+    assert len(fake.calls) == 2
+    assert _meta(tmp_path, "AAA")["fetched"] == earlier.isoformat()
+
+
+def test_naive_fetched_time_is_a_miss_and_is_overwritten(tmp_path: Path) -> None:
+    fake = FakeFundamentalsProvider(make_facts(["AAA"]))
+    _cache(fake, tmp_path).facts(["AAA"])
+    meta = tmp_path / "fundamentals" / "AAA.json"
+    naive = {"fetched": "2026-10-11T12:00:00", "tags_hash": TAGS_HASH}
+    meta.write_text(json.dumps(naive), encoding="utf-8")
+    _cache(fake, tmp_path).facts(["AAA"])
+    assert len(fake.calls) == 2
+    assert _meta(tmp_path, "AAA")["fetched"] == NOW.isoformat()
+
+
 @pytest.mark.parametrize("name", ["AAA.parquet", "AAA.json"])
 def test_corrupt_entry_self_heals(tmp_path: Path, name: str) -> None:
     facts = make_facts(["AAA"])

@@ -29,6 +29,7 @@ def test_nan_metrics_and_nat_prior_end_are_allowed() -> None:
     periods = base.periods.copy()
     periods.loc["AAA", "prior_end"] = pd.NaT
     snapshot = _build(current=current, periods=periods)
+    assert pd.isna(snapshot.current.iloc[0, 0])
     assert pd.isna(snapshot.periods.loc["AAA", "prior_end"])
 
 
@@ -36,6 +37,15 @@ def test_nan_metrics_and_nat_prior_end_are_allowed() -> None:
 def test_empty_frame_is_rejected(name: str) -> None:
     frame = getattr(make_fundamentals(), name).iloc[0:0]
     with pytest.raises(ValueError, match=f"{name} is empty"):
+        _build(**{name: frame})
+
+
+@pytest.mark.parametrize("bad", ["n/a", object()])
+@pytest.mark.parametrize("name", ["current", "prior"])
+def test_non_numeric_metric_frame_is_rejected(name: str, bad: object) -> None:
+    frame = getattr(make_fundamentals(), name).astype(object)
+    frame.iloc[0, 0] = bad
+    with pytest.raises(ValueError, match="numeric"):
         _build(**{name: frame})
 
 

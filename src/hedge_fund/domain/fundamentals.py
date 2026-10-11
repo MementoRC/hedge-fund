@@ -55,14 +55,17 @@ class FundamentalsSnapshot:
         _check_index(self.current.index, self.prior.index, self.periods.index)
         for name in ("current", "prior"):
             if list(frames[name].columns) != list(METRIC_NAMES):
-                raise ValueError(f"{name} columns must be the METRICS names, in order")
+                raise ValueError(f"{name} columns must be METRIC_NAMES, in order")
         if list(self.periods.columns) != list(PERIOD_COLUMNS):
             raise ValueError(f"periods columns must be {list(PERIOD_COLUMNS)}")
         if not all(pd.api.types.is_datetime64_dtype(dtype) for dtype in self.periods.dtypes):
             raise ValueError("periods must be datetime64")
-        metrics = np.concatenate(
-            [self.current.to_numpy(dtype="float64"), self.prior.to_numpy(dtype="float64")]
-        )
+        try:
+            metrics = np.concatenate(
+                [self.current.to_numpy(dtype="float64"), self.prior.to_numpy(dtype="float64")]
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("current and prior must be numeric") from error
         if np.isinf(metrics).any():
             raise ValueError("metric values must be finite or NaN, not inf")
 

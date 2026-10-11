@@ -1,10 +1,12 @@
 """Tests for build_fundamentals_snapshot: provider facts to a validated FundamentalsSnapshot."""
 
+from collections.abc import Sequence
 from datetime import date
 
 import pandas as pd
 import pytest
 
+from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from tests.factories import make_facts
 from tests.fakes import FakeFundamentalsProvider
@@ -77,6 +79,15 @@ def test_no_ticker_with_a_cik_skips_the_provider_and_raises() -> None:
     with pytest.raises(ValueError, match="no fundamentals"):
         build_fundamentals_snapshot(fake, ["NOCIK"], AS_OF, ciks=CIKS)
     assert fake.calls == []
+
+
+def test_provider_error_propagates() -> None:
+    class RaisingProvider:
+        def facts(self, tickers: Sequence[str]) -> pd.DataFrame:
+            raise FundamentalsProviderError("boom")
+
+    with pytest.raises(FundamentalsProviderError, match="boom"):
+        build_fundamentals_snapshot(RaisingProvider(), ["AAA"], AS_OF, ciks=CIKS)
 
 
 def test_empty_ticker_list_raises() -> None:

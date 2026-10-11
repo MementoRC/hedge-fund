@@ -1,12 +1,19 @@
 """Tests for ticker universes: parsing and the shipped S&P 500 file."""
 
 from datetime import date
+from types import MappingProxyType
 
 import pytest
 
-from hedge_fund.universe import GICS_SECTORS, load_universe, parse_universe
+from hedge_fund.universe import GICS_SECTORS, Universe, load_universe, parse_universe
 
 VALID = "# list_date: 2026-10-01\nticker,gics_sector\nAAA,Energy\nBRK-B,Financials\n"
+VALID_WITH_CIK = (
+    "# list_date: 2026-10-01\n"
+    "ticker,gics_sector,cik\n"
+    "AAPL,Information Technology,0000320193\n"
+    "NEWCO,Energy,\n"
+)
 
 
 def test_parse_universe_reads_list_date_tickers_and_sectors() -> None:
@@ -62,3 +69,39 @@ def test_shipped_sp500_is_well_formed() -> None:
 def test_unknown_universe_raises(name: str) -> None:
     with pytest.raises(ValueError, match="unknown universe"):
         load_universe(name)
+
+
+def test_parse_universe_reads_cik_column_and_omits_empty_cells() -> None:
+    universe = parse_universe("demo", VALID_WITH_CIK)
+    assert universe.tickers == ("AAPL", "NEWCO")
+    assert dict(universe.sectors) == {"AAPL": "Information Technology", "NEWCO": "Energy"}
+    assert dict(universe.ciks) == {"AAPL": "0000320193"}
+    assert isinstance(universe.ciks, MappingProxyType)
+
+
+def test_two_column_universe_has_no_ciks() -> None:
+    assert dict(parse_universe("demo", VALID).ciks) == {}
+
+
+def test_universe_ciks_default_to_an_empty_read_only_mapping() -> None:
+    universe = Universe(
+        name="demo",
+        list_date=date(2026, 10, 1),
+        tickers=("AAA",),
+        sectors=MappingProxyType({"AAA": "Energy"}),
+    )
+    assert isinstance(universe.ciks, MappingProxyType)
+    assert dict(universe.ciks) == {}
+
+
+@pytest.mark.parametrize("cik", ["320193", "00003201930", "000032019A", "٠" * 10])
+def test_parse_universe_rejects_malformed_cik(cik: str) -> None:
+    text = f"# list_date: 2026-10-01\nticker,gics_sector,cik\nAAPL,Information Technology,{cik}\n"
+    with pytest.raises(ValueError, match=r"universe 'demo'.*cik"):
+        parse_universe("demo", text)
+
+
+def test_three_column_row_missing_the_cik_column_is_rejected() -> None:
+    text = "# list_date: 2026-10-01\nticker,gics_sector,cik\nAAPL,Information Technology\n"
+    with pytest.raises(ValueError, match=r"universe 'demo'.*line 3"):
+        parse_universe("demo", text)

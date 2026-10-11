@@ -139,6 +139,7 @@ def first_complete(
 ) -> float:
     """Value from the first tag, in order, that yields a complete value at `end`, else NaN.
 
+    Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
     `value_at` sees one tag's facts only, so the pieces of one value never mix tags.
     """
     for tag in tags:
@@ -172,11 +173,14 @@ def _non_dei(facts: pd.DataFrame) -> pd.Series:
 def _nearest(frame: pd.DataFrame, column: str, target: pd.Timestamp) -> pd.Series | None:
     """Row whose `column` is nearest `target` within TOLERANCE, or None.
 
-    Equal distances keep frame order, so with frames sorted by date the earlier date wins.
+    Candidates are sorted by (distance, `column`, then the remaining columns), so an equal
+    distance goes to the earlier date and the result never depends on input row order.
     """
     distance = (frame[column] - target).abs()
-    within = distance[distance <= TOLERANCE]
-    if within.empty:
+    mask = (distance <= TOLERANCE).to_numpy()
+    if not mask.any():
         return None
-    row: pd.Series = frame.loc[within.sort_values(kind="stable").index[0]]
+    candidates = frame.loc[mask].assign(_distance=distance.to_numpy()[mask])
+    keys = ["_distance", column, *(name for name in frame.columns if name != column)]
+    row: pd.Series = candidates.sort_values(keys, kind="stable").iloc[0].drop("_distance")
     return row

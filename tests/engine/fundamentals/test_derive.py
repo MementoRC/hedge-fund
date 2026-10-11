@@ -391,6 +391,58 @@ def test_nearest_end_wins_for_ytd_and_fy_prior() -> None:
     assert flow_ttm(facts, pd.Timestamp("2024-06-30")) == pytest.approx(430.0)
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_equal_distance_tie_prefers_the_earlier_end_in_any_row_order(reverse: bool) -> None:
+    rows = [
+        _fact("Revenues", "2024-12-28", 500.0, start="2024-01-01", form="10-K"),  # E - 3 days
+        _fact("Revenues", "2025-01-03", 600.0, start="2024-01-05", form="10-K"),  # E + 3 days
+    ]
+    facts = _frame(*(reversed(rows) if reverse else rows))
+    assert flow_ttm(facts, pd.Timestamp("2024-12-31")) == 500.0
+
+
+def _fiscal_year_change_revenue() -> list[dict[str, Any]]:
+    """December FYE 2023, a 182-day Jan-Jun 2024 transition period (10-KT), then June FYE."""
+    return [
+        _fact("Revenues", "2023-06-30", 200.0, start="2023-01-01", filed="2023-08-01"),
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", filed="2024-02-15", form="10-K"),
+        _fact(
+            "Revenues", "2024-06-30", 250.0, start="2024-01-01", filed="2024-08-15", form="10-KT"
+        ),
+        _fact("Revenues", "2024-09-30", 130.0, start="2024-07-01", filed="2024-11-01"),
+        _fact("Revenues", "2024-12-31", 270.0, start="2024-07-01", filed="2025-02-01"),
+        _fact("Revenues", "2025-03-31", 400.0, start="2024-07-01", filed="2025-05-01"),
+        _fact("Revenues", "2025-06-30", 540.0, start="2024-07-01", filed="2025-08-15", form="10-K"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("end", "expected"),
+    [
+        ("2024-06-30", 250.0 + 400.0 - 200.0),  # calendar 6M identity still forms
+        ("2024-09-30", math.nan),  # new Q1 does not follow an annual fact
+        ("2024-12-31", math.nan),  # no annual FY(prior) ends at 2024-06-30
+        ("2025-03-31", math.nan),
+        ("2025-06-30", 540.0),  # first June fiscal year: the annual value
+    ],
+)
+def test_ttm_across_a_fiscal_year_change(end: str, expected: float) -> None:
+    value = flow_ttm(_frame(*_fiscal_year_change_revenue()), pd.Timestamp(end))
+    if math.isnan(expected):
+        assert math.isnan(value)
+    else:
+        assert value == pytest.approx(expected)
+
+
+def test_10k_with_annual_and_discrete_q4_gives_the_annual_value() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-09-30", 360.0, start="2024-01-01", filed="2024-11-01"),
+        _fact("Revenues", "2024-12-31", 500.0, start="2024-01-01", filed="2025-02-15", form="10-K"),
+        _fact("Revenues", "2024-12-31", 140.0, start="2024-10-01", filed="2025-02-15", form="10-K"),
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-12-31")) == 500.0
+
+
 def _fiscal_52_53_week_revenue() -> list[dict[str, Any]]:
     """Apple-style fiscal years: 53-week FY2023 (371 days), 52-week FY2024 (364 days)."""
     return [

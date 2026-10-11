@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -20,6 +21,8 @@ MAX_RETRIES = 3
 BACKOFF_SECONDS = 1.0  # 1 s, 2 s, 4 s
 REQUEST_TIMEOUT = 30
 UNITS: frozenset[str] = frozenset({"USD", "shares"})
+
+_CIK = re.compile(r"\d{10}", re.ASCII)
 
 HttpGet = Callable[..., Any]
 
@@ -46,6 +49,11 @@ class EdgarProvider:
             raise FundamentalsProviderError(
                 f"{USER_AGENT_ENV} is not set; SEC requires a User-Agent like 'Name email@host'"
             )
+        for ticker, cik in ciks.items():
+            if not _CIK.fullmatch(cik):
+                raise FundamentalsProviderError(
+                    f"invalid CIK for {ticker!r}: {cik[:20]!r} (expected 10 digits)"
+                )
         self._ciks = dict(ciks)
         self._headers = {"User-Agent": agent}
         self._get: HttpGet = get if get is not None else requests.get
@@ -66,7 +74,10 @@ class EdgarProvider:
                 raise FundamentalsProviderError(
                     f"malformed companyfacts for {ticker}: {exc!r}"
                 ) from exc
-        return coerce_facts(pd.DataFrame(rows, columns=list(FACT_COLUMNS)))
+        try:
+            return coerce_facts(pd.DataFrame(rows, columns=list(FACT_COLUMNS)))
+        except (ValueError, TypeError) as exc:
+            raise FundamentalsProviderError(f"malformed companyfacts values: {exc!r}") from exc
 
     def _fetch(self, cik: str) -> Mapping[str, Any] | None:
         """Parsed companyfacts JSON for `cik`, or None on HTTP 404."""
@@ -124,6 +135,10 @@ def _payload_rows(ticker: str, payload: Mapping[str, Any]) -> list[dict[str, Any
         units = ((taxonomies.get(taxonomy) or {}).get(concept) or {}).get("units") or {}
         for unit, entries in units.items():
             if unit in UNITS:
+                if not isinstance(entries, list):
+                    raise FundamentalsProviderError(
+                        f"{ticker} {tag} {unit}: unit entries are not a list"
+                    )
                 rows.extend(
                     _row(ticker, tag, entry)
                     for entry in entries

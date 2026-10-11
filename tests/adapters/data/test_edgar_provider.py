@@ -238,6 +238,48 @@ def test_malformed_entry_fails() -> None:
         _provider(FakeGet(FakeResponse(200, payload))).facts(["AAA"])
 
 
+def _assets_payload(entries: Any) -> dict[str, Any]:
+    return {"facts": {"us-gaap": {"Assets": {"units": {"USD": entries}}}}}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        _entry("2024-03-31", "abc", Q1, "10-Q", "2024-05-01"),  # type: ignore[arg-type]
+        _entry("not-a-date", 1, Q1, "10-Q", "2024-05-01"),
+        _entry("2024-03-31", 1, Q1, "10-Q", "also-bad"),
+        {**_entry("2024-03-31", 1, Q1, "10-Q", "2024-05-01"), "accn": None},
+    ],
+)
+def test_uncoercible_values_raise_provider_error_chained(entry: dict[str, Any]) -> None:
+    get = FakeGet(FakeResponse(200, _assets_payload([entry])))
+    with pytest.raises(FundamentalsProviderError, match="malformed") as info:
+        _provider(get).facts(["AAA"])
+    assert info.value.__cause__ is not None
+
+
+def test_missing_accn_raises_provider_error_chained() -> None:
+    entry = _entry("2024-03-31", 1, Q1, "10-Q", "2024-05-01")
+    del entry["accn"]
+    with pytest.raises(FundamentalsProviderError, match="malformed") as info:
+        _provider(FakeGet(FakeResponse(200, _assets_payload([entry])))).facts(["AAA"])
+    assert isinstance(info.value.__cause__, KeyError)
+
+
+def test_non_list_unit_entries_raise_provider_error() -> None:
+    payload = _assets_payload({"end": "2024-03-31"})
+    with pytest.raises(FundamentalsProviderError, match="not a list"):
+        _provider(FakeGet(FakeResponse(200, payload))).facts(["AAA"])
+
+
+@pytest.mark.parametrize("cik", ["../x", "1?x", "123", "００００００００００", "0000320193\n"])
+def test_invalid_cik_rejected_at_construction_without_request(cik: str) -> None:
+    get = FakeGet()
+    with pytest.raises(FundamentalsProviderError, match="AAA"):
+        _provider(get, ciks={"AAA": cik})
+    assert get.calls == []
+
+
 def test_requests_are_spaced_at_least_0_12_seconds() -> None:
     fake_time = FakeTime()
     get = FakeGet(FakeResponse(), FakeResponse())

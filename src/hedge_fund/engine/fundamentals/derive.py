@@ -27,6 +27,8 @@ DURATION_CLASSES: Mapping[str, tuple[int, int]] = {
     NINE_MONTH: (260, 280),
     ANNUAL: (350, 380),
 }
+TOLERANCE = pd.Timedelta(days=7)
+ONE_YEAR = pd.DateOffset(years=1)
 
 
 def pit_filter(facts: pd.DataFrame, as_of: date) -> pd.DataFrame:
@@ -67,3 +69,38 @@ def duration_classes(facts: pd.DataFrame) -> pd.Series:
     conditions = [days.between(low, high).to_numpy() for low, high in DURATION_CLASSES.values()]
     labels = np.select(conditions, list(DURATION_CLASSES), default="")
     return pd.Series(labels, index=facts.index, dtype="str")
+
+
+def reference_period(versioned: pd.DataFrame) -> pd.Timestamp | None:
+    """E: the latest `end` among curated non-dei facts, or None when there is none."""
+    ends = versioned.loc[_non_dei(versioned), "end"]
+    return None if ends.empty else ends.max()
+
+
+def prior_reference(versioned: pd.DataFrame, end: pd.Timestamp) -> pd.Timestamp:
+    """E′: the curated non-dei fact end nearest `end - 1 year` within ±7 days, else NaT."""
+    ends = versioned.loc[_non_dei(versioned), ["end"]].drop_duplicates().sort_values("end")
+    hit = _nearest(ends, "end", end - ONE_YEAR)
+    return pd.NaT if hit is None else hit["end"]
+
+
+def last_filed(visible: pd.DataFrame) -> pd.Timestamp:
+    """The latest `filed` among the PIT-filtered curated facts (dei included)."""
+    return visible["filed"].max()
+
+
+def _non_dei(facts: pd.DataFrame) -> pd.Series:
+    return ~facts["tag"].str.startswith("dei:")
+
+
+def _nearest(frame: pd.DataFrame, column: str, target: pd.Timestamp) -> pd.Series | None:
+    """Row whose `column` is nearest `target` within TOLERANCE, or None.
+
+    Equal distances keep frame order, so with frames sorted by date the earlier date wins.
+    """
+    distance = (frame[column] - target).abs()
+    within = distance[distance <= TOLERANCE]
+    if within.empty:
+        return None
+    row: pd.Series = frame.loc[within.sort_values(kind="stable").index[0]]
+    return row

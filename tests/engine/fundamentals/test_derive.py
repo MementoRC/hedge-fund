@@ -12,7 +12,10 @@ from hedge_fund.engine.fundamentals.derive import (
     NINE_MONTH,
     QUARTER,
     duration_classes,
+    last_filed,
     pit_filter,
+    prior_reference,
+    reference_period,
     select_versions,
 )
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts, empty_facts
@@ -167,3 +170,62 @@ def test_duration_classes_by_inclusive_length(days: int, expected: str) -> None:
 
 def test_instant_facts_have_no_duration_class() -> None:
     assert duration_classes(_frame(_fact("Assets", "2024-03-31", 1.0))).tolist() == [""]
+
+
+def test_reference_period_is_latest_curated_non_dei_end() -> None:
+    facts = _frame(
+        _fact("Assets", "2024-03-31", 1050.0),
+        _fact("Revenues", "2024-03-31", 110.0, start="2024-01-01"),
+        _fact("Assets", "2023-12-31", 1000.0, filed="2024-02-15", form="10-K"),
+        _fact(SHARES, "2024-04-25", 49.0),
+    )
+    assert reference_period(facts) == pd.Timestamp("2024-03-31")
+
+
+def test_reference_period_ignores_filings_not_yet_public() -> None:
+    facts = _frame(
+        _fact("Assets", "2024-03-31", 1050.0, filed="2024-05-01"),
+        _fact("Assets", "2024-06-30", 1100.0, filed="2024-08-01"),
+    )
+    visible = select_versions(pit_filter(facts, date(2024, 6, 1)))
+    assert reference_period(visible) == pd.Timestamp("2024-03-31")
+
+
+def test_reference_period_is_none_without_curated_non_dei_facts() -> None:
+    assert reference_period(_frame(_fact(SHARES, "2024-04-25", 49.0))) is None
+    assert reference_period(_frame()) is None
+
+
+def test_prior_reference_picks_the_nearest_end_within_seven_days() -> None:
+    facts = _frame(
+        _fact("Assets", "2023-03-25", 1.0, filed="2023-05-01"),
+        _fact("Assets", "2023-04-02", 2.0, filed="2023-05-01"),
+        _fact("Assets", "2024-03-30", 3.0),
+    )
+    assert prior_reference(facts, pd.Timestamp("2024-03-30")) == pd.Timestamp("2023-04-02")
+
+
+def test_prior_reference_tie_prefers_the_earlier_end() -> None:
+    facts = _frame(
+        _fact("Assets", "2023-04-02", 1.0, filed="2023-05-01"),
+        _fact("Assets", "2023-03-27", 2.0, filed="2023-05-01"),
+    )
+    assert prior_reference(facts, pd.Timestamp("2024-03-30")) == pd.Timestamp("2023-03-27")
+
+
+def test_prior_reference_is_nat_beyond_seven_days_or_for_dei_only() -> None:
+    beyond = _frame(_fact("Assets", "2023-03-22", 1.0, filed="2023-05-01"))
+    dei_only = _frame(_fact(SHARES, "2023-03-30", 50.0, filed="2023-05-01"))
+    assert pd.isna(prior_reference(beyond, pd.Timestamp("2024-03-30")))
+    assert pd.isna(prior_reference(dei_only, pd.Timestamp("2024-03-30")))
+
+
+def test_last_filed_is_the_latest_filing_among_visible_curated_facts() -> None:
+    facts = _frame(
+        _fact("Assets", "2023-12-31", 1000.0, filed="2024-02-15", form="10-K"),
+        _fact("Assets", "2024-03-31", 1050.0, filed="2024-05-01"),
+        _fact(SHARES, "2024-05-05", 49.0, filed="2024-05-10", form="10-K/A"),
+        _fact("Goodwill", "2024-03-31", 5.0, filed="2024-05-20"),
+        _fact("Assets", "2024-06-30", 1100.0, filed="2024-06-05"),
+    )
+    assert last_filed(pit_filter(facts, date(2024, 6, 1))) == pd.Timestamp("2024-05-10")

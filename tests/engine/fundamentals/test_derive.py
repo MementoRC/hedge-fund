@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from hedge_fund.engine.fundamentals.derive import pit_filter, select_versions
-from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts
+from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts, empty_facts
 
 SHARES = "dei:EntityCommonStockSharesOutstanding"
 
@@ -85,6 +85,38 @@ def test_instant_facts_survive_version_selection() -> None:
     versioned = select_versions(facts)
     assert versioned["start"].isna().all()
     assert sorted(versioned["value"].tolist()) == [50.0, 1010.0]
+
+
+def test_version_selection_keeps_each_tickers_own_latest_version() -> None:
+    facts = _frame(
+        _fact("Revenues", "2023-03-31", 1.0, start="2023-01-01", filed="2023-05-01", ticker="AAA"),
+        _fact("Revenues", "2023-03-31", 2.0, start="2023-01-01", filed="2024-05-01", ticker="AAA"),
+        _fact("Revenues", "2023-03-31", 10.0, start="2023-01-01", filed="2023-05-02", ticker="BBB"),
+        _fact("Revenues", "2023-03-31", 20.0, start="2023-01-01", filed="2023-06-01", ticker="BBB"),
+    )
+    selected = select_versions(facts)
+    assert selected["ticker"].tolist() == ["AAA", "BBB"]
+    assert selected["value"].tolist() == [2.0, 20.0]
+
+
+def test_empty_facts_give_empty_frames_with_canonical_columns() -> None:
+    empty = empty_facts()
+    for result in (pit_filter(empty, date(2024, 5, 1)), select_versions(empty)):
+        assert result.empty
+        assert list(result.columns) == list(FACT_COLUMNS)
+
+
+def test_version_selection_is_sorted_by_ticker_tag_end_start_with_a_fresh_index() -> None:
+    facts = _frame(
+        _fact("Revenues", "2023-06-30", 1.0, start="2023-04-01", ticker="BBB"),
+        _fact("Revenues", "2023-06-30", 2.0, start="2023-01-01", ticker="AAA"),
+        _fact("Revenues", "2023-03-31", 3.0, start="2023-01-01", ticker="AAA"),
+        _fact("Assets", "2023-06-30", 4.0, ticker="AAA"),
+        _fact("Revenues", "2023-06-30", 5.0, start="2023-04-01", ticker="AAA"),
+    )
+    selected = select_versions(facts)
+    assert selected["value"].tolist() == [4.0, 3.0, 2.0, 5.0, 1.0]
+    assert selected.index.tolist() == list(range(5))
 
 
 def test_same_day_versions_break_ties_by_accession() -> None:

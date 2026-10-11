@@ -27,15 +27,18 @@ def pit_filter(facts: pd.DataFrame, as_of: date) -> pd.DataFrame:
         & facts["tag"].isin(CURATED_TAGS)
         & facts["form"].isin(REPORT_FORMS)
     )
-    return facts.loc[keep]
+    return facts.loc[keep].reset_index(drop=True)
 
 
 def select_versions(facts: pd.DataFrame) -> pd.DataFrame:
     """Most recently filed fact per (ticker, tag, start, end): the latest public restatement.
 
     NaT `start` (instant facts) is a valid group key (dropna=False). Same-day versions are
-    ordered by accession number. The result is sorted by tag, end and start.
+    ordered by accession number. The result is sorted by ticker, tag, end and start, with a
+    fresh RangeIndex.
     """
     ordered = facts.sort_values(["filed", "accn"], kind="stable")
     latest = ordered.groupby(_VERSION_KEY, dropna=False, sort=False).tail(1)
-    return latest.sort_values(["tag", "end", "start"], kind="stable")
+    return latest.sort_values(["ticker", "tag", "end", "start"], kind="stable").reset_index(
+        drop=True
+    )

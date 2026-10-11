@@ -33,6 +33,8 @@ def coerce_facts(frame: pd.DataFrame) -> pd.DataFrame:
     """`frame` restricted to FACT_COLUMNS in order, with canonical dtypes and a fresh index.
 
     Dates become datetime64[ns] (NaT allowed), `value` float64, text columns str.
+
+    Raises ValueError if a FACT_COLUMNS column is absent or a text column has missing values.
     """
     missing = [column for column in FACT_COLUMNS if column not in frame.columns]
     if missing:

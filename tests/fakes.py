@@ -1,4 +1,4 @@
-"""In-memory DataProvider and yfinance-shaped frames for data-layer tests."""
+"""In-memory providers and vendor-shaped frames for data-layer tests."""
 
 from collections.abc import Mapping, Sequence
 from datetime import date
@@ -29,6 +29,22 @@ class FakeProvider:
         requested = tuple(tickers)
         self.sectors_calls.append(requested)
         return {ticker: self.sector_map.get(ticker) for ticker in requested}
+
+
+class FakeFundamentalsProvider:
+    """FundamentalsProvider serving a canned facts frame, recording every call.
+
+    Tests may replace `frame` between calls to simulate new filings.
+    """
+
+    def __init__(self, frame: pd.DataFrame) -> None:
+        self.frame = frame
+        self.calls: list[tuple[str, ...]] = []
+
+    def facts(self, tickers: Sequence[str]) -> pd.DataFrame:
+        requested = tuple(tickers)
+        self.calls.append(requested)
+        return self.frame.loc[self.frame["ticker"].isin(requested)].reset_index(drop=True)
 
 
 class RecordingDownload:

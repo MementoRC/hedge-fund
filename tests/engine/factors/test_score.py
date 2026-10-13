@@ -13,8 +13,9 @@ from hedge_fund.engine.factors.definitions import (
     momentum_12_1,
     reversal_1m,
 )
+from hedge_fund.engine.factors.fundamental import FundamentalFactorSpec, size
 from hedge_fund.engine.factors.score import score
-from tests.factories import make_closes, snapshot_from
+from tests.factories import make_closes, make_fundamentals, snapshot_from
 
 SECTORS = {
     "A1": "Tech",
@@ -232,3 +233,36 @@ def test_small_sector_flags_fallback() -> None:
     assert flags.pop("C1") is True
     assert flags.pop("C2") is True
     assert not any(flags.values())
+
+
+# --- fundamentals: contract -------------------------------------------------
+
+
+def test_fundamentals_as_of_mismatch_rejected() -> None:
+    snap = _snapshot(make_closes(TICKERS).iloc[:-1])
+    with pytest.raises(ValueError, match="as_of"):
+        score(snap, make_fundamentals(TICKERS))
+
+
+def test_duplicate_name_across_factor_lists_rejected() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    clash = FundamentalFactorSpec("low_vol", size, sign=-1)
+    with pytest.raises(ValueError, match="duplicate factor"):
+        score(snap, make_fundamentals(TICKERS), fundamental_factors=(clash,))
+
+
+def test_price_factors_required_with_fundamentals() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    with pytest.raises(ValueError, match="at least one factor"):
+        score(snap, make_fundamentals(TICKERS), factors=())
+
+
+def test_fundamental_factors_ignored_without_fundamentals() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    clash = FundamentalFactorSpec("low_vol", size, sign=-1)
+    assert score(snap, fundamental_factors=(clash,)) == score(snap)
+
+
+def test_empty_fundamental_factors_is_price_only_scoring() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    assert score(snap, make_fundamentals(TICKERS), fundamental_factors=()) == score(snap)

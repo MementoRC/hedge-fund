@@ -7,21 +7,28 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from hedge_fund.domain.fundamentals import FundamentalsSnapshot
 from hedge_fund.domain.scores import FactorScore, ScoreResult
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.factors.definitions import FACTORS, FactorSpec
+from hedge_fund.engine.factors.fundamental import FUNDAMENTAL_FACTORS, FundamentalFactorSpec
 from hedge_fund.engine.factors.normalize import sector_zscore, winsorize
 
 MAX_MISSING_FRACTION = 0.05
 
 
-def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> ScoreResult:
+def score(
+    snapshot: PriceSnapshot,
+    fundamentals: FundamentalsSnapshot | None = None,
+    factors: Sequence[FactorSpec] = FACTORS,
+    fundamental_factors: Sequence[FundamentalFactorSpec] = FUNDAMENTAL_FACTORS,
+) -> ScoreResult:
     """Score every ticker in ``snapshot``; unscorable tickers land in ``excluded``."""
-    if not factors:
-        raise ValueError("score needs at least one factor")
-    names = [spec.name for spec in factors]
-    if len(set(names)) != len(names):
-        raise ValueError(f"duplicate factor names: {names}")
+    active: Sequence[FundamentalFactorSpec] = ()
+    if fundamentals is not None:
+        active = fundamental_factors
+    signs = _signs(snapshot, fundamentals, factors, active)
+    names = list(signs)
 
     window_size = max(spec.min_history for spec in factors)
     window = snapshot.closes.iloc[-window_size:]
@@ -48,9 +55,9 @@ def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> S
     sectors = pd.Series({t: snapshot.sectors[t] for t in raw.index})
     z = pd.DataFrame(index=raw.index)
     fallback = pd.Series(False, index=raw.index)
-    for spec in factors:
-        z_factor, fallback_factor = sector_zscore(winsorize(raw[spec.name] * spec.sign), sectors)
-        z[spec.name] = z_factor
+    for name, sign in signs.items():
+        z_factor, fallback_factor = sector_zscore(winsorize(raw[name] * sign), sectors)
+        z[name] = z_factor
         fallback = fallback | fallback_factor
     composite = z.mean(axis=1)
 
@@ -67,6 +74,28 @@ def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> S
     ]
     scores.sort(key=lambda s: (-s.composite, s.ticker))
     return _result(snapshot, tuple(scores), excluded)
+
+
+def _signs(
+    snapshot: PriceSnapshot,
+    fundamentals: FundamentalsSnapshot | None,
+    factors: Sequence[FactorSpec],
+    active: Sequence[FundamentalFactorSpec],
+) -> dict[str, int]:
+    """Validate the inputs; return each scored price factor's sign by name.
+
+    Fundamental specs are checked for duplicate names but not scored yet (Task 7).
+    """
+    if not factors:
+        raise ValueError("score needs at least one factor")
+    if fundamentals is not None and fundamentals.as_of != snapshot.as_of:
+        raise ValueError(
+            f"fundamentals as_of {fundamentals.as_of} != snapshot as_of {snapshot.as_of}"
+        )
+    names = [spec.name for spec in factors] + [spec.name for spec in active]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate factor names: {names}")
+    return {spec.name: spec.sign for spec in factors}
 
 
 def _pre_exclusion_reason(prices: pd.Series, window_size: int) -> str | None:

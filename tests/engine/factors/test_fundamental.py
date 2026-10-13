@@ -7,6 +7,7 @@ import pandas as pd
 
 from hedge_fund.domain.fundamentals import METRIC_NAMES
 from hedge_fund.engine.factors.fundamental import (
+    FUNDAMENTAL_FACTORS,
     FundamentalInputs,
     earnings_yield,
     gross_profitability,
@@ -105,3 +106,19 @@ def test_size_of_nan_market_cap_is_nan_without_warning() -> None:
         warnings.simplefilter("error")
         result = size(inputs)
     _assert_series(result, [NAN, NAN, NAN])
+
+
+def test_fundamental_factor_registry() -> None:
+    assert [spec.name for spec in FUNDAMENTAL_FACTORS] == [
+        "earnings_yield",
+        "gross_profitability",
+        "revenue_growth",
+        "size",
+    ]
+    assert [spec.sign for spec in FUNDAMENTAL_FACTORS] == [1, 1, 1, -1]
+    assert [spec.fn for spec in FUNDAMENTAL_FACTORS] == [
+        earnings_yield,
+        gross_profitability,
+        revenue_growth,
+        size,
+    ]

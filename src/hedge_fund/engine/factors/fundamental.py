@@ -55,3 +55,11 @@ def revenue_growth(inputs: FundamentalInputs) -> pd.Series:
 def size(inputs: FundamentalInputs) -> pd.Series:
     """Natural log of market cap; NaN market cap stays NaN."""
     return np.log(market_cap(inputs))
+
+
+FUNDAMENTAL_FACTORS: tuple[FundamentalFactorSpec, ...] = (
+    FundamentalFactorSpec("earnings_yield", earnings_yield, sign=1),
+    FundamentalFactorSpec("gross_profitability", gross_profitability, sign=1),
+    FundamentalFactorSpec("revenue_growth", revenue_growth, sign=1),
+    FundamentalFactorSpec("size", size, sign=-1),
+)

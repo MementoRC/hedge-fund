@@ -27,7 +27,13 @@ def score(
     factors: Sequence[FactorSpec] = FACTORS,
     fundamental_factors: Sequence[FundamentalFactorSpec] = FUNDAMENTAL_FACTORS,
 ) -> ScoreResult:
-    """Score every ticker in ``snapshot``; unscorable tickers land in ``excluded``."""
+    """Score every ticker in ``snapshot`` on price factors.
+
+    When ``fundamentals`` is given, also score on ``fundamental_factors`` (ignored when None).
+    Unscorable tickers land in ``excluded``, including ``missing_fundamentals`` for tickers
+    with no row in the fundamentals snapshot. Raises ValueError on empty factors, an
+    ``as_of`` mismatch, or duplicate factor names.
+    """
     active: Sequence[FundamentalFactorSpec] = ()
     if fundamentals is not None:
         active = fundamental_factors

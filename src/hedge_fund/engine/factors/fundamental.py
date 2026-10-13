@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 
@@ -44,3 +45,13 @@ def earnings_yield(inputs: FundamentalInputs) -> pd.Series:
 def gross_profitability(inputs: FundamentalInputs) -> pd.Series:
     """TTM gross profit over total assets; NaN when total assets <= 0."""
     return inputs.current["gross_profit"] / _positive(inputs.current["total_assets"])
+
+
+def revenue_growth(inputs: FundamentalInputs) -> pd.Series:
+    """TTM revenue over year-ago TTM revenue, minus one; NaN when prior revenue <= 0 or NaN."""
+    return inputs.current["revenue"] / _positive(inputs.prior["revenue"]) - 1.0
+
+
+def size(inputs: FundamentalInputs) -> pd.Series:
+    """Natural log of market cap; NaN market cap stays NaN."""
+    return np.log(market_cap(inputs))

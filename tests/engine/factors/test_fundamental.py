@@ -1,5 +1,7 @@
 """Closed-form checks for fundamental factor definitions."""
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -9,6 +11,8 @@ from hedge_fund.engine.factors.fundamental import (
     earnings_yield,
     gross_profitability,
     market_cap,
+    revenue_growth,
+    size,
 )
 
 TICKERS = ["AAA", "BBB", "CCC"]
@@ -78,3 +82,26 @@ def test_gross_profitability_nonpositive_assets_is_nan() -> None:
 def test_gross_profitability_missing_gross_profit_is_nan() -> None:
     inputs = _inputs({"gross_profit": [NAN, 30.0, NAN], "total_assets": [100.0, 100.0, NAN]})
     _assert_series(gross_profitability(inputs), [NAN, 0.3, NAN])
+
+
+def test_revenue_growth_known_value() -> None:
+    inputs = _inputs({"revenue": [120.0, 80.0, 100.0]}, {"revenue": [100.0, 100.0, 100.0]})
+    _assert_series(revenue_growth(inputs), [0.2, -0.2, 0.0])
+
+
+def test_revenue_growth_nonpositive_or_missing_prior_is_nan() -> None:
+    inputs = _inputs({"revenue": [100.0, 100.0, 100.0]}, {"revenue": [0.0, -50.0, NAN]})
+    _assert_series(revenue_growth(inputs), [NAN, NAN, NAN])
+
+
+def test_size_is_log_market_cap() -> None:
+    inputs = _inputs({"shares_outstanding": [10.0, 20.0, 0.5]})
+    _assert_series(size(inputs), [np.log(100.0), np.log(200.0), np.log(5.0)])
+
+
+def test_size_of_nan_market_cap_is_nan_without_warning() -> None:
+    inputs = _inputs({"shares_outstanding": [NAN, 0.0, -1.0]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = size(inputs)
+    _assert_series(result, [NAN, NAN, NAN])

@@ -7,21 +7,38 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from hedge_fund.domain.fundamentals import FundamentalsSnapshot
 from hedge_fund.domain.scores import FactorScore, ScoreResult
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.factors.definitions import FACTORS, FactorSpec
+from hedge_fund.engine.factors.fundamental import (
+    FUNDAMENTAL_FACTORS,
+    FundamentalFactorSpec,
+    FundamentalInputs,
+)
 from hedge_fund.engine.factors.normalize import sector_zscore, winsorize
 
 MAX_MISSING_FRACTION = 0.05
 
 
-def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> ScoreResult:
-    """Score every ticker in ``snapshot``; unscorable tickers land in ``excluded``."""
-    if not factors:
-        raise ValueError("score needs at least one factor")
-    names = [spec.name for spec in factors]
-    if len(set(names)) != len(names):
-        raise ValueError(f"duplicate factor names: {names}")
+def score(
+    snapshot: PriceSnapshot,
+    fundamentals: FundamentalsSnapshot | None = None,
+    factors: Sequence[FactorSpec] = FACTORS,
+    fundamental_factors: Sequence[FundamentalFactorSpec] = FUNDAMENTAL_FACTORS,
+) -> ScoreResult:
+    """Score every ticker in ``snapshot`` on price factors.
+
+    When ``fundamentals`` is given, also score on ``fundamental_factors`` (ignored when None).
+    Unscorable tickers land in ``excluded``, including ``missing_fundamentals`` for tickers
+    with no row in the fundamentals snapshot. Raises ValueError on empty factors, an
+    ``as_of`` mismatch, or duplicate factor names.
+    """
+    active: Sequence[FundamentalFactorSpec] = ()
+    if fundamentals is not None:
+        active = fundamental_factors
+    signs = _signs(snapshot, fundamentals, factors, active)
+    names = list(signs)
 
     window_size = max(spec.min_history for spec in factors)
     window = snapshot.closes.iloc[-window_size:]
@@ -29,6 +46,7 @@ def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> S
     excluded: dict[str, str] = {}
     for ticker in window.columns:
         reason = _pre_exclusion_reason(window[ticker], window_size)
+        reason = reason or _fundamentals_reason(ticker, fundamentals)
         if reason is not None:
             excluded[ticker] = reason
 
@@ -36,8 +54,7 @@ def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> S
     if not scorable:
         return _result(snapshot, (), excluded)
 
-    filled = window[scorable].ffill()
-    raw = pd.DataFrame({spec.name: spec.fn(filled) for spec in factors})
+    raw = _raw_frame(window[scorable].ffill(), fundamentals, factors, active)
     finite = np.isfinite(raw).all(axis=1)
     for ticker in raw.index[~finite]:
         excluded[ticker] = "nonfinite_factor"
@@ -48,9 +65,9 @@ def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> S
     sectors = pd.Series({t: snapshot.sectors[t] for t in raw.index})
     z = pd.DataFrame(index=raw.index)
     fallback = pd.Series(False, index=raw.index)
-    for spec in factors:
-        z_factor, fallback_factor = sector_zscore(winsorize(raw[spec.name] * spec.sign), sectors)
-        z[spec.name] = z_factor
+    for name, sign in signs.items():
+        z_factor, fallback_factor = sector_zscore(winsorize(raw[name] * sign), sectors)
+        z[name] = z_factor
         fallback = fallback | fallback_factor
     composite = z.mean(axis=1)
 
@@ -69,6 +86,46 @@ def score(snapshot: PriceSnapshot, factors: Sequence[FactorSpec] = FACTORS) -> S
     return _result(snapshot, tuple(scores), excluded)
 
 
+def _signs(
+    snapshot: PriceSnapshot,
+    fundamentals: FundamentalsSnapshot | None,
+    factors: Sequence[FactorSpec],
+    active: Sequence[FundamentalFactorSpec],
+) -> dict[str, int]:
+    """Validate the inputs; return the sign of every scored factor, price factors first."""
+    if not factors:
+        raise ValueError("score needs at least one factor")
+    if fundamentals is not None and fundamentals.as_of != snapshot.as_of:
+        raise ValueError(
+            f"fundamentals as_of {fundamentals.as_of} != snapshot as_of {snapshot.as_of}"
+        )
+    names = [spec.name for spec in factors] + [spec.name for spec in active]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate factor names: {names}")
+    return {spec.name: spec.sign for spec in factors} | {spec.name: spec.sign for spec in active}
+
+
+def _raw_frame(
+    filled: pd.DataFrame,
+    fundamentals: FundamentalsSnapshot | None,
+    factors: Sequence[FactorSpec],
+    active: Sequence[FundamentalFactorSpec],
+) -> pd.DataFrame:
+    """Raw value per scorable ticker (rows) and factor (columns, price factors first)."""
+    price_raw = pd.DataFrame({spec.name: spec.fn(filled) for spec in factors})
+    if fundamentals is None:
+        return price_raw
+    inputs = FundamentalInputs(
+        current=fundamentals.current.reindex(filled.columns),
+        prior=fundamentals.prior.reindex(filled.columns),
+        close=filled.iloc[-1],
+    )
+    fundamental_raw = pd.DataFrame(
+        {spec.name: spec.fn(inputs) for spec in active}, index=price_raw.index
+    )
+    return pd.concat([price_raw, fundamental_raw], axis=1)
+
+
 def _pre_exclusion_reason(prices: pd.Series, window_size: int) -> str | None:
     """First failing data-quality rule on the unfilled window, or None."""
     first_valid = prices.first_valid_index()
@@ -79,6 +136,13 @@ def _pre_exclusion_reason(prices: pd.Series, window_size: int) -> str | None:
     if (prices.dropna() <= 0).any():
         return "nonpositive_price"
     return None
+
+
+def _fundamentals_reason(ticker: str, fundamentals: FundamentalsSnapshot | None) -> str | None:
+    """``missing_fundamentals`` when fundamentals are given but have no row for ``ticker``."""
+    if fundamentals is None or ticker in fundamentals.current.index:
+        return None
+    return "missing_fundamentals"
 
 
 def _result(

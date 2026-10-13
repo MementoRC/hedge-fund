@@ -40,6 +40,10 @@ def _last_price(window: pd.DataFrame) -> pd.Series:
     return window.iloc[-1]
 
 
+def _never_called(window: pd.DataFrame) -> pd.Series:
+    raise AssertionError("factors must not run when nothing is scorable")
+
+
 # --- happy path -------------------------------------------------------------
 
 
@@ -266,3 +270,29 @@ def test_fundamental_factors_ignored_without_fundamentals() -> None:
 def test_empty_fundamental_factors_is_price_only_scoring() -> None:
     snap = _snapshot(make_closes(TICKERS))
     assert score(snap, make_fundamentals(TICKERS), fundamental_factors=()) == score(snap)
+
+
+# --- fundamentals: exclusions -----------------------------------------------
+# fundamental_factors=() isolates the exclusion rule from the factor join (Task 7).
+
+
+def test_missing_fundamentals_excluded() -> None:
+    fundamentals = make_fundamentals([t for t in TICKERS if t != "A1"])
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals, fundamental_factors=())
+    assert result.excluded == {"A1": "missing_fundamentals"}
+    assert "A1" not in {s.ticker for s in result.scores}
+
+
+def test_price_exclusion_beats_missing_fundamentals() -> None:
+    closes = make_closes(TICKERS)
+    closes.iloc[200, 0] = 0.0  # A1: nonpositive_price and no fundamentals row
+    fundamentals = make_fundamentals([t for t in TICKERS if t not in {"A1", "A2"}])
+    result = score(_snapshot(closes), fundamentals, fundamental_factors=())
+    assert result.excluded == {"A1": "nonpositive_price", "A2": "missing_fundamentals"}
+
+
+def test_all_missing_fundamentals_returns_before_computing_factors() -> None:
+    spec = FactorSpec("never", _never_called, sign=1, min_history=WINDOW)
+    result = score(_snapshot(make_closes(TICKERS)), make_fundamentals(["ZZZ"]), factors=(spec,))
+    assert result.scores == ()
+    assert result.excluded == dict.fromkeys(TICKERS, "missing_fundamentals")

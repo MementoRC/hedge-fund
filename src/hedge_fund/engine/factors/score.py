@@ -36,6 +36,7 @@ def score(
     excluded: dict[str, str] = {}
     for ticker in window.columns:
         reason = _pre_exclusion_reason(window[ticker], window_size)
+        reason = reason or _fundamentals_reason(ticker, fundamentals)
         if reason is not None:
             excluded[ticker] = reason
 
@@ -108,6 +109,13 @@ def _pre_exclusion_reason(prices: pd.Series, window_size: int) -> str | None:
     if (prices.dropna() <= 0).any():
         return "nonpositive_price"
     return None
+
+
+def _fundamentals_reason(ticker: str, fundamentals: FundamentalsSnapshot | None) -> str | None:
+    """``missing_fundamentals`` when fundamentals are given but have no row for ``ticker``."""
+    if fundamentals is None or ticker in fundamentals.current.index:
+        return None
+    return "missing_fundamentals"
 
 
 def _result(

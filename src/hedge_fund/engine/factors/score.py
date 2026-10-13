@@ -11,7 +11,11 @@ from hedge_fund.domain.fundamentals import FundamentalsSnapshot
 from hedge_fund.domain.scores import FactorScore, ScoreResult
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.factors.definitions import FACTORS, FactorSpec
-from hedge_fund.engine.factors.fundamental import FUNDAMENTAL_FACTORS, FundamentalFactorSpec
+from hedge_fund.engine.factors.fundamental import (
+    FUNDAMENTAL_FACTORS,
+    FundamentalFactorSpec,
+    FundamentalInputs,
+)
 from hedge_fund.engine.factors.normalize import sector_zscore, winsorize
 
 MAX_MISSING_FRACTION = 0.05
@@ -44,8 +48,7 @@ def score(
     if not scorable:
         return _result(snapshot, (), excluded)
 
-    filled = window[scorable].ffill()
-    raw = pd.DataFrame({spec.name: spec.fn(filled) for spec in factors})
+    raw = _raw_frame(window[scorable].ffill(), fundamentals, factors, active)
     finite = np.isfinite(raw).all(axis=1)
     for ticker in raw.index[~finite]:
         excluded[ticker] = "nonfinite_factor"
@@ -83,10 +86,7 @@ def _signs(
     factors: Sequence[FactorSpec],
     active: Sequence[FundamentalFactorSpec],
 ) -> dict[str, int]:
-    """Validate the inputs; return each scored price factor's sign by name.
-
-    Fundamental specs are checked for duplicate names but not scored yet (Task 7).
-    """
+    """Validate the inputs; return the sign of every scored factor, price factors first."""
     if not factors:
         raise ValueError("score needs at least one factor")
     if fundamentals is not None and fundamentals.as_of != snapshot.as_of:
@@ -96,7 +96,28 @@ def _signs(
     names = [spec.name for spec in factors] + [spec.name for spec in active]
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate factor names: {names}")
-    return {spec.name: spec.sign for spec in factors}
+    return {spec.name: spec.sign for spec in factors} | {spec.name: spec.sign for spec in active}
+
+
+def _raw_frame(
+    filled: pd.DataFrame,
+    fundamentals: FundamentalsSnapshot | None,
+    factors: Sequence[FactorSpec],
+    active: Sequence[FundamentalFactorSpec],
+) -> pd.DataFrame:
+    """Raw value per scorable ticker (rows) and factor (columns, price factors first)."""
+    price_raw = pd.DataFrame({spec.name: spec.fn(filled) for spec in factors})
+    if fundamentals is None:
+        return price_raw
+    inputs = FundamentalInputs(
+        current=fundamentals.current.reindex(filled.columns),
+        prior=fundamentals.prior.reindex(filled.columns),
+        close=filled.iloc[-1],
+    )
+    fundamental_raw = pd.DataFrame(
+        {spec.name: spec.fn(inputs) for spec in active}, index=price_raw.index
+    )
+    return pd.concat([price_raw, fundamental_raw], axis=1)
 
 
 def _pre_exclusion_reason(prices: pd.Series, window_size: int) -> str | None:

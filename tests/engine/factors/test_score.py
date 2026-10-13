@@ -1,9 +1,12 @@
 """Tests for the factor scoring pipeline."""
 
+from itertools import pairwise
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from hedge_fund.domain.fundamentals import FundamentalsSnapshot
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.factors.definitions import (
     FACTORS,
@@ -13,7 +16,7 @@ from hedge_fund.engine.factors.definitions import (
     momentum_12_1,
     reversal_1m,
 )
-from hedge_fund.engine.factors.fundamental import FundamentalFactorSpec, size
+from hedge_fund.engine.factors.fundamental import FUNDAMENTAL_FACTORS, FundamentalFactorSpec, size
 from hedge_fund.engine.factors.score import score
 from tests.factories import make_closes, make_fundamentals, snapshot_from
 
@@ -30,6 +33,8 @@ SECTORS = {
 TICKERS = list(SECTORS)
 WINDOW = 253
 FACTOR_NAMES = {"momentum_12_1", "low_vol", "reversal_1m", "high_52w_proximity"}
+FUNDAMENTAL_NAMES = {"earnings_yield", "gross_profitability", "revenue_growth", "size"}
+TECH = ["A1", "A2", "A3", "A4"]
 
 
 def _snapshot(closes: pd.DataFrame) -> PriceSnapshot:
@@ -42,6 +47,25 @@ def _last_price(window: pd.DataFrame) -> pd.Series:
 
 def _never_called(window: pd.DataFrame) -> pd.Series:
     raise AssertionError("factors must not run when nothing is scorable")
+
+
+def _with_current(
+    fundamentals: FundamentalsSnapshot, values: dict[str, dict[str, float]]
+) -> FundamentalsSnapshot:
+    """Copy of ``fundamentals`` with ``values[ticker][metric]`` written into ``current``."""
+    current = fundamentals.current.copy()
+    for ticker, metrics in values.items():
+        for metric, value in metrics.items():
+            current.loc[ticker, metric] = value
+    return FundamentalsSnapshot(
+        fundamentals.as_of, current, fundamentals.prior, fundamentals.periods
+    )
+
+
+def _flat_closes() -> pd.DataFrame:
+    """Every ticker follows the same price path, so only fundamentals differ."""
+    path = make_closes(["X"])["X"]
+    return pd.DataFrame(dict.fromkeys(TICKERS, path))
 
 
 # --- happy path -------------------------------------------------------------
@@ -273,7 +297,7 @@ def test_empty_fundamental_factors_is_price_only_scoring() -> None:
 
 
 # --- fundamentals: exclusions -----------------------------------------------
-# fundamental_factors=() isolates the exclusion rule from the factor join (Task 7).
+# fundamental_factors=() isolates the exclusion rule from the factor join.
 
 
 def test_missing_fundamentals_excluded() -> None:
@@ -296,3 +320,85 @@ def test_all_missing_fundamentals_returns_before_computing_factors() -> None:
     result = score(_snapshot(make_closes(TICKERS)), make_fundamentals(["ZZZ"]), factors=(spec,))
     assert result.scores == ()
     assert result.excluded == dict.fromkeys(TICKERS, "missing_fundamentals")
+
+
+# --- fundamentals: scoring --------------------------------------------------
+
+
+def test_fundamentals_add_four_scored_factors() -> None:
+    result = score(_snapshot(make_closes(TICKERS)), make_fundamentals(TICKERS))
+    expected_order = [spec.name for spec in FACTORS] + [spec.name for spec in FUNDAMENTAL_FACTORS]
+    assert result.excluded == {}
+    assert len(result.scores) == len(TICKERS)
+    for s in result.scores:
+        assert list(s.raw) == expected_order
+        assert set(s.z) == FACTOR_NAMES | FUNDAMENTAL_NAMES
+        assert s.composite == pytest.approx(sum(s.z.values()) / 8)
+
+
+def test_fundamental_raw_values_follow_ticker_labels() -> None:
+    closes = make_closes(TICKERS)[list(reversed(TICKERS))]
+    fundamentals = make_fundamentals(TICKERS)
+    current, prior = fundamentals.current, fundamentals.prior
+    cap = current["shares_outstanding"] * closes.iloc[-1]
+    result = score(_snapshot(closes), fundamentals)
+    for s in result.scores:
+        t = s.ticker
+        profitability = current.at[t, "gross_profit"] / current.at[t, "total_assets"]
+        growth = current.at[t, "revenue"] / prior.at[t, "revenue"] - 1.0
+        assert s.raw["earnings_yield"] == pytest.approx(current.at[t, "net_income"] / cap[t])
+        assert s.raw["gross_profitability"] == pytest.approx(profitability)
+        assert s.raw["revenue_growth"] == pytest.approx(growth)
+        assert s.raw["size"] == pytest.approx(np.log(cap[t]))
+
+
+def test_fundamentals_only_tickers_ignored() -> None:
+    result = score(_snapshot(make_closes(TICKERS)), make_fundamentals([*TICKERS, "ZZZ"]))
+    assert result.excluded == {}
+    assert sorted(s.ticker for s in result.scores) == sorted(TICKERS)
+    assert all(set(s.raw) >= FUNDAMENTAL_NAMES for s in result.scores)
+
+
+def test_nan_gross_profit_is_nonfinite_factor() -> None:
+    fundamentals = _with_current(make_fundamentals(TICKERS), {"A1": {"gross_profit": np.nan}})
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "nonfinite_factor"}
+    assert "A1" not in {s.ticker for s in result.scores}
+
+
+def test_nan_prior_metric_other_than_revenue_is_not_excluded() -> None:
+    fundamentals = make_fundamentals(TICKERS)
+    prior = fundamentals.prior.copy()
+    prior.loc["A1", "net_income"] = np.nan
+    patched = FundamentalsSnapshot(
+        fundamentals.as_of, fundamentals.current, prior, fundamentals.periods
+    )
+    result = score(_snapshot(make_closes(TICKERS)), patched)
+    assert "A1" in {s.ticker for s in result.scores}
+    assert "A1" not in result.excluded
+
+
+def test_lower_earnings_yield_gets_lower_z() -> None:
+    net_income = {"A1": 1.0, "A2": 2.0, "A3": 3.0, "A4": 4.0}
+    values = {
+        t: {"shares_outstanding": 10.0, "net_income": net_income.get(t, 5.0)} for t in TICKERS
+    }
+    fundamentals = _with_current(make_fundamentals(TICKERS), values)
+    result = score(_snapshot(_flat_closes()), fundamentals)
+    z = {s.ticker: s.z["earnings_yield"] for s in result.scores}
+    assert all(z[low] < z[high] for low, high in pairwise(TECH))
+
+
+def test_larger_market_cap_gets_lower_size_z() -> None:
+    shares = {"A1": 10.0, "A2": 20.0, "A3": 30.0, "A4": 40.0}
+    values = {
+        t: {"shares_outstanding": shares.get(t, 25.0), "net_income": shares.get(t, 25.0)}
+        for t in TICKERS
+    }  # net income scales with shares, so earnings yield is equal across tickers
+    fundamentals = _with_current(make_fundamentals(TICKERS), values)
+    result = score(_snapshot(_flat_closes()), fundamentals)
+    by_ticker = {s.ticker: s for s in result.scores}
+    yields = [by_ticker[t].raw["earnings_yield"] for t in TECH]
+    assert yields == pytest.approx([yields[0]] * len(TECH))
+    z = {t: s.z["size"] for t, s in by_ticker.items()}
+    assert all(z[small] > z[large] for small, large in pairwise(TECH))

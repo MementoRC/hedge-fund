@@ -34,3 +34,13 @@ def _positive(values: pd.Series) -> pd.Series:
 def market_cap(inputs: FundamentalInputs) -> pd.Series:
     """Shares outstanding times close; NaN when the product is <= 0 or missing."""
     return _positive(inputs.current["shares_outstanding"] * inputs.close)
+
+
+def earnings_yield(inputs: FundamentalInputs) -> pd.Series:
+    """TTM net income over market cap; negative earnings stay negative."""
+    return inputs.current["net_income"] / market_cap(inputs)
+
+
+def gross_profitability(inputs: FundamentalInputs) -> pd.Series:
+    """TTM gross profit over total assets; NaN when total assets <= 0."""
+    return inputs.current["gross_profit"] / _positive(inputs.current["total_assets"])

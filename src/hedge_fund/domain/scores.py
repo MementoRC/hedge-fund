@@ -9,7 +9,10 @@ from datetime import date
 
 @dataclass(frozen=True)
 class FactorScore:
-    """One ticker's factor values. ``raw`` and ``z`` are keyed by factor name."""
+    """One ticker's factor values. ``raw`` and ``z`` are keyed by factor name.
+
+    ``piotroski`` and ``altman_z`` are set when quality gates ran, else None.
+    """
 
     ticker: str
     sector: str
@@ -17,6 +20,8 @@ class FactorScore:
     z: Mapping[str, float]
     composite: float
     fallback_universe_z: bool
+    piotroski: int | None = None
+    altman_z: float | None = None
 
 
 @dataclass(frozen=True)

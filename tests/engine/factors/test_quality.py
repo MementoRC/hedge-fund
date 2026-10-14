@@ -1,5 +1,6 @@
 """Tests for the Piotroski and Altman quality scores."""
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -8,6 +9,7 @@ from hedge_fund.engine.factors.quality import (
     DEFAULT_GATES,
     PIOTROSKI_SIGNALS,
     QualityGates,
+    altman_z,
     piotroski,
     piotroski_signals,
 )
@@ -131,6 +133,17 @@ def test_nonpositive_total_assets_scores_zero() -> None:
     assert signals["asset_turnover_up"] == 0
 
 
+def test_nonpositive_current_liabilities_scores_zero() -> None:
+    assert _signal("current_ratio_up", {"current_liabilities": 0.0}, {}) == 0
+
+
+def test_nonpositive_prior_total_assets_scores_zero() -> None:
+    signals = piotroski_signals(_inputs(prior={"total_assets": 0.0})).loc["T"]
+    assert signals["roa_improved"] == 0
+    assert signals["leverage_not_up"] == 0
+    assert signals["asset_turnover_up"] == 0
+
+
 def test_debt_free_both_years_keeps_leverage_point() -> None:
     assert _signal("leverage_not_up", {"long_term_debt": 0.0}, {"long_term_debt": 0.0}) == 1
 
@@ -158,3 +171,31 @@ def test_piotroski_is_row_sum_of_signals() -> None:
 def test_quality_gate_defaults() -> None:
     assert QualityGates() == QualityGates(min_piotroski=4, min_altman_z=1.81)
     assert QualityGates() == DEFAULT_GATES
+
+
+def test_altman_z_known_value() -> None:
+    # 1.2*300/1000 + 1.4*300/1000 + 3.3*150/1000 + 0.6*(100*10)/500 + 1.0*800/1000
+    expected = 0.36 + 0.42 + 0.495 + 1.2 + 0.8
+    assert altman_z(_inputs())["T"] == pytest.approx(expected)
+
+
+def test_altman_z_negative_working_capital_allowed() -> None:
+    z = altman_z(_inputs(current={"current_assets": 100.0}))["T"]  # WC = -100
+    assert z == pytest.approx(3.275 - 1.2 * 0.4)
+
+
+@pytest.mark.parametrize(
+    ("current", "close"),
+    [
+        ({"retained_earnings": NAN}, CLOSE),
+        ({"total_assets": 0.0}, CLOSE),
+        ({"total_liabilities": 0.0}, CLOSE),
+        ({}, 0.0),  # market cap <= 0
+    ],
+)
+def test_altman_z_not_computable_is_nan(current: dict[str, float], close: float) -> None:
+    assert np.isnan(altman_z(_inputs(current=current, close=close))["T"])
+
+
+def test_altman_z_dtype_is_float() -> None:
+    assert altman_z(_inputs()).dtype == "float64"

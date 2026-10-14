@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from hedge_fund.engine.factors.fundamental import FundamentalInputs
+from hedge_fund.engine.factors.fundamental import FundamentalInputs, market_cap
 
 
 @dataclass(frozen=True)
@@ -70,3 +70,16 @@ def piotroski_signals(inputs: FundamentalInputs) -> pd.DataFrame:
 def piotroski(inputs: FundamentalInputs) -> pd.Series:
     """Piotroski F-score, 0..9: the row sum of ``piotroski_signals``."""
     return piotroski_signals(inputs).sum(axis=1)
+
+
+def altman_z(inputs: FundamentalInputs) -> pd.Series:
+    """Classic (1968) Altman Z from current metrics; NaN when any term is not computable."""
+    cur = inputs.current
+    assets = cur["total_assets"]
+    return (
+        1.2 * _ratio(cur["current_assets"] - cur["current_liabilities"], assets)
+        + 1.4 * _ratio(cur["retained_earnings"], assets)
+        + 3.3 * _ratio(cur["operating_income"], assets)
+        + 0.6 * _ratio(market_cap(inputs), cur["total_liabilities"])
+        + 1.0 * _ratio(cur["revenue"], assets)
+    )

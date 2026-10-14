@@ -54,7 +54,9 @@ def score(
     if not scorable:
         return _result(snapshot, (), excluded)
 
-    raw = _raw_frame(window[scorable].ffill(), fundamentals, factors, active)
+    filled = window[scorable].ffill()
+    inputs = None if fundamentals is None else _fundamental_inputs(fundamentals, filled)
+    raw = _raw_frame(filled, inputs, factors, active)
     finite = np.isfinite(raw).all(axis=1)
     for ticker in raw.index[~finite]:
         excluded[ticker] = "nonfinite_factor"
@@ -105,21 +107,27 @@ def _signs(
     return {spec.name: spec.sign for spec in factors} | {spec.name: spec.sign for spec in active}
 
 
+def _fundamental_inputs(
+    fundamentals: FundamentalsSnapshot, filled: pd.DataFrame
+) -> FundamentalInputs:
+    """Fundamentals reindexed to the scorable tickers, plus the last forward-filled close."""
+    return FundamentalInputs(
+        current=fundamentals.current.reindex(filled.columns),
+        prior=fundamentals.prior.reindex(filled.columns),
+        close=filled.iloc[-1],
+    )
+
+
 def _raw_frame(
     filled: pd.DataFrame,
-    fundamentals: FundamentalsSnapshot | None,
+    inputs: FundamentalInputs | None,
     factors: Sequence[FactorSpec],
     active: Sequence[FundamentalFactorSpec],
 ) -> pd.DataFrame:
     """Raw value per scorable ticker (rows) and factor (columns, price factors first)."""
     price_raw = pd.DataFrame({spec.name: spec.fn(filled) for spec in factors})
-    if fundamentals is None:
+    if inputs is None:
         return price_raw
-    inputs = FundamentalInputs(
-        current=fundamentals.current.reindex(filled.columns),
-        prior=fundamentals.prior.reindex(filled.columns),
-        close=filled.iloc[-1],
-    )
     fundamental_raw = pd.DataFrame(
         {spec.name: spec.fn(inputs) for spec in active}, index=price_raw.index
     )

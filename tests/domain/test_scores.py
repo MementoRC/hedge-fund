@@ -38,3 +38,25 @@ def test_factor_score_is_frozen() -> None:
     score = _factor_score()
     with pytest.raises(dataclasses.FrozenInstanceError):
         score.composite = 2.0  # type: ignore[misc]
+
+
+def test_factor_score_quality_fields_default_to_none() -> None:
+    s = FactorScore(
+        ticker="T", sector="Tech", raw={}, z={}, composite=0.0, fallback_universe_z=False
+    )
+    assert s.piotroski is None
+    assert s.altman_z is None
+
+
+def test_factor_score_carries_quality_fields() -> None:
+    s = FactorScore(
+        ticker="T",
+        sector="Tech",
+        raw={},
+        z={},
+        composite=0.0,
+        fallback_universe_z=False,
+        piotroski=7,
+        altman_z=2.5,
+    )
+    assert (s.piotroski, s.altman_z) == (7, 2.5)

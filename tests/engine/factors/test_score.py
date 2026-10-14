@@ -293,10 +293,9 @@ def test_fundamental_factors_ignored_without_fundamentals() -> None:
 
 def test_empty_fundamental_factors_is_price_only_scoring() -> None:
     snap = _snapshot(make_closes(TICKERS))
-    assert (
-        score(snap, make_fundamentals(TICKERS), fundamental_factors=(), quality_gates=None)
-        == score(snap)
-    )
+    assert score(
+        snap, make_fundamentals(TICKERS), fundamental_factors=(), quality_gates=None
+    ) == score(snap)
 
 
 # --- fundamentals: exclusions -----------------------------------------------
@@ -316,9 +315,7 @@ def test_price_exclusion_beats_missing_fundamentals() -> None:
     closes = make_closes(TICKERS)
     closes.iloc[200, 0] = 0.0  # A1: nonpositive_price and no fundamentals row
     fundamentals = make_fundamentals([t for t in TICKERS if t not in {"A1", "A2"}])
-    result = score(
-        _snapshot(closes), fundamentals, fundamental_factors=(), quality_gates=None
-    )
+    result = score(_snapshot(closes), fundamentals, fundamental_factors=(), quality_gates=None)
     assert result.excluded == {"A1": "nonpositive_price", "A2": "missing_fundamentals"}
 
 
@@ -333,9 +330,7 @@ def test_all_missing_fundamentals_returns_before_computing_factors() -> None:
 
 
 def test_fundamentals_add_four_scored_factors() -> None:
-    result = score(
-        _snapshot(make_closes(TICKERS)), make_fundamentals(TICKERS), quality_gates=None
-    )
+    result = score(_snapshot(make_closes(TICKERS)), make_fundamentals(TICKERS), quality_gates=None)
     expected_order = [spec.name for spec in FACTORS] + [spec.name for spec in FUNDAMENTAL_FACTORS]
     assert result.excluded == {}
     assert len(result.scores) == len(TICKERS)

@@ -293,7 +293,10 @@ def test_fundamental_factors_ignored_without_fundamentals() -> None:
 
 def test_empty_fundamental_factors_is_price_only_scoring() -> None:
     snap = _snapshot(make_closes(TICKERS))
-    assert score(snap, make_fundamentals(TICKERS), fundamental_factors=()) == score(snap)
+    assert (
+        score(snap, make_fundamentals(TICKERS), fundamental_factors=(), quality_gates=None)
+        == score(snap)
+    )
 
 
 # --- fundamentals: exclusions -----------------------------------------------
@@ -302,7 +305,9 @@ def test_empty_fundamental_factors_is_price_only_scoring() -> None:
 
 def test_missing_fundamentals_excluded() -> None:
     fundamentals = make_fundamentals([t for t in TICKERS if t != "A1"])
-    result = score(_snapshot(make_closes(TICKERS)), fundamentals, fundamental_factors=())
+    result = score(
+        _snapshot(make_closes(TICKERS)), fundamentals, fundamental_factors=(), quality_gates=None
+    )
     assert result.excluded == {"A1": "missing_fundamentals"}
     assert "A1" not in {s.ticker for s in result.scores}
 
@@ -311,7 +316,9 @@ def test_price_exclusion_beats_missing_fundamentals() -> None:
     closes = make_closes(TICKERS)
     closes.iloc[200, 0] = 0.0  # A1: nonpositive_price and no fundamentals row
     fundamentals = make_fundamentals([t for t in TICKERS if t not in {"A1", "A2"}])
-    result = score(_snapshot(closes), fundamentals, fundamental_factors=())
+    result = score(
+        _snapshot(closes), fundamentals, fundamental_factors=(), quality_gates=None
+    )
     assert result.excluded == {"A1": "nonpositive_price", "A2": "missing_fundamentals"}
 
 
@@ -326,7 +333,9 @@ def test_all_missing_fundamentals_returns_before_computing_factors() -> None:
 
 
 def test_fundamentals_add_four_scored_factors() -> None:
-    result = score(_snapshot(make_closes(TICKERS)), make_fundamentals(TICKERS))
+    result = score(
+        _snapshot(make_closes(TICKERS)), make_fundamentals(TICKERS), quality_gates=None
+    )
     expected_order = [spec.name for spec in FACTORS] + [spec.name for spec in FUNDAMENTAL_FACTORS]
     assert result.excluded == {}
     assert len(result.scores) == len(TICKERS)
@@ -341,7 +350,7 @@ def test_fundamental_raw_values_follow_ticker_labels() -> None:
     fundamentals = make_fundamentals(TICKERS)
     current, prior = fundamentals.current, fundamentals.prior
     cap = current["shares_outstanding"] * closes.iloc[-1]
-    result = score(_snapshot(closes), fundamentals)
+    result = score(_snapshot(closes), fundamentals, quality_gates=None)
     for s in result.scores:
         t = s.ticker
         profitability = current.at[t, "gross_profit"] / current.at[t, "total_assets"]
@@ -353,7 +362,9 @@ def test_fundamental_raw_values_follow_ticker_labels() -> None:
 
 
 def test_fundamentals_only_tickers_ignored() -> None:
-    result = score(_snapshot(make_closes(TICKERS)), make_fundamentals([*TICKERS, "ZZZ"]))
+    result = score(
+        _snapshot(make_closes(TICKERS)), make_fundamentals([*TICKERS, "ZZZ"]), quality_gates=None
+    )
     assert result.excluded == {}
     assert sorted(s.ticker for s in result.scores) == sorted(TICKERS)
     assert all(set(s.raw) >= FUNDAMENTAL_NAMES for s in result.scores)
@@ -361,7 +372,7 @@ def test_fundamentals_only_tickers_ignored() -> None:
 
 def test_nan_gross_profit_is_nonfinite_factor() -> None:
     fundamentals = _with_current(make_fundamentals(TICKERS), {"A1": {"gross_profit": np.nan}})
-    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals, quality_gates=None)
     assert result.excluded == {"A1": "nonfinite_factor"}
     assert "A1" not in {s.ticker for s in result.scores}
 
@@ -373,7 +384,7 @@ def test_nan_prior_metric_other_than_revenue_is_not_excluded() -> None:
     patched = FundamentalsSnapshot(
         fundamentals.as_of, fundamentals.current, prior, fundamentals.periods
     )
-    result = score(_snapshot(make_closes(TICKERS)), patched)
+    result = score(_snapshot(make_closes(TICKERS)), patched, quality_gates=None)
     assert "A1" in {s.ticker for s in result.scores}
     assert "A1" not in result.excluded
 
@@ -384,7 +395,7 @@ def test_lower_earnings_yield_gets_lower_z() -> None:
         t: {"shares_outstanding": 10.0, "net_income": net_income.get(t, 5.0)} for t in TICKERS
     }
     fundamentals = _with_current(make_fundamentals(TICKERS), values)
-    result = score(_snapshot(_flat_closes()), fundamentals)
+    result = score(_snapshot(_flat_closes()), fundamentals, quality_gates=None)
     z = {s.ticker: s.z["earnings_yield"] for s in result.scores}
     assert all(z[low] < z[high] for low, high in pairwise(TECH))
 
@@ -396,7 +407,7 @@ def test_larger_market_cap_gets_lower_size_z() -> None:
         for t in TICKERS
     }  # net income scales with shares, so earnings yield is equal across tickers
     fundamentals = _with_current(make_fundamentals(TICKERS), values)
-    result = score(_snapshot(_flat_closes()), fundamentals)
+    result = score(_snapshot(_flat_closes()), fundamentals, quality_gates=None)
     by_ticker = {s.ticker: s for s in result.scores}
     yields = [by_ticker[t].raw["earnings_yield"] for t in TECH]
     assert yields == pytest.approx([yields[0]] * len(TECH))

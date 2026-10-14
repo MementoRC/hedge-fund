@@ -17,6 +17,7 @@ from hedge_fund.engine.factors.fundamental import (
     FundamentalInputs,
 )
 from hedge_fund.engine.factors.normalize import sector_zscore, winsorize
+from hedge_fund.engine.factors.quality import DEFAULT_GATES, QualityGates
 
 MAX_MISSING_FRACTION = 0.05
 
@@ -26,6 +27,7 @@ def score(
     fundamentals: FundamentalsSnapshot | None = None,
     factors: Sequence[FactorSpec] = FACTORS,
     fundamental_factors: Sequence[FundamentalFactorSpec] = FUNDAMENTAL_FACTORS,
+    quality_gates: QualityGates | None = DEFAULT_GATES,
 ) -> ScoreResult:
     """Score every ticker in ``snapshot`` on price factors.
 

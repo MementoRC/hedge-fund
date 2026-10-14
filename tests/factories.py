@@ -1,6 +1,6 @@
 """Deterministic price and fundamentals fixtures for engine tests."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 
 import numpy as np
@@ -51,6 +51,49 @@ def make_fundamentals(
     return FundamentalsSnapshot(
         as_of=FUNDAMENTALS_AS_OF, current=current, prior=prior, periods=periods
     )
+
+
+_PASSING_CURRENT: dict[str, Callable[[float], float]] = {
+    "net_income": lambda k: 100.0 * k * k,
+    "operating_cash_flow": lambda k: 150.0 * k * k,
+    "total_assets": lambda k: 1000.0,
+    "long_term_debt": lambda k: 100.0,
+    "current_assets": lambda k: 500.0,
+    "current_liabilities": lambda k: 200.0,
+    "shares_outstanding": lambda k: 100.0 * k,
+    "gross_profit": lambda k: 400.0 * k,
+    "revenue": lambda k: 800.0 * k,
+    "retained_earnings": lambda k: 300.0,
+    "operating_income": lambda k: 150.0 * k,
+    "total_liabilities": lambda k: 500.0,
+}
+_PASSING_PRIOR: dict[str, Callable[[float], float]] = {
+    "net_income": lambda k: 80.0 * k * k,
+    "total_assets": lambda k: 1000.0,
+    "long_term_debt": lambda k: 200.0,
+    "current_assets": lambda k: 400.0,
+    "current_liabilities": lambda k: 250.0,
+    "shares_outstanding": lambda k: 100.0 * k,
+    "gross_profit": lambda k: 300.0,
+    "revenue": lambda k: 700.0,
+}
+
+
+def make_passing_fundamentals(
+    tickers: Sequence[str] = ("AAA", "BBB", "CCC"),
+) -> FundamentalsSnapshot:
+    """``make_fundamentals`` with gate inputs set so every ticker has F = 9 and Z > 1.81.
+
+    Values scale with k = 1 + 0.1 * i (i = sorted ticker position) so fundamental factor
+    raw values still differ across tickers.
+    """
+    base = make_fundamentals(tickers)
+    current, prior = base.current.copy(), base.prior.copy()
+    for i, ticker in enumerate(current.index):
+        k = 1.0 + 0.1 * i
+        current.loc[ticker, list(_PASSING_CURRENT)] = [f(k) for f in _PASSING_CURRENT.values()]
+        prior.loc[ticker, list(_PASSING_PRIOR)] = [f(k) for f in _PASSING_PRIOR.values()]
+    return FundamentalsSnapshot(base.as_of, current, prior, base.periods)
 
 
 def make_facts(tickers: Sequence[str]) -> pd.DataFrame:

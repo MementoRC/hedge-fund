@@ -17,8 +17,9 @@ from hedge_fund.engine.factors.definitions import (
     reversal_1m,
 )
 from hedge_fund.engine.factors.fundamental import FUNDAMENTAL_FACTORS, FundamentalFactorSpec, size
+from hedge_fund.engine.factors.quality import QualityGates
 from hedge_fund.engine.factors.score import score
-from tests.factories import make_closes, make_fundamentals, snapshot_from
+from tests.factories import make_closes, make_fundamentals, make_passing_fundamentals, snapshot_from
 
 SECTORS = {
     "A1": "Tech",
@@ -408,3 +409,124 @@ def test_larger_market_cap_gets_lower_size_z() -> None:
     assert yields == pytest.approx([yields[0]] * len(TECH))
     z = {t: s.z["size"] for t, s in by_ticker.items()}
     assert all(z[small] > z[large] for small, large in pairwise(TECH))
+
+
+FAIL_PIOTROSKI = {  # leaves current_ratio_up, no_dilution, asset_turnover_up: F = 3
+    "net_income": -10.0,
+    "operating_cash_flow": -20.0,
+    "gross_profit": 1.0,
+    "long_term_debt": 900.0,
+}
+FAIL_ALTMAN = {"retained_earnings": -1000.0, "total_liabilities": 1e9}  # A1: Z ≈ 0.26
+
+
+def _drop(fundamentals: FundamentalsSnapshot, ticker: str) -> FundamentalsSnapshot:
+    return FundamentalsSnapshot(
+        fundamentals.as_of,
+        fundamentals.current.drop(index=ticker),
+        fundamentals.prior.drop(index=ticker),
+        fundamentals.periods.drop(index=ticker),
+    )
+
+
+def test_passing_tickers_carry_quality_scores() -> None:
+    closes = make_closes(TICKERS)
+    result = score(_snapshot(closes), make_passing_fundamentals(TICKERS))
+    assert result.excluded == {}
+    assert {s.piotroski for s in result.scores} == {9}
+    a1 = next(s for s in result.scores if s.ticker == "A1")
+    market_term = 0.6 * 100.0 * float(closes["A1"].iloc[-1]) / 500.0
+    assert a1.altman_z == pytest.approx(0.36 + 0.42 + 0.495 + market_term + 0.8)
+
+
+def test_low_piotroski_excluded() -> None:
+    fundamentals = _with_current(make_passing_fundamentals(TICKERS), {"A1": FAIL_PIOTROSKI})
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "low_piotroski"}
+
+
+def test_altman_distress_excluded() -> None:
+    fundamentals = _with_current(make_passing_fundamentals(TICKERS), {"A1": FAIL_ALTMAN})
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "altman_distress"}
+
+
+def test_nan_retained_earnings_is_nonfinite_quality() -> None:
+    fundamentals = _with_current(
+        make_passing_fundamentals(TICKERS), {"A1": {"retained_earnings": np.nan}}
+    )
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "nonfinite_quality"}
+
+
+def test_nonfinite_factor_beats_nonfinite_quality() -> None:
+    fundamentals = _with_current(
+        make_passing_fundamentals(TICKERS),
+        {"A1": {"gross_profit": np.nan, "retained_earnings": np.nan}},
+    )
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "nonfinite_factor"}
+
+
+def test_low_piotroski_beats_altman_distress() -> None:
+    fundamentals = _with_current(
+        make_passing_fundamentals(TICKERS), {"A1": FAIL_PIOTROSKI | FAIL_ALTMAN}
+    )
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "low_piotroski"}
+
+
+def test_gate_failures_do_not_affect_survivor_z() -> None:
+    closes = make_closes(TICKERS)
+    passing = make_passing_fundamentals(TICKERS)
+    gated = score(_snapshot(closes), _with_current(passing, {"A1": FAIL_ALTMAN}))
+    survivors = [t for t in TICKERS if t != "A1"]
+    without = score(
+        snapshot_from(closes[survivors], {t: SECTORS[t] for t in survivors}),
+        _drop(passing, "A1"),
+    )
+    assert [s.ticker for s in gated.scores] == [s.ticker for s in without.scores]
+    for g, w in zip(gated.scores, without.scores, strict=True):
+        assert g.z == pytest.approx(w.z)
+
+
+def test_quality_gates_none_disables_gates() -> None:
+    fundamentals = _with_current(make_passing_fundamentals(TICKERS), {"A1": FAIL_PIOTROSKI})
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals, quality_gates=None)
+    assert result.excluded == {}
+    assert all(s.piotroski is None and s.altman_z is None for s in result.scores)
+
+
+def test_quality_gates_ignored_without_fundamentals() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    result = score(snap, quality_gates=QualityGates(min_piotroski=10))
+    assert result == score(snap)
+    assert all(s.piotroski is None and s.altman_z is None for s in result.scores)
+
+
+def test_gates_run_without_fundamental_factors() -> None:
+    fundamentals = _with_current(make_passing_fundamentals(TICKERS), {"A1": FAIL_PIOTROSKI})
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals, fundamental_factors=())
+    assert result.excluded == {"A1": "low_piotroski"}
+
+
+def test_all_tickers_failing_gates_return_empty_scores() -> None:
+    fundamentals = _with_current(
+        make_passing_fundamentals(TICKERS), dict.fromkeys(TICKERS, FAIL_ALTMAN)
+    )
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.scores == ()
+    assert result.excluded == dict.fromkeys(TICKERS, "altman_distress")
+
+
+def test_custom_thresholds_respected() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    passing = make_passing_fundamentals(TICKERS)
+    strict = score(snap, passing, quality_gates=QualityGates(min_piotroski=10))
+    assert strict.excluded == dict.fromkeys(TICKERS, "low_piotroski")
+    lenient = score(
+        snap,
+        _with_current(passing, {"A1": FAIL_ALTMAN}),
+        quality_gates=QualityGates(min_altman_z=0.0),
+    )
+    assert lenient.excluded == {}

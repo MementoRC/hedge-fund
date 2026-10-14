@@ -437,6 +437,12 @@ def test_passing_tickers_carry_quality_scores() -> None:
     a1 = next(s for s in result.scores if s.ticker == "A1")
     market_term = 0.6 * 100.0 * float(closes["A1"].iloc[-1]) / 500.0
     assert a1.altman_z == pytest.approx(0.36 + 0.42 + 0.495 + market_term + 0.8)
+    # A2 is sorted position 1, so k = 1.1: EBIT, shares and revenue scale with k.
+    a2 = next(s for s in result.scores if s.ticker == "A2")
+    k = 1.1
+    a2_market_term = 0.6 * 100.0 * k * float(closes["A2"].iloc[-1]) / 500.0
+    assert a2.piotroski == 9
+    assert a2.altman_z == pytest.approx(0.36 + 0.42 + 0.495 * k + a2_market_term + 0.8 * k)
 
 
 def test_low_piotroski_excluded() -> None:

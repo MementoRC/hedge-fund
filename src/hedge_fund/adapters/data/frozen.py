@@ -54,8 +54,12 @@ def load_snapshot(path: Path) -> PriceSnapshot:
     meta = json.loads(parquet.with_suffix(".json").read_text(encoding="utf-8"))
     closes = pd.read_parquet(parquet)[meta["columns"]]
     as_of = date.fromisoformat(meta["as_of"])
+    name_as_of, expected = parquet.stem.rsplit("_", 1)
+    if name_as_of != as_of.isoformat():
+        raise ValueError(
+            f"{parquet.name}: as_of mismatch, name has {name_as_of}, sidecar has {as_of}"
+        )
     actual = _digest(as_of, meta["columns"], meta["sectors"], closes)
-    expected = parquet.stem.rsplit("_", 1)[-1]
     if actual != expected:
         raise ValueError(
             f"{parquet.name}: digest mismatch, name has {expected}, content is {actual}"

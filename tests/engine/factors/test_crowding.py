@@ -371,6 +371,8 @@ def test_crowded_factory_shocks_only_listed_names() -> None:
     shocked = make_crowded_closes(UNIVERSE, LEG, seed=0)
     pd.testing.assert_frame_equal(shocked[OTHER], plain[OTHER])
     assert not np.allclose(shocked[LEG], plain[LEG])
+    added = (np.log(shocked["A0"]).diff() - np.log(plain["A0"]).diff()).dropna()
+    assert added.std() == pytest.approx(0.02, rel=0.15)  # measured 0.01849
 
 
 def test_shocked_top_leg_is_crowded() -> None:
@@ -379,20 +381,26 @@ def test_shocked_top_leg_is_crowded() -> None:
     assert factor.long_n == 6
     assert factor.long_excess is not None
     assert factor.long_excess >= DEFAULT_CROWDING.threshold
+    assert factor.short_excess is not None
+    assert factor.short_excess < DEFAULT_CROWDING.threshold  # measured 0.029
     assert factor.crowded is True
 
 
 def test_independent_walks_are_not_crowded() -> None:
+    # Regression pin: passes against any non-crashing implementation once the factory exists.
     snap = snapshot_from(make_closes(UNIVERSE, seed=0), UNIVERSE_SECTORS)
     report = crowding(snap, _ranked(snap, top=LEG, bottom=OTHER))
     (factor,) = report.factors
     assert report.baseline_corr is not None
     assert factor.long_excess is not None
     assert factor.short_excess is not None
+    assert factor.long_excess < DEFAULT_CROWDING.threshold  # measured 0.040
+    assert factor.short_excess < DEFAULT_CROWDING.threshold  # measured -0.015
     assert factor.crowded is False
 
 
 def test_whole_sector_shock_is_removed_by_residualization() -> None:
+    # Regression pin: passes against any non-crashing implementation once the factory exists.
     # The shared shock hits all 10 Tech names, so the Tech sector mean absorbs it exactly.
     # The top leg is 6 Tech names; sector demeaning makes their expected mean pair corr
     # about -1/9, below the baseline, so the excess is negative and nothing is flagged.
@@ -413,4 +421,6 @@ def test_shocked_bottom_leg_is_crowded_via_short() -> None:
     assert factor.short_n == 6
     assert factor.short_excess is not None
     assert factor.short_excess >= DEFAULT_CROWDING.threshold
+    assert factor.long_excess is not None
+    assert factor.long_excess < DEFAULT_CROWDING.threshold  # measured 0.029
     assert factor.crowded is True

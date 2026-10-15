@@ -92,6 +92,15 @@ def test_load_rejects_tampered_parquet(tmp_path: Path) -> None:
         load_snapshot(path)
 
 
+def test_load_rejects_a_renamed_date_prefix(tmp_path: Path) -> None:
+    path = save_snapshot(_snapshot(), tmp_path)
+    renamed = path.with_name(path.name.replace("2026-09-30", "2026-08-31"))
+    path.rename(renamed)
+    path.with_suffix(".json").rename(renamed.with_suffix(".json"))
+    with pytest.raises(ValueError, match="as_of mismatch"):
+        load_snapshot(renamed)
+
+
 def test_resaving_a_loaded_snapshot_keeps_its_name(tmp_path: Path) -> None:
     path = save_snapshot(_snapshot(), tmp_path)
     assert save_snapshot(load_snapshot(path), tmp_path / "copy").name == path.name

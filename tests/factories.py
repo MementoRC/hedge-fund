@@ -34,6 +34,23 @@ def snapshot_from(closes: pd.DataFrame, sectors: Mapping[str, str]) -> PriceSnap
     return PriceSnapshot(as_of=closes.index[-1].date(), closes=closes, sectors=dict(sectors))
 
 
+def make_crowded_closes(
+    tickers: Sequence[str], crowded: Sequence[str], strength: float = 1.0, seed: int = 0
+) -> pd.DataFrame:
+    """``make_closes`` paths with one shared N(0, 0.02) log-return shock added to ``crowded``.
+
+    The shock comes from a separate RNG seeded ``seed + 1``; prices are rebuilt from the
+    first close, so non-crowded columns are unchanged (up to float round-off).
+    """
+    closes = make_closes(tickers, seed=seed)
+    log_returns = np.log(closes).diff().iloc[1:]
+    latent = np.random.default_rng(seed + 1).normal(0.0, 0.02, len(log_returns))
+    for ticker in crowded:
+        log_returns[ticker] = log_returns[ticker] + strength * latent
+    rebuilt = np.exp(log_returns.cumsum()) * closes.iloc[0]
+    return pd.concat([closes.iloc[:1], rebuilt]).set_axis(closes.index)
+
+
 def make_fundamentals(
     tickers: Sequence[str] = ("AAA", "BBB", "CCC"), seed: int = 0
 ) -> FundamentalsSnapshot:

@@ -126,8 +126,13 @@ def _factor_crowding(
     baseline: float | None,
     params: CrowdingParams,
 ) -> FactorCrowding:
-    """Long (top ``m`` by z) and short (bottom ``m``) leg excess for one factor."""
-    m = int(len(scores) * params.quantile)
+    """Long (top ``m`` by z) and short (bottom ``m``) leg excess for one factor.
+
+    Legs with fewer than ``params.min_leg`` names are not measured (None excess).
+    """
+    m = int(len(scores) * params.quantile + 1e-9)  # 100 * 0.29 == 28.999999999999996
+    if m < params.min_leg:
+        return FactorCrowding(name, None, None, m, m, crowded=False)
     long_excess = _excess(_mean_pair_corr(corr, _leg(scores, name, m, sign=1)), baseline)
     short_excess = _excess(_mean_pair_corr(corr, _leg(scores, name, m, sign=-1)), baseline)
     crowded = any(e is not None and e >= params.threshold for e in (long_excess, short_excess))

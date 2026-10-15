@@ -59,6 +59,10 @@ HAND_FACTORS = (
     FactorCrowding("g", pytest.approx(-11 / 27), pytest.approx(-11 / 27), 2, 2, False),
 )
 
+# 30-name universe: 3 sectors of 10 (A0..A9 Tech, B0..B9 Energy, C0..C9 Health).
+UNIVERSE = [f"{s}{i}" for s in "ABC" for i in range(10)]
+UNIVERSE_SECTORS = {t: {"A": "Tech", "B": "Energy", "C": "Health"}[t[0]] for t in UNIVERSE}
+
 
 def _result(snap: PriceSnapshot, z: dict[str, dict[str, float]]) -> ScoreResult:
     """ScoreResult with the given z per ticker, composite = mean z, sorted like ``score()``."""
@@ -97,6 +101,11 @@ def _hand_closes() -> pd.DataFrame:
 
 def _hand_snapshot() -> PriceSnapshot:
     return snapshot_from(_hand_closes(), ONE_SECTOR)
+
+
+def _by_position(snap: PriceSnapshot, tickers: list[str]) -> ScoreResult:
+    """One factor ``f`` with z = position in ``tickers`` (distinct z, no ties)."""
+    return _result(snap, {t: {"f": float(i)} for i, t in enumerate(tickers)})
 
 
 # --- params ----------------------------------------------------------------
@@ -306,3 +315,40 @@ def test_rows_before_window_are_ignored() -> None:
     assert trimmed == crowding(base, _result(base, HAND_Z), params=HAND)
     wide = dataclasses.replace(HAND, window_rows=9)
     assert crowding(longer, _result(longer, HAND_Z), params=wide) != trimmed
+
+
+# --- leg size --------------------------------------------------------------
+
+
+def test_leg_below_min_leg_reports_none() -> None:
+    snap = snapshot_from(make_closes(UNIVERSE), UNIVERSE_SECTORS)
+    params = CrowdingParams(quantile=0.1)  # m = 3 < min_leg = 5
+    report = crowding(snap, _by_position(snap, UNIVERSE), params=params)
+    assert report.baseline_corr is not None
+    assert report.factors == (FactorCrowding("f", None, None, 3, 3, False),)
+
+
+def test_min_leg_above_universe_is_not_an_error() -> None:
+    snap = _hand_snapshot()
+    params = dataclasses.replace(HAND, min_leg=5)  # n = 4, m = 2
+    report = crowding(snap, _result(snap, HAND_Z), params=params)
+    assert report.baseline_corr == pytest.approx(HAND_BASELINE)
+    assert report.factors == (
+        FactorCrowding("f", None, None, 2, 2, False),
+        FactorCrowding("g", None, None, 2, 2, False),
+    )
+
+
+def test_leg_size_tolerates_float_rounding() -> None:
+    # 100 * 0.29 == 28.999999999999996 in floating point; int() alone gives 28.
+    tickers = [f"T{i:03d}" for i in range(100)]
+    snap = snapshot_from(make_closes(tickers), dict.fromkeys(tickers, "Tech"))
+    params = CrowdingParams(quantile=0.29)
+    (factor,) = crowding(snap, _by_position(snap, tickers), params=params).factors
+    assert (factor.long_n, factor.short_n) == (29, 29)
+
+
+def test_report_is_deterministic() -> None:
+    snap = snapshot_from(make_closes(UNIVERSE), UNIVERSE_SECTORS)
+    result = _by_position(snap, UNIVERSE)
+    assert crowding(snap, result) == crowding(snap, result)

@@ -235,6 +235,41 @@ def test_small_sectors_use_universe_mean() -> None:
     assert report.factors == HAND_FACTORS
 
 
+def test_residuals_use_sector_mean_not_universe_mean() -> None:
+    # Sector S = {A, B, C} (>= MIN_SECTOR_SIZE); X = {D} falls back to the universe mean.
+    # Log return = 0.01 * unit + market; sector S mean = market, D = market + 0.01 * [4,-4,4,-4],
+    # so universe mean = market + 0.01 * [1,-1,1,-1] differs from the S mean by 0.01 * [-1,1,-1,1].
+    # Sector-demeaned residuals (units of 0.01, all with zero time-mean, so corr = X.Y/(|X||Y|)):
+    #   A = [1,-1,1,-1]  B = [1,1,-1,-1]  C = [-2,0,0,2]  D = [3,-3,3,-3]  (D: rD - universe mean)
+    #   A.B = 0, A.C = B.C = -4 -> -1/sqrt2, A.D = 12 -> 1, B.D = 0, C.D = -12 -> -1/sqrt2
+    # baseline = (0 - 3/sqrt2 + 1) / 6 = (1 - 3/sqrt2) / 6
+    # quantile 0.5 of 4 names gives m = 2; f: long {A, D} = 1, short {C, B} = -1/sqrt2.
+    # Universe-only demeaning would shift A, B, C by 0.01 * [-1,1,-1,1] (A becomes ~0) and give
+    # a different baseline (about -0.115).
+    market = np.array([0.004, -0.002, 0.003, 0.001])
+    units = {
+        "A": np.array([1.0, -1.0, 1.0, -1.0]),
+        "B": np.array([1.0, 1.0, -1.0, -1.0]),
+        "C": np.array([-2.0, 0.0, 0.0, 2.0]),
+    }
+    log_returns = {t: 0.01 * u + market for t, u in units.items()}
+    log_returns["D"] = 0.01 * np.array([4.0, -4.0, 4.0, -4.0]) + market
+    index = pd.bdate_range(end=END_DATE, periods=5)
+    closes = pd.DataFrame(
+        {t: 100.0 * np.exp(np.cumsum(np.concatenate(([0.0], r)))) for t, r in log_returns.items()},
+        index=index,
+    )
+    snap = snapshot_from(closes, {"A": "S", "B": "S", "C": "S", "D": "X"})
+    z = {"A": {"f": 2.0}, "D": {"f": 1.0}, "B": {"f": -1.0}, "C": {"f": -2.0}}
+    params = CrowdingParams(quantile=0.5, min_leg=2, window_rows=5)
+    report = crowding(snap, _result(snap, z), params=params)
+    baseline = (1 - 3 / np.sqrt(2)) / 6
+    assert report.baseline_corr == pytest.approx(baseline)
+    (factor,) = report.factors
+    assert factor.long_excess == pytest.approx(1 - baseline)
+    assert factor.short_excess == pytest.approx(-1 / np.sqrt(2) - baseline)
+
+
 def test_ties_broken_by_ticker_ascending() -> None:
     # A, B and C tie on z. Long (z desc, ticker asc) = {A, B}: 0 -> 7/27.
     # Short (z asc, ticker asc) = {D, A}: 1/3 -> 9/27 + 7/27 = 16/27.

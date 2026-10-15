@@ -14,7 +14,7 @@ from hedge_fund.engine.factors.crowding import (
     CrowdingParams,
     crowding,
 )
-from tests.factories import END_DATE, make_closes, snapshot_from
+from tests.factories import END_DATE, make_closes, make_crowded_closes, snapshot_from
 
 TICKERS = ["A", "B", "C", "D"]
 ONE_SECTOR = dict.fromkeys(TICKERS, "Tech")
@@ -62,6 +62,9 @@ HAND_FACTORS = (
 # 30-name universe: 3 sectors of 10 (A0..A9 Tech, B0..B9 Energy, C0..C9 Health).
 UNIVERSE = [f"{s}{i}" for s in "ABC" for i in range(10)]
 UNIVERSE_SECTORS = {t: {"A": "Tech", "B": "Energy", "C": "Health"}[t[0]] for t in UNIVERSE}
+LEG = ["A0", "A1", "B0", "B1", "C0", "C1"]  # 2 names per sector
+OTHER = ["A8", "A9", "B8", "B9", "C8", "C9"]
+SECTOR_A = [f"A{i}" for i in range(10)]
 
 
 def _result(snap: PriceSnapshot, z: dict[str, dict[str, float]]) -> ScoreResult:
@@ -106,6 +109,12 @@ def _hand_snapshot() -> PriceSnapshot:
 def _by_position(snap: PriceSnapshot, tickers: list[str]) -> ScoreResult:
     """One factor ``f`` with z = position in ``tickers`` (distinct z, no ties)."""
     return _result(snap, {t: {"f": float(i)} for i, t in enumerate(tickers)})
+
+
+def _ranked(snap: PriceSnapshot, top: list[str], bottom: list[str]) -> ScoreResult:
+    """One factor ``f`` over UNIVERSE: z = 1 for ``top``, -1 for ``bottom``, else 0."""
+    z = dict.fromkeys(UNIVERSE, 0.0) | dict.fromkeys(top, 1.0) | dict.fromkeys(bottom, -1.0)
+    return _result(snap, {t: {"f": v} for t, v in z.items()})
 
 
 # --- params ----------------------------------------------------------------
@@ -352,3 +361,56 @@ def test_report_is_deterministic() -> None:
     snap = snapshot_from(make_closes(UNIVERSE), UNIVERSE_SECTORS)
     result = _by_position(snap, UNIVERSE)
     assert crowding(snap, result) == crowding(snap, result)
+
+
+# --- statistical cases (30 names, 3 sectors of 10, m = 6, default params) ----
+
+
+def test_crowded_factory_shocks_only_listed_names() -> None:
+    plain = make_closes(UNIVERSE, seed=0)
+    shocked = make_crowded_closes(UNIVERSE, LEG, seed=0)
+    pd.testing.assert_frame_equal(shocked[OTHER], plain[OTHER])
+    assert not np.allclose(shocked[LEG], plain[LEG])
+
+
+def test_shocked_top_leg_is_crowded() -> None:
+    snap = snapshot_from(make_crowded_closes(UNIVERSE, LEG, seed=0), UNIVERSE_SECTORS)
+    (factor,) = crowding(snap, _ranked(snap, top=LEG, bottom=OTHER)).factors
+    assert factor.long_n == 6
+    assert factor.long_excess is not None
+    assert factor.long_excess >= DEFAULT_CROWDING.threshold
+    assert factor.crowded is True
+
+
+def test_independent_walks_are_not_crowded() -> None:
+    snap = snapshot_from(make_closes(UNIVERSE, seed=0), UNIVERSE_SECTORS)
+    report = crowding(snap, _ranked(snap, top=LEG, bottom=OTHER))
+    (factor,) = report.factors
+    assert report.baseline_corr is not None
+    assert factor.long_excess is not None
+    assert factor.short_excess is not None
+    assert factor.crowded is False
+
+
+def test_whole_sector_shock_is_removed_by_residualization() -> None:
+    # The shared shock hits all 10 Tech names, so the Tech sector mean absorbs it exactly.
+    # The top leg is 6 Tech names; sector demeaning makes their expected mean pair corr
+    # about -1/9, below the baseline, so the excess is negative and nothing is flagged.
+    top = SECTOR_A[:6]
+    shocked = snapshot_from(make_crowded_closes(UNIVERSE, SECTOR_A, seed=0), UNIVERSE_SECTORS)
+    plain = snapshot_from(make_closes(UNIVERSE, seed=0), UNIVERSE_SECTORS)
+    (factor,) = crowding(shocked, _ranked(shocked, top=top, bottom=OTHER)).factors
+    (unshocked,) = crowding(plain, _ranked(plain, top=top, bottom=OTHER)).factors
+    assert factor.long_excess == pytest.approx(unshocked.long_excess)
+    assert factor.long_excess is not None
+    assert factor.long_excess < 0
+    assert factor.crowded is False
+
+
+def test_shocked_bottom_leg_is_crowded_via_short() -> None:
+    snap = snapshot_from(make_crowded_closes(UNIVERSE, LEG, seed=0), UNIVERSE_SECTORS)
+    (factor,) = crowding(snap, _ranked(snap, top=OTHER, bottom=LEG)).factors
+    assert factor.short_n == 6
+    assert factor.short_excess is not None
+    assert factor.short_excess >= DEFAULT_CROWDING.threshold
+    assert factor.crowded is True

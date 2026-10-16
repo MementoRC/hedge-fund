@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 
-from hedge_fund.domain.scores import ScoreResult
-from hedge_fund.domain.shortlist import Shortlist
+from hedge_fund.domain.scores import FactorScore, ScoreResult
+from hedge_fund.domain.shortlist import Candidate, Shortlist, Side
 
 
 @dataclass(frozen=True)
@@ -20,9 +21,42 @@ DEFAULT_SHORTLIST = ShortlistParams()
 
 
 def shortlist(result: ScoreResult, *, params: ShortlistParams = DEFAULT_SHORTLIST) -> Shortlist:
-    """Pick up to ``per_sector`` longs and shorts per sector, capped at ``max_names``."""
+    """Pick up to ``per_sector`` longs and shorts per sector, capped at ``max_names``.
+
+    Longs need ``composite > 0`` and shorts ``composite < 0`` (0 and NaN are on neither
+    side). Candidates are taken round-robin by depth across sectors and sides, strongest
+    ``abs(composite)`` first within a depth (ties by ticker), until ``max_names``; the
+    qualified names left over are reported in ``trimmed`` as ``"cap"``. Raises ValueError
+    on invalid params; an empty ``result`` gives an empty shortlist.
+    """
     _validate_params(params)
-    return Shortlist(as_of=result.as_of, candidates=(), trimmed={})
+    by_sector: dict[str, list[FactorScore]] = defaultdict(list)
+    for score in result.scores:
+        by_sector[score.sector].append(score)
+    queues = [
+        queue
+        for sector in sorted(by_sector)
+        for queue in _queues(by_sector[sector], params.per_sector)
+    ]
+    selected: list[Candidate] = []
+    for depth in range(params.per_sector):
+        batch = [queue[depth] for queue in queues if depth < len(queue)]
+        selected.extend(sorted(batch, key=lambda c: (-abs(c.composite), c.ticker)))
+    return Shortlist(as_of=result.as_of, candidates=tuple(selected), trimmed={})
+
+
+def _queues(scores: list[FactorScore], per_sector: int) -> tuple[list[Candidate], list[Candidate]]:
+    """One sector's long and short queues, strongest first, cut to ``per_sector``."""
+    longs = sorted((s for s in scores if s.composite > 0), key=lambda s: (-s.composite, s.ticker))
+    shorts = sorted((s for s in scores if s.composite < 0), key=lambda s: (s.composite, s.ticker))
+    return _ranked(longs, Side.LONG, per_sector), _ranked(shorts, Side.SHORT, per_sector)
+
+
+def _ranked(scores: list[FactorScore], side: Side, per_sector: int) -> list[Candidate]:
+    return [
+        Candidate(ticker=s.ticker, sector=s.sector, side=side, depth=depth, composite=s.composite)
+        for depth, s in enumerate(scores[:per_sector], start=1)
+    ]
 
 
 def _validate_params(params: ShortlistParams) -> None:

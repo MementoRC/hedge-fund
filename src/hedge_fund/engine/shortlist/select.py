@@ -6,7 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from hedge_fund.domain.scores import FactorScore, ScoreResult
-from hedge_fund.domain.shortlist import Candidate, Shortlist, Side
+from hedge_fund.domain.shortlist import TRIMMED_CAP, Candidate, Shortlist, Side
 
 
 @dataclass(frozen=True)
@@ -39,10 +39,17 @@ def shortlist(result: ScoreResult, *, params: ShortlistParams = DEFAULT_SHORTLIS
         for queue in _queues(by_sector[sector], params.per_sector)
     ]
     selected: list[Candidate] = []
+    trimmed: dict[str, str] = {}
     for depth in range(params.per_sector):
         batch = [queue[depth] for queue in queues if depth < len(queue)]
-        selected.extend(sorted(batch, key=lambda c: (-abs(c.composite), c.ticker)))
-    return Shortlist(as_of=result.as_of, candidates=tuple(selected), trimmed={})
+        for candidate in sorted(batch, key=lambda c: (-abs(c.composite), c.ticker)):
+            if len(selected) < params.max_names:
+                selected.append(candidate)
+            else:
+                trimmed[candidate.ticker] = TRIMMED_CAP
+    return Shortlist(
+        as_of=result.as_of, candidates=tuple(selected), trimmed=dict(sorted(trimmed.items()))
+    )
 
 
 def _queues(scores: list[FactorScore], per_sector: int) -> tuple[list[Candidate], list[Candidate]]:

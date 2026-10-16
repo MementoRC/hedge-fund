@@ -87,3 +87,36 @@ def test_candidates_carry_sector_and_composite() -> None:
     out = shortlist(_result(_score("A", "Tech", -0.7)), params=WIDE)
     (candidate,) = out.candidates
     assert (candidate.sector, candidate.composite) == ("Tech", -0.7)
+
+
+# --- round-robin and cap -----------------------------------------------------
+
+# Tech: A 1.0, B 0.5 (longs). Energy: C 2.0 (long), D -0.2 (short).
+# depth 1 = {A, C, D} ordered by |composite|: C, A, D. depth 2 = {B}.
+TWO_SECTORS = (
+    _score("A", "Tech", 1.0),
+    _score("B", "Tech", 0.5),
+    _score("C", "Energy", 2.0),
+    _score("D", "Energy", -0.2),
+)
+
+
+def test_round_robin_takes_every_depth_one_before_any_depth_two() -> None:
+    out = shortlist(_result(*TWO_SECTORS), params=WIDE)
+    # B (0.5) is stronger than D (-0.2) but comes after it: depth beats strength.
+    assert _picks(out) == [("C", LONG, 1), ("A", LONG, 1), ("D", SHORT, 1), ("B", LONG, 2)]
+    assert out.trimmed == {}
+
+
+def test_cap_cuts_mid_depth_and_reports_trimmed() -> None:
+    out = shortlist(_result(*TWO_SECTORS), params=ShortlistParams(per_sector=2, max_names=2))
+    assert _picks(out) == [("C", LONG, 1), ("A", LONG, 1)]
+    assert out.trimmed == {"B": "cap", "D": "cap"}
+    assert list(out.trimmed) == ["B", "D"]
+
+
+def test_equal_strength_across_sides_breaks_ties_by_ticker() -> None:
+    result = _result(_score("B", "Tech", 1.0), _score("A", "Energy", -1.0))
+    out = shortlist(result, params=ShortlistParams(per_sector=1, max_names=1))
+    assert _picks(out) == [("A", SHORT, 1)]
+    assert out.trimmed == {"B": "cap"}

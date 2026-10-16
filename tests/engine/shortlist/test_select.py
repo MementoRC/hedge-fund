@@ -43,7 +43,7 @@ def _picks(out: Shortlist) -> list[tuple[str, Side, int]]:
 
 
 def test_default_params() -> None:
-    assert DEFAULT_SHORTLIST == ShortlistParams(per_sector=3, max_names=40)
+    assert ShortlistParams(per_sector=3, max_names=40) == DEFAULT_SHORTLIST
 
 
 @pytest.mark.parametrize("field", ["per_sector", "max_names"])

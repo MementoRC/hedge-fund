@@ -147,18 +147,24 @@ def test_keyboard_interrupt_propagates() -> None:
         research_shortlist(researcher, _shortlist(_candidate("A")), k=2, today=TODAY)
 
 
+RELEASE_TIMEOUT = 5.0
+
+
 class _InterruptingResearcher:
     """Call 0 raises KeyboardInterrupt; later calls record themselves then block on `release`."""
 
     def __init__(self) -> None:
         self.calls: list[int] = []
         self.release = threading.Event()
+        self._lock = threading.Lock()
 
     def run(self, ticker: str, as_of: date, run_index: int) -> RunRecord:
-        self.calls.append(run_index)
-        if len(self.calls) == 1:
+        with self._lock:
+            self.calls.append(run_index)
+            first = len(self.calls) == 1
+        if first:
             raise KeyboardInterrupt
-        self.release.wait(5)
+        self.release.wait(RELEASE_TIMEOUT)
         return RunRecord(
             ticker=ticker,
             as_of=as_of,
@@ -174,12 +180,18 @@ class _InterruptingResearcher:
 def test_keyboard_interrupt_cancels_queued_runs() -> None:
     researcher = _InterruptingResearcher()
     shortlist = _shortlist(_candidate("A"), _candidate("B"))
-    with pytest.raises(KeyboardInterrupt):
-        research_shortlist(researcher, shortlist, k=3, max_workers=1, today=TODAY)
-    researcher.release.set()
-    for thread in threading.enumerate():
-        if thread.name.startswith("ThreadPoolExecutor"):
-            thread.join(timeout=5)
+    start = time.perf_counter()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            research_shortlist(researcher, shortlist, k=3, max_workers=1, today=TODAY)
+        elapsed = time.perf_counter() - start
+        # must not block on the in-flight run, which waits RELEASE_TIMEOUT unless released
+        assert elapsed < RELEASE_TIMEOUT / 2
+    finally:
+        researcher.release.set()
+        for thread in threading.enumerate():
+            if thread.name.startswith("ThreadPoolExecutor"):
+                thread.join(timeout=5)
     # at most the interrupted run and the one in flight; the other four were cancelled
     assert len(researcher.calls) <= 2
 

@@ -147,14 +147,16 @@ def test_runs_are_sorted_by_run_index() -> None:
 def test_confirm_threshold_is_inclusive() -> None:
     # aligned [1, 0]: mean exactly 0.5, std 0.5
     out = conviction(_candidate(), _runs(Rating.OVERWEIGHT, Rating.HOLD))
-    assert out.mean == pytest.approx(0.5)
+    expected = 0.5
+    assert out.mean == expected
     assert out.verdict is Verdict.CONFIRM
 
 
 def test_contradict_threshold_is_inclusive() -> None:
     # aligned [-1, 0]: mean exactly -0.5, std 0.5
     out = conviction(_candidate(), _runs(Rating.UNDERWEIGHT, Rating.HOLD))
-    assert out.mean == pytest.approx(-0.5)
+    expected = -0.5
+    assert out.mean == expected
     assert out.verdict is Verdict.CONTRADICT
 
 
@@ -169,7 +171,8 @@ def test_just_below_confirm_is_neutral() -> None:
 def test_max_std_is_inclusive() -> None:
     # aligned [2, 0]: mean 1.0, std exactly 1.0
     out = conviction(_candidate(), _runs(Rating.BUY, Rating.HOLD))
-    assert out.std == pytest.approx(1.0)
+    expected = 1.0
+    assert out.std == expected
     assert out.verdict is Verdict.CONFIRM
 
 

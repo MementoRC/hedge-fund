@@ -72,7 +72,7 @@ def test_research_types_are_frozen() -> None:
         mean=2.0,
         std=0.0,
         agreement=1.0,
-        verdict=Verdict.INSUFFICIENT,
+        verdict=Verdict.CONFIRM,
     )
     result = ResearchResult(as_of=AS_OF, names=(name,))
     with pytest.raises(dataclasses.FrozenInstanceError):

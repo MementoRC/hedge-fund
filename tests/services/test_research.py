@@ -1,5 +1,6 @@
 """Tests for the research service."""
 
+import threading
 import time
 from datetime import date
 
@@ -66,6 +67,36 @@ def test_names_follow_shortlist_order_and_runs_k_times() -> None:
     ]
 
 
+class _ReverseOrderResearcher:
+    """Later-submitted runs finish first: delay shrinks with submission position."""
+
+    def __init__(self, order: list[tuple[str, int]]) -> None:
+        self.delays = {key: 0.05 * (len(order) - 1 - pos) for pos, key in enumerate(order)}
+
+    def run(self, ticker: str, as_of: date, run_index: int) -> RunRecord:
+        time.sleep(self.delays[(ticker, run_index)])
+        return RunRecord(
+            ticker=ticker,
+            as_of=as_of,
+            run_index=run_index,
+            rating=Rating.BUY,
+            decision="",
+            reports={},
+            seconds=0.0,
+            error=None,
+        )
+
+
+def test_order_is_independent_of_completion_order() -> None:
+    order = [("B", 0), ("B", 1), ("A", 0), ("A", 1)]  # submission order; completes reversed
+    shortlist = _shortlist(_candidate("B"), _candidate("A"))
+    out = research_shortlist(
+        _ReverseOrderResearcher(order), shortlist, k=2, max_workers=4, today=TODAY
+    )
+    assert [name.candidate.ticker for name in out.names] == ["B", "A"]
+    assert [[run.run_index for run in name.runs] for name in out.names] == [[0, 1], [0, 1]]
+
+
 def test_default_k_is_three() -> None:
     researcher = ScriptedResearcher()
     research_shortlist(researcher, _shortlist(_candidate("A")), today=TODAY)
@@ -117,16 +148,17 @@ def test_keyboard_interrupt_propagates() -> None:
 
 
 class _InterruptingResearcher:
-    """First call raises KeyboardInterrupt; later calls are slow so queued runs stay queued."""
+    """Call 0 raises KeyboardInterrupt; later calls record themselves then block on `release`."""
 
     def __init__(self) -> None:
         self.calls: list[int] = []
+        self.release = threading.Event()
 
     def run(self, ticker: str, as_of: date, run_index: int) -> RunRecord:
         self.calls.append(run_index)
         if len(self.calls) == 1:
             raise KeyboardInterrupt
-        time.sleep(0.05)
+        self.release.wait(5)
         return RunRecord(
             ticker=ticker,
             as_of=as_of,
@@ -144,7 +176,12 @@ def test_keyboard_interrupt_cancels_queued_runs() -> None:
     shortlist = _shortlist(_candidate("A"), _candidate("B"))
     with pytest.raises(KeyboardInterrupt):
         research_shortlist(researcher, shortlist, k=3, max_workers=1, today=TODAY)
-    assert len(researcher.calls) < 6
+    researcher.release.set()
+    for thread in threading.enumerate():
+        if thread.name.startswith("ThreadPoolExecutor"):
+            thread.join(timeout=5)
+    # at most the interrupted run and the one in flight; the other four were cancelled
+    assert len(researcher.calls) <= 2
 
 
 def test_empty_shortlist_never_calls_the_researcher() -> None:
@@ -192,6 +229,9 @@ def test_live_guard_accepts_recent_dates(as_of: date, today: date) -> None:
         (date(2026, 10, 1), date(2026, 9, 30)),  # future
         (date(2026, 9, 28), date(2026, 9, 30)),  # older than the previous weekday
         (date(2026, 10, 16), date(2026, 10, 20)),  # Friday run on Tuesday
+        (date(2026, 10, 15), date(2026, 10, 19)),  # Thursday run on Monday
+        (date(2026, 10, 15), date(2026, 10, 17)),  # Thursday run on Saturday
+        (date(2026, 10, 15), date(2026, 10, 18)),  # Thursday run on Sunday
     ],
 )
 def test_live_guard_rejects_other_dates(as_of: date, today: date) -> None:

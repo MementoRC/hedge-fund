@@ -1,4 +1,4 @@
-"""In-memory providers and vendor-shaped frames for data-layer tests."""
+"""In-memory providers, vendor-shaped frames and a scripted researcher for tests."""
 
 import threading
 from collections.abc import Mapping, Sequence

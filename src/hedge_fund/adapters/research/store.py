@@ -38,21 +38,34 @@ def save_research(result: ResearchResult, root: Path) -> Path:
 
 
 def load_research(path: Path) -> ResearchResult:
-    """Read a saved result, verifying as_of and content digest against the file name."""
+    """Read a saved result, verifying as_of and content digest against the file name.
+
+    Raises ValueError for a malformed file name, a malformed body, or an as_of/digest
+    mismatch.
+    """
     path = Path(path)
-    payload = json.loads(path.read_text(encoding="utf-8"))["result"]
+    if "_" not in path.stem:
+        raise ValueError(f"{path.name}: expected <as_of>_<digest>.json")
     name_as_of, expected = path.stem.rsplit("_", 1)
-    if name_as_of != payload["as_of"]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))["result"]
+        file_as_of = payload["as_of"]
+        actual = _digest(payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path.name}: malformed research file") from exc
+    if name_as_of != file_as_of:
         raise ValueError(
-            f"{path.name}: as_of mismatch, name has {name_as_of}, file has {payload['as_of']}"
+            f"{path.name}: as_of mismatch, name has {name_as_of}, file has {file_as_of}"
         )
-    actual = _digest(payload)
     if actual != expected:
         raise ValueError(f"{path.name}: digest mismatch, name has {expected}, content is {actual}")
-    return ResearchResult(
-        as_of=date.fromisoformat(payload["as_of"]),
-        names=tuple(_name(item) for item in payload["names"]),
-    )
+    try:
+        return ResearchResult(
+            as_of=date.fromisoformat(file_as_of),
+            names=tuple(_name(item) for item in payload["names"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path.name}: malformed research file") from exc
 
 
 def _payload(result: ResearchResult) -> dict[str, Any]:

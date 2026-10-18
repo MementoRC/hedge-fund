@@ -147,6 +147,63 @@ def test_keyboard_interrupt_propagates() -> None:
         research_shortlist(researcher, _shortlist(_candidate("A")), k=2, today=TODAY)
 
 
+class _MismatchResearcher:
+    """Returns a record whose identity differs from the request for one (ticker, run_index)."""
+
+    def __init__(self, target: tuple[str, int], **overrides: object) -> None:
+        self.target = target
+        self.overrides = overrides
+
+    def run(self, ticker: str, as_of: date, run_index: int) -> RunRecord:
+        fields: dict[str, object] = {
+            "ticker": ticker,
+            "as_of": as_of,
+            "run_index": run_index,
+        }
+        if (ticker, run_index) == self.target:
+            fields.update(self.overrides)
+        return RunRecord(
+            rating=Rating.BUY,
+            decision="d",
+            reports={},
+            seconds=1.0,
+            error=None,
+            **fields,  # type: ignore[arg-type]
+        )
+
+
+def _assert_mismatch_error(overrides: dict[str, object], needle: str) -> None:
+    researcher = _MismatchResearcher(("A", 1), **overrides)
+    shortlist = _shortlist(_candidate("A"), _candidate("C"))
+    out = research_shortlist(researcher, shortlist, k=2, max_workers=1, today=TODAY)
+    assert [name.candidate.ticker for name in out.names] == ["A", "C"]
+    ok, bad = out.names[0].runs
+    assert ok.valid
+    assert bad.ticker == "A"
+    assert bad.as_of == AS_OF
+    assert bad.run_index == 1
+    assert bad.rating is None
+    assert bad.decision == ""
+    assert bad.reports == {}
+    assert bad.seconds == 0.0
+    assert bad.error is not None
+    assert bad.error.startswith("ValueError: researcher returned")
+    assert needle in bad.error
+    assert all(run.valid for run in out.names[1].runs)
+
+
+def test_wrong_ticker_becomes_error_record() -> None:
+    _assert_mismatch_error({"ticker": "B"}, "'B'")
+
+
+def test_wrong_as_of_becomes_error_record() -> None:
+    _assert_mismatch_error({"as_of": date(2026, 9, 29)}, "2026-09-29")
+
+
+def test_wrong_run_index_becomes_error_record() -> None:
+    _assert_mismatch_error({"run_index": 7}, "run 7")
+
+
 RELEASE_TIMEOUT = 5.0
 
 

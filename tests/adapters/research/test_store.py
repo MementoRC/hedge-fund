@@ -1,6 +1,7 @@
 """Tests for the research JSON store."""
 
 import dataclasses
+import hashlib
 import json
 import re
 from datetime import UTC, date, datetime
@@ -131,6 +132,47 @@ def test_load_rejects_tampered_content(tmp_path: Path) -> None:
     path.write_text(json.dumps(body), encoding="utf-8")
     with pytest.raises(ValueError, match="digest mismatch"):
         load_research(path)
+
+
+def test_load_rejects_stem_without_underscore(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    renamed = path.rename(path.with_name("2026-09-30.json"))
+    with pytest.raises(ValueError, match=re.escape("expected <as_of>_<digest>.json")):
+        load_research(renamed)
+
+
+def test_load_rejects_body_without_result(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    path.write_text(json.dumps({"created_at": "x"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed research file"):
+        load_research(path)
+
+
+def test_load_rejects_invalid_json(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed research file"):
+        load_research(path)
+
+
+def test_load_rejects_wrong_types(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    path.write_text(json.dumps([1, 2]), encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed research file"):
+        load_research(path)
+
+
+def test_load_rejects_well_digested_but_malformed_names(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))["result"]
+    del payload["names"][0]["verdict"]
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    forged = path.with_name(f"2026-09-30_{digest}.json")
+    forged.write_text(json.dumps({"result": payload}), encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed research file") as info:
+        load_research(forged)
+    assert isinstance(info.value.__cause__, KeyError)
 
 
 def test_load_rejects_as_of_mismatch(tmp_path: Path) -> None:

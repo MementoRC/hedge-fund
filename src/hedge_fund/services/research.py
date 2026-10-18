@@ -31,8 +31,9 @@ def research_shortlist(
     shortlist returns an empty result without calling the researcher. A run raising
     ``Exception`` becomes an error record; ``BaseException`` (e.g. KeyboardInterrupt)
     propagates after cancelling queued runs (only in-flight runs are left to finish). Names
-    follow the shortlist's candidate order. Tickers are assumed unique within a shortlist
-    (the shortlist guarantees it); runs are grouped by ticker.
+    follow the shortlist's candidate order. Runs are grouped by the candidate they were
+    submitted for; a record whose ticker, as_of or run_index differs from the request
+    becomes an error record for the requested run.
     """
     _validate_count("k", k)
     _validate_count("max_workers", max_workers)
@@ -45,12 +46,15 @@ def research_shortlist(
         return ResearchResult(as_of=as_of, names=())
     pool = ThreadPoolExecutor(max_workers=max_workers)
     try:
-        futures = [
-            pool.submit(_run_one, researcher, candidate.ticker, as_of, index)
+        submitted = [
+            (
+                candidate,
+                pool.submit(_run_one, researcher, candidate.ticker, as_of, index),
+            )
             for candidate in shortlist.candidates
             for index in range(k)
         ]
-        records = [future.result() for future in futures]
+        results = [(candidate, future.result()) for candidate, future in submitted]
     except BaseException:
         # Ctrl-C (or any non-Exception) must not wait for every queued LLM run.
         pool.shutdown(wait=False, cancel_futures=True)
@@ -58,8 +62,8 @@ def research_shortlist(
     else:
         pool.shutdown(wait=True)
     by_ticker: dict[str, list[RunRecord]] = defaultdict(list)
-    for record in records:
-        by_ticker[record.ticker].append(record)
+    for candidate, record in results:
+        by_ticker[candidate.ticker].append(record)
     names: tuple[NameResearch, ...] = tuple(
         conviction(candidate, by_ticker[candidate.ticker], params=params)
         for candidate in shortlist.candidates
@@ -67,20 +71,33 @@ def research_shortlist(
     return ResearchResult(as_of=as_of, names=names)
 
 
+def _error_record(ticker: str, as_of: date, run_index: int, error: str) -> RunRecord:
+    return RunRecord(
+        ticker=ticker,
+        as_of=as_of,
+        run_index=run_index,
+        rating=None,
+        decision="",
+        reports={},
+        seconds=0.0,
+        error=error,
+    )
+
+
 def _run_one(researcher: Researcher, ticker: str, as_of: date, run_index: int) -> RunRecord:
     try:
-        return researcher.run(ticker, as_of, run_index)
+        record = researcher.run(ticker, as_of, run_index)
     except Exception as exc:
-        return RunRecord(
-            ticker=ticker,
-            as_of=as_of,
-            run_index=run_index,
-            rating=None,
-            decision="",
-            reports={},
-            seconds=0.0,
-            error=f"{type(exc).__name__}: {exc}",
+        return _error_record(ticker, as_of, run_index, f"{type(exc).__name__}: {exc}")
+    if (record.ticker, record.as_of, record.run_index) != (ticker, as_of, run_index):
+        return _error_record(
+            ticker,
+            as_of,
+            run_index,
+            f"ValueError: researcher returned {record.ticker!r} {record.as_of} run "
+            f"{record.run_index}, expected {ticker!r} {as_of} run {run_index}",
         )
+    return record
 
 
 def _previous_weekday(day: date) -> date:

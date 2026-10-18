@@ -1,10 +1,13 @@
-"""In-memory providers and vendor-shaped frames for data-layer tests."""
+"""In-memory providers, vendor-shaped frames and a scripted researcher for tests."""
 
+import threading
 from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
 import pandas as pd
+
+from hedge_fund.domain.research import Rating, RunRecord
 
 
 class FakeProvider:
@@ -82,3 +85,38 @@ def assert_closes_equal(actual: pd.DataFrame, expected: pd.DataFrame) -> None:
         expected.set_axis(pd.DatetimeIndex(expected.index).as_unit("ns")),
         check_freq=False,
     )
+
+
+class ScriptedResearcher:
+    """Researcher returning a scripted Rating (or raising) per (ticker, run_index).
+
+    Unscripted runs return `default`. Safe to call from several threads; every call is
+    recorded in `calls`.
+    """
+
+    def __init__(
+        self,
+        script: Mapping[tuple[str, int], Rating | BaseException] | None = None,
+        default: Rating = Rating.HOLD,
+    ) -> None:
+        self.script = dict(script or {})
+        self.default = default
+        self.calls: list[tuple[str, date, int]] = []
+        self._lock = threading.Lock()
+
+    def run(self, ticker: str, as_of: date, run_index: int) -> RunRecord:
+        with self._lock:
+            self.calls.append((ticker, as_of, run_index))
+        outcome = self.script.get((ticker, run_index), self.default)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return RunRecord(
+            ticker=ticker,
+            as_of=as_of,
+            run_index=run_index,
+            rating=outcome,
+            decision=f"{ticker}:{outcome.value}",
+            reports={},
+            seconds=0.5,
+            error=None,
+        )

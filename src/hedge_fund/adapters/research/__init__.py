@@ -1,1 +1,1 @@
-"""Research adapter wrapping TradingAgents."""
+"""Research adapters: the TradingAgents researcher and the research result store."""

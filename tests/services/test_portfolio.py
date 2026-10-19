@@ -69,6 +69,16 @@ def test_fetch_benchmark_drops_rows_after_as_of() -> None:
     assert out.tolist() == [400.0]  # 2026-10-01 and 2026-10-02 are after as_of
 
 
+def test_fetch_benchmark_normalises_a_tz_aware_index_to_naive_dates() -> None:
+    frame = _spy_frame([400.0, 401.0, 402.0])
+    frame.index = frame.index.tz_localize("America/New_York")
+    # _LeakyProvider skips FakeProvider's naive-Timestamp window slicing on the index.
+    out = fetch_benchmark(_LeakyProvider(frame, {}), AS_OF, lookback_days=10)
+    assert out.index.tz is None
+    assert out.index[-1] == pd.Timestamp(AS_OF)
+    assert out.tolist() == [400.0, 401.0, 402.0]
+
+
 def test_fetch_benchmark_rejects_a_missing_ticker() -> None:
     # The provider returns an all-NaN column for an unknown ticker, not an empty frame.
     fake = FakeProvider(_spy_frame([400.0, 401.0]), {})
@@ -306,6 +316,14 @@ def test_rejects_benchmark_with_a_row_after_the_snapshot() -> None:
 def test_validate_inputs_rejects_a_benchmark_date_mismatch() -> None:
     with pytest.raises(ValueError, match="benchmark must end on"):
         validate_inputs(_research(), _snapshot(), _benchmark().iloc[:-1])
+
+
+def test_tz_aware_benchmark_aligned_with_a_naive_snapshot_builds() -> None:
+    aware = _benchmark()
+    aware.index = aware.index.tz_localize("America/New_York")
+    validate_inputs(_research(), _snapshot(), aware)
+    out = build_portfolio(_research(), _snapshot(), aware, risk=RISK)
+    assert out == _build(_research())
 
 
 def test_validate_inputs_accepts_consistent_inputs() -> None:

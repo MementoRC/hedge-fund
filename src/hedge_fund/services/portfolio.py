@@ -46,11 +46,19 @@ def fetch_benchmark(
     column for an unknown ticker rather than an empty frame.
     """
     frame = provider.closes([ticker], as_of - _calendar_window(lookback_days + 1), as_of)
-    closes = frame[ticker].dropna()
+    closes = _naive_dates(frame[ticker].dropna())
     closes = closes.loc[closes.index <= pd.Timestamp(as_of)]
     if closes.empty:
         raise ValueError(f"no {ticker!r} closes up to {as_of}")
     return closes
+
+
+def _naive_dates(series: pd.Series) -> pd.Series:
+    """Drop the timezone of a tz-aware index, keeping the wall-clock date (no conversion)."""
+    index = series.index
+    if isinstance(index, pd.DatetimeIndex) and index.tz is not None:
+        return series.set_axis(index.tz_localize(None))
+    return series
 
 
 def build_portfolio(
@@ -74,6 +82,7 @@ def build_portfolio(
     up front, even for empty research); engine errors (short or flat benchmark,
     PortfolioInfeasibleError) propagate.
     """
+    benchmark = _naive_dates(benchmark)
     validate_inputs(research, snapshot, benchmark)
     _validate_alpha(alpha)
     _validate_risk(risk)
@@ -120,6 +129,7 @@ def validate_inputs(
         raise ValueError(
             f"research as_of {research.as_of} differs from snapshot as_of {snapshot.as_of}"
         )
+    benchmark = _naive_dates(benchmark)
     last = snapshot.closes.index[-1]
     if benchmark.empty or benchmark.index[-1] != last:
         got = "nothing" if benchmark.empty else str(benchmark.index[-1].date())

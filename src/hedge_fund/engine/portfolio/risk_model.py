@@ -67,8 +67,8 @@ def ledoit_wolf(returns: NDArray[np.float64]) -> tuple[NDArray[np.float64], floa
     sample = x.T @ x / rows
     target = (float(np.trace(sample)) / n) * np.eye(n)
     d2 = float(np.sum((sample - target) ** 2)) / n
-    outer = np.einsum("ti,tj->tij", x, x)
-    b2_bar = float(np.sum((outer - sample) ** 2)) / (n * rows**2)
+    b2_sum = float(np.sum(np.sum(x**2, axis=1) ** 2) - rows * np.sum(sample**2))
+    b2_bar = max(b2_sum, 0.0) / (n * rows**2)
     delta = min(b2_bar, d2) / d2 if d2 > 0 else 0.0
     return delta * target + (1 - delta) * sample, delta
 

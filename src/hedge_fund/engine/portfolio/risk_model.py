@@ -130,7 +130,7 @@ def _estimate(window: pd.DataFrame, spy: pd.Series, excluded: dict[str, str]) ->
     sample = xc.T @ xc / len(xc)
     std = np.sqrt(np.diag(sample))
     with np.errstate(invalid="ignore", divide="ignore"):
-        corr = sample / np.outer(std, std)
+        corr = np.clip(sample / np.outer(std, std), -1.0, 1.0)
     betas = xc.T @ s / len(s) / spy_var
     tickers = [str(t) for t in window.columns]
     return RiskModel(

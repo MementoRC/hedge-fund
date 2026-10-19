@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from hedge_fund.domain.shortlist import Side
+from hedge_fund.engine.portfolio.correlation import CorrelationParams, correlation_filter
 from hedge_fund.engine.portfolio.risk_model import (
     DEFAULT_RISK,
     RiskParams,
@@ -256,6 +258,30 @@ def test_infinite_returns_from_a_zero_close_are_missing() -> None:
     assert np.isfinite(model.sigma.to_numpy()).all()
     assert np.isfinite(model.corr.to_numpy()).all()
     assert np.isfinite(list(model.betas.values())).all()
+
+
+def test_correlations_are_clipped_so_max_rho_one_never_filters() -> None:
+    # Returns that are exact multiples of one another are perfectly correlated; rounding in
+    # the sample moments can push the raw ratio a hair past 1, which the clip removes.
+    base = [0.013, -0.027, 0.0171, 0.0049, -0.0113, 0.0211]
+    closes = _closes(
+        {
+            "A": _prices(base),
+            "B": _prices([3 * r for r in base]),
+            "C": _prices([0.7 * r for r in base]),
+            "D": _prices([0.1 * r for r in base]),
+        }
+    )
+    model = risk_model(closes, _spy(_prices(WIGGLE[::-1])), params=SIX)
+    values = model.corr.to_numpy()
+    assert ((values >= -1.0) & (values <= 1.0)).all()
+    scores = dict.fromkeys(model.corr.index, 1.0)
+    sides = dict.fromkeys(scores, Side.LONG)
+    kept, excluded = correlation_filter(
+        scores, sides, model.corr, params=CorrelationParams(max_rho=1)
+    )
+    assert kept == ("A", "B", "C", "D")
+    assert excluded == {}
 
 
 def test_rejects_short_benchmark() -> None:

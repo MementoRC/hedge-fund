@@ -17,6 +17,33 @@ from hedge_fund.engine.portfolio.risk_model import (
 NAN = float("nan")
 NO_PRICES = pd.DataFrame()
 NO_BENCHMARK = pd.Series(dtype=float)
+SPY_RETURNS = [0.01, -0.02, 0.015, 0.005]
+WIGGLE = [0.01, -0.02, 0.015, 0.005, -0.01, 0.02]  # six returns -> seven closes
+
+
+def _prices(returns: list[float], start: float = 100.0) -> list[float]:
+    """Close path whose simple returns are ``returns`` (up to float rounding)."""
+    prices = [start]
+    for value in returns:
+        prices.append(prices[-1] * (1 + value))
+    return prices
+
+
+def _with_nan(prices: list[float], *rows: int) -> list[float]:
+    return [NAN if row in rows else price for row, price in enumerate(prices)]
+
+
+def _index(n: int) -> pd.DatetimeIndex:
+    return pd.bdate_range(end="2026-09-30", periods=n)
+
+
+def _closes(columns: dict[str, list[float]]) -> pd.DataFrame:
+    n = len(next(iter(columns.values())))
+    return pd.DataFrame(columns, index=_index(n))
+
+
+def _spy(prices: list[float]) -> pd.Series:
+    return pd.Series(prices, index=_index(len(prices)))
 
 
 # --- params ----------------------------------------------------------------
@@ -90,3 +117,142 @@ def test_ledoit_wolf_single_name_is_the_sample_variance() -> None:
     shrunk, delta = ledoit_wolf(np.array([[0.01], [-0.01]]))
     assert delta == 0.0
     np.testing.assert_allclose(shrunk, [[1e-4]])
+
+
+# --- risk_model ------------------------------------------------------------
+
+FOUR = RiskParams(lookback=4, min_obs=4)
+
+
+def test_beta_of_a_doubled_series_is_two() -> None:
+    closes = _closes({"A": _prices([2 * r for r in SPY_RETURNS])})
+    model = risk_model(closes, _spy(_prices(SPY_RETURNS)), params=FOUR)
+    assert model.betas == {"A": pytest.approx(2.0)}
+
+
+def test_annualized_variance_over_the_last_lookback_rows() -> None:
+    # Seven closes, lookback 4: only the last four returns (closes 2..6) count, so the
+    # NaN closes in rows 0 and 1 do not matter. Returns [0.01, -0.01, 0.01, -0.01]:
+    # mean 0, variance 1e-4. One name: d2 = 0, delta = 0, sigma = 252 * 1e-4 = 0.0252.
+    a = [NAN, NAN, *_prices([0.01, -0.01, 0.01, -0.01])]
+    spy = _prices([0.03, -0.01, *SPY_RETURNS])
+    model = risk_model(_closes({"A": a}), _spy(spy), params=FOUR)
+    assert model.observations == 4
+    assert model.delta == 0.0
+    assert model.excluded == {}
+    assert model.sigma.loc["A", "A"] == pytest.approx(0.0252)
+    assert model.vols == {"A": pytest.approx(0.0252**0.5)}
+
+
+def test_benchmark_dates_absent_from_the_snapshot_are_ignored() -> None:
+    closes = _closes({"A": _prices([2 * r for r in SPY_RETURNS])})
+    spy = _spy(_prices(SPY_RETURNS))
+    weekend = pd.Series([1000.0], index=[pd.Timestamp("2026-09-27")])  # a Sunday
+    model = risk_model(closes, pd.concat([spy, weekend]).sort_index(), params=FOUR)
+    assert model.betas == {"A": pytest.approx(2.0)}
+
+
+def test_sigma_and_correlation_frames() -> None:
+    # B mirrors A, so their sample correlation is -1; Z never moves, so its variance is 0
+    # and every correlation involving Z is NaN (treated as uncorrelated downstream).
+    closes = _closes(
+        {
+            "A": _prices(SPY_RETURNS),
+            "B": _prices([-r for r in SPY_RETURNS]),
+            "Z": [50.0] * 5,
+        }
+    )
+    model = risk_model(closes, _spy(_prices(SPY_RETURNS)), params=FOUR)
+    assert list(model.sigma.index) == ["A", "B", "Z"]
+    assert list(model.sigma.columns) == ["A", "B", "Z"]
+    np.testing.assert_allclose(model.sigma.to_numpy(), model.sigma.to_numpy().T)
+    assert model.corr.loc["A", "B"] == pytest.approx(-1.0)
+    assert np.isnan(model.corr.loc["A", "Z"])
+    assert np.isnan(model.corr.loc["Z", "Z"])
+    assert model.betas == {"A": pytest.approx(1.0), "B": pytest.approx(-1.0), "Z": 0.0}
+    assert 0.0 < model.delta < 1.0
+
+
+def test_short_history_is_excluded() -> None:
+    # B's NaN close in row 2 kills returns 2 and 3: 2 valid returns < min_obs 3.
+    closes = _closes({"A": _prices(SPY_RETURNS), "B": _with_nan(_prices(SPY_RETURNS), 2)})
+    model = risk_model(closes, _spy(_prices(SPY_RETURNS)), params=RiskParams(lookback=4, min_obs=3))
+    assert model.excluded == {"B": "history"}
+    assert list(model.vols) == ["A"]
+
+
+SIX = RiskParams(lookback=6, min_obs=4)
+
+
+def test_alignment_drops_the_alphabetically_last_on_a_tie() -> None:
+    # Valid return rows: A 1-6, B 1-4 (NaN close 5), C 3-6 (NaN close 1). All rows shared:
+    # 3-4, only 2 < 4. B and C tie on 4 returns, so C (alphabetically last) goes; A and B
+    # then share rows 1-4 = 4 rows.
+    closes = _closes(
+        {
+            "A": _prices(WIGGLE),
+            "B": _with_nan(_prices(WIGGLE), 5),
+            "C": _with_nan(_prices(WIGGLE), 1),
+        }
+    )
+    model = risk_model(closes, _spy(_prices(WIGGLE[::-1])), params=SIX)
+    assert model.excluded == {"C": "history"}
+    assert list(model.vols) == ["A", "B"]
+    assert model.observations == 4
+
+
+def test_alignment_drops_the_fewest_returns_first() -> None:
+    # Valid rows: A 3-6 (4 returns), B 1-5 (5), C 1-6 (6). Shared 3-5 = 3 < 4: drop A even
+    # though it sorts first; B and C then share rows 1-5 = 5.
+    closes = _closes(
+        {
+            "A": _with_nan(_prices(WIGGLE), 1),
+            "B": _with_nan(_prices(WIGGLE), 6),
+            "C": _prices(WIGGLE),
+        }
+    )
+    model = risk_model(closes, _spy(_prices(WIGGLE[::-1])), params=SIX)
+    assert model.excluded == {"A": "history"}
+    assert model.observations == 5
+
+
+def test_alignment_repeats_until_enough_rows_are_shared() -> None:
+    # Valid rows: A 1-6, B 1-4 (NaN close 5), C 3-6 (NaN close 1), D 1, 2, 5, 6 (NaN close 3).
+    # Pass 1: all four share no row; B, C, D tie on 4 returns -> drop D (alphabetically last).
+    # Pass 2: A, B, C share rows 3-4 = 2 < 4; B and C tie -> drop C. Pass 3: A, B share 1-4.
+    closes = _closes(
+        {
+            "A": _prices(WIGGLE),
+            "B": _with_nan(_prices(WIGGLE), 5),
+            "C": _with_nan(_prices(WIGGLE), 1),
+            "D": _with_nan(_prices(WIGGLE), 3),
+        }
+    )
+    model = risk_model(closes, _spy(_prices(WIGGLE[::-1])), params=SIX)
+    assert model.excluded == {"C": "history", "D": "history"}
+    assert list(model.vols) == ["A", "B"]
+    assert model.observations == 4
+
+
+def test_alignment_can_drop_every_name() -> None:
+    # SPY valid rows 1, 2, 5, 6 (NaN close 3); A valid rows 3-6. Shared 5-6 = 2 < 4.
+    closes = _closes({"A": _with_nan(_prices(WIGGLE), 1)})
+    model = risk_model(closes, _spy(_with_nan(_prices(WIGGLE[::-1]), 3)), params=SIX)
+    assert model.excluded == {"A": "history"}
+    assert model.sigma.empty
+    assert model.corr.empty
+    assert (model.betas, model.vols, model.delta, model.observations) == ({}, {}, 0.0, 0)
+
+
+def test_rejects_short_benchmark() -> None:
+    # SPY NaN close in row 2: returns 2 and 3 are NaN, leaving 2 < min_obs 4.
+    closes = _closes({"A": _prices(SPY_RETURNS)})
+    spy = _spy(_with_nan(_prices(SPY_RETURNS), 2))
+    with pytest.raises(ValueError, match="benchmark has 2 returns"):
+        risk_model(closes, spy, params=FOUR)
+
+
+def test_rejects_benchmark_without_variance() -> None:
+    closes = _closes({"A": _prices(SPY_RETURNS)})
+    with pytest.raises(ValueError, match="zero variance"):
+        risk_model(closes, _spy([400.0] * 5), params=FOUR)

@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from hedge_fund.domain.portfolio import EXCLUDED_HISTORY
+
 TRADING_DAYS = 252
 
 
@@ -48,9 +50,38 @@ def risk_model(
     *,
     params: RiskParams = DEFAULT_RISK,
 ) -> RiskModel:
-    """Validate ``params``; the estimation arrives in the next task."""
+    """Estimate covariance, correlation, beta and vol from the last ``lookback`` returns.
+
+    Returns are ``close_t / close_{t-1} - 1`` on ``closes``' date index with no forward
+    fill; ``benchmark`` is reindexed to that index first (its other dates are ignored). A
+    name with fewer than ``min_obs`` returns in the window is excluded as ``"history"``. The
+    rest are aligned with the benchmark on rows where all have returns; while that leaves
+    fewer than ``min_obs`` rows, the name with the fewest returns (ties: alphabetically
+    last) is dropped as ``"history"``. Raises ValueError on invalid params, on a benchmark
+    with fewer than ``min_obs`` returns, or on zero benchmark variance in the aligned rows.
+    """
     _validate_params(params)
-    raise NotImplementedError
+    returns = _returns(closes).iloc[-params.lookback :]
+    spy = _returns(benchmark.reindex(closes.index)).iloc[-params.lookback :]
+    available = int(spy.notna().sum())
+    if available < params.min_obs:
+        raise ValueError(
+            f"benchmark has {available} returns in the window, needs min_obs={params.min_obs}"
+        )
+    counts = {str(t): int(n) for t, n in returns.notna().sum().items()}
+    kept = [t for t, n in counts.items() if n >= params.min_obs]
+    excluded = {t: EXCLUDED_HISTORY for t, n in counts.items() if n < params.min_obs}
+    rows = _shared_rows(returns, spy, kept)
+    while kept and rows.sum() < params.min_obs:
+        worst = max(kept, key=lambda t: (-counts[t], t))
+        kept.remove(worst)
+        excluded[worst] = EXCLUDED_HISTORY
+        rows = _shared_rows(returns, spy, kept)
+    excluded = dict(sorted(excluded.items()))
+    if not kept:
+        empty = pd.DataFrame()
+        return RiskModel(empty, empty, {}, {}, excluded, delta=0.0, observations=0)
+    return _estimate(returns.loc[rows, kept], spy[rows], excluded)
 
 
 def ledoit_wolf(returns: NDArray[np.float64]) -> tuple[NDArray[np.float64], float]:
@@ -71,6 +102,43 @@ def ledoit_wolf(returns: NDArray[np.float64]) -> tuple[NDArray[np.float64], floa
     b2_bar = max(b2_sum, 0.0) / (n * rows**2)
     delta = min(b2_bar, d2) / d2 if d2 > 0 else 0.0
     return delta * target + (1 - delta) * sample, delta
+
+
+def _returns(prices: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+    """Simple returns; a NaN close makes the returns on both adjacent rows NaN."""
+    return prices / prices.shift(1) - 1
+
+
+def _shared_rows(returns: pd.DataFrame, spy: pd.Series, kept: list[str]) -> pd.Series:
+    """Boolean row mask: the benchmark and every kept name have a return."""
+    return returns[kept].notna().all(axis=1) & spy.notna()
+
+
+def _estimate(window: pd.DataFrame, spy: pd.Series, excluded: dict[str, str]) -> RiskModel:
+    x = window.to_numpy(dtype=float)
+    s = spy.to_numpy(dtype=float)
+    s = s - s.mean()
+    spy_var = float(s @ s) / len(s)
+    if not spy_var > 0:
+        raise ValueError("benchmark returns have zero variance in the aligned window")
+    shrunk, delta = ledoit_wolf(x)
+    sigma = TRADING_DAYS * shrunk
+    xc = x - x.mean(axis=0)
+    sample = xc.T @ xc / len(xc)
+    std = np.sqrt(np.diag(sample))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        corr = sample / np.outer(std, std)
+    betas = xc.T @ s / len(s) / spy_var
+    tickers = [str(t) for t in window.columns]
+    return RiskModel(
+        sigma=pd.DataFrame(sigma, index=tickers, columns=tickers),
+        corr=pd.DataFrame(corr, index=tickers, columns=tickers),
+        betas=dict(zip(tickers, betas.tolist(), strict=True)),
+        vols=dict(zip(tickers, np.sqrt(np.diag(sigma)).tolist(), strict=True)),
+        excluded=excluded,
+        delta=delta,
+        observations=len(x),
+    )
 
 
 def _validate_params(params: RiskParams) -> None:

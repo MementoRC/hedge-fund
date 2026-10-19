@@ -60,6 +60,13 @@ def test_same_side_duplicate_is_dropped_naming_the_kept_ticker() -> None:
     assert excluded == {"A": "correlated:B"}
 
 
+def test_tied_same_side_names_clash_and_the_later_ticker_is_dropped() -> None:
+    corr = _corr(["A", "B"], {("A", "B"): 0.9})
+    kept, excluded = correlation_filter({"A": 1.0, "B": 1.0}, {"A": LONG, "B": LONG}, corr)
+    assert kept == ("A",)
+    assert excluded == {"B": "correlated:A"}
+
+
 def test_threshold_is_exclusive() -> None:
     corr = _corr(["A", "B"], {("A", "B"): 0.85})
     kept, excluded = correlation_filter({"A": 1.0, "B": 0.5}, {"A": LONG, "B": LONG}, corr)

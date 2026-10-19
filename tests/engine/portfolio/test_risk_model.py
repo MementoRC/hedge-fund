@@ -244,6 +244,20 @@ def test_alignment_can_drop_every_name() -> None:
     assert (model.betas, model.vols, model.delta, model.observations) == ({}, {}, 0.0, 0)
 
 
+def test_infinite_returns_from_a_zero_close_are_missing() -> None:
+    # A's close in row 3 is 0: return row 3 is -1 (finite) and row 4 is x / 0 - 1 = inf,
+    # which must count as missing. Rows 1-3, 5, 6 remain shared = 5 observations.
+    zero_close = _prices(WIGGLE)
+    zero_close[3] = 0.0
+    closes = _closes({"A": zero_close, "B": _prices(WIGGLE[::-1])})
+    model = risk_model(closes, _spy(_prices(WIGGLE[::-1])), params=SIX)
+    assert model.excluded == {}
+    assert model.observations == 5
+    assert np.isfinite(model.sigma.to_numpy()).all()
+    assert np.isfinite(model.corr.to_numpy()).all()
+    assert np.isfinite(list(model.betas.values())).all()
+
+
 def test_rejects_short_benchmark() -> None:
     # SPY NaN close in row 2: returns 2 and 3 are NaN, leaving 2 < min_obs 4.
     closes = _closes({"A": _prices(SPY_RETURNS)})

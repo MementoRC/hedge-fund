@@ -105,8 +105,11 @@ def ledoit_wolf(returns: NDArray[np.float64]) -> tuple[NDArray[np.float64], floa
 
 
 def _returns(prices: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
-    """Simple returns; a NaN close makes the returns on both adjacent rows NaN."""
-    return prices / prices.shift(1) - 1
+    """Simple returns; a NaN close makes the returns on both adjacent rows NaN.
+
+    A zero or negative prior close yields an infinite return, which is treated as missing.
+    """
+    return (prices / prices.shift(1) - 1).replace([np.inf, -np.inf], np.nan)
 
 
 def _shared_rows(returns: pd.DataFrame, spy: pd.Series, kept: list[str]) -> pd.Series:

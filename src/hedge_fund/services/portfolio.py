@@ -73,6 +73,9 @@ def build_portfolio(
 ) -> TargetPortfolio:
     """Gate -> risk model -> alpha -> correlation filter -> optimizer (pure orchestration).
 
+    The result is a proposed target book only; this layer has no veto. The deterministic
+    risk engine (Layer 5) holds veto power over it before any approval or execution.
+
     Every researched ticker ends up either in ``positions`` or in ``excluded`` with a
     reason, never both. When no name is left after a step the rest are skipped and the
     portfolio is empty (all statistics 0.0). Raises ValueError when ``research`` and

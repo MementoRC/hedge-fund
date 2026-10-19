@@ -26,8 +26,8 @@ from hedge_fund.engine.portfolio.optimize import (
     Asset,
     OptimizeParams,
     optimize_weights,
+    validate_params,
 )
-from hedge_fund.engine.portfolio.optimize import _validate_params as _validate_optimize
 from hedge_fund.engine.portfolio.risk_model import DEFAULT_RISK, RiskParams, risk_model
 from hedge_fund.engine.portfolio.risk_model import _validate_params as _validate_risk
 from hedge_fund.ports.data import DataProvider
@@ -46,11 +46,19 @@ def fetch_benchmark(
     column for an unknown ticker rather than an empty frame.
     """
     frame = provider.closes([ticker], as_of - _calendar_window(lookback_days + 1), as_of)
-    closes = frame[ticker].dropna()
+    closes = _naive_dates(frame[ticker].dropna())
     closes = closes.loc[closes.index <= pd.Timestamp(as_of)]
     if closes.empty:
         raise ValueError(f"no {ticker!r} closes up to {as_of}")
     return closes
+
+
+def _naive_dates(series: pd.Series) -> pd.Series:
+    """Drop the timezone of a tz-aware index, keeping the wall-clock date (no conversion)."""
+    index = series.index
+    if isinstance(index, pd.DatetimeIndex) and index.tz is not None:
+        return series.set_axis(index.tz_localize(None))
+    return series
 
 
 def build_portfolio(
@@ -65,6 +73,9 @@ def build_portfolio(
 ) -> TargetPortfolio:
     """Gate -> risk model -> alpha -> correlation filter -> optimizer (pure orchestration).
 
+    The result is a proposed target book only; this layer has no veto. The deterministic
+    risk engine (Layer 5) holds veto power over it before any approval or execution.
+
     Every researched ticker ends up either in ``positions`` or in ``excluded`` with a
     reason, never both. When no name is left after a step the rest are skipped and the
     portfolio is empty (all statistics 0.0). Raises ValueError when ``research`` and
@@ -74,11 +85,12 @@ def build_portfolio(
     up front, even for empty research); engine errors (short or flat benchmark,
     PortfolioInfeasibleError) propagate.
     """
-    _validate_inputs(research, snapshot, benchmark)
+    benchmark = _naive_dates(benchmark)
+    validate_inputs(research, snapshot, benchmark)
     _validate_alpha(alpha)
     _validate_risk(risk)
     _validate_correlation(correlation)
-    _validate_optimize(optimize)
+    validate_params(optimize)
     eligible, excluded = gate(research.names)
     if not eligible:
         return _assemble(research.as_of, [], {}, pd.DataFrame(), excluded)
@@ -113,19 +125,24 @@ def build_portfolio(
     return _assemble(research.as_of, assets, allocation.weights, model.sigma, excluded)
 
 
-def _validate_inputs(
+def validate_inputs(
     research: ResearchResult, snapshot: PriceSnapshot, benchmark: pd.Series
 ) -> None:
     if research.as_of != snapshot.as_of:
         raise ValueError(
             f"research as_of {research.as_of} differs from snapshot as_of {snapshot.as_of}"
         )
+    benchmark = _naive_dates(benchmark)
     last = snapshot.closes.index[-1]
     if benchmark.empty or benchmark.index[-1] != last:
         got = "nothing" if benchmark.empty else str(benchmark.index[-1].date())
         raise ValueError(
             f"benchmark must end on the snapshot's last date {last.date()}, but ends on {got}"
         )
+    tickers = [name.candidate.ticker for name in research.names]
+    duplicates = sorted({ticker for ticker in tickers if tickers.count(ticker) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate research tickers: {', '.join(map(repr, duplicates))}")
     for name in research.names:
         ticker, sector = name.candidate.ticker, name.candidate.sector
         if ticker not in snapshot.closes.columns:

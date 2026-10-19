@@ -4,6 +4,7 @@ import dataclasses
 import math
 from collections.abc import Sequence
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -13,11 +14,17 @@ from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.research import NameResearch, ResearchResult, Verdict
 from hedge_fund.domain.shortlist import Candidate, Side
 from hedge_fund.domain.snapshot import PriceSnapshot
+from hedge_fund.engine.portfolio import optimize as optimize_module
 from hedge_fund.engine.portfolio.alpha import AlphaParams
 from hedge_fund.engine.portfolio.correlation import CorrelationParams
-from hedge_fund.engine.portfolio.optimize import Asset, OptimizeParams
+from hedge_fund.engine.portfolio.optimize import Asset, OptimizeParams, PortfolioInfeasibleError
 from hedge_fund.engine.portfolio.risk_model import RiskParams
-from hedge_fund.services.portfolio import _assemble, build_portfolio, fetch_benchmark
+from hedge_fund.services.portfolio import (
+    _assemble,
+    build_portfolio,
+    fetch_benchmark,
+    validate_inputs,
+)
 from tests.fakes import FakeProvider
 
 AS_OF = date(2026, 9, 30)  # Wednesday
@@ -62,6 +69,16 @@ def test_fetch_benchmark_drops_rows_after_as_of() -> None:
     fake = _LeakyProvider(_spy_frame([400.0, 401.0, 402.0], end="2026-10-02"), {})
     out = fetch_benchmark(fake, AS_OF, lookback_days=10)
     assert out.tolist() == [400.0]  # 2026-10-01 and 2026-10-02 are after as_of
+
+
+def test_fetch_benchmark_normalises_a_tz_aware_index_to_naive_dates() -> None:
+    frame = _spy_frame([400.0, 401.0, 402.0])
+    frame.index = frame.index.tz_localize("America/New_York")
+    # _LeakyProvider skips FakeProvider's naive-Timestamp window slicing on the index.
+    out = fetch_benchmark(_LeakyProvider(frame, {}), AS_OF, lookback_days=10)
+    assert out.index.tz is None
+    assert out.index[-1] == pd.Timestamp(AS_OF)
+    assert out.tolist() == [400.0, 401.0, 402.0]
 
 
 def test_fetch_benchmark_rejects_a_missing_ticker() -> None:
@@ -225,6 +242,18 @@ def test_params_are_passed_to_every_step() -> None:
     assert doubled.positions[0].alpha == pytest.approx(0.1 * VOL)  # AAA, score 1
 
 
+def test_optimizer_infeasibility_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The full universe reaches SLSQP (6 sized names); a failed solve must not be swallowed.
+    # Real inputs only reach this raise through a solver failure, so the solve is scripted:
+    # an LP-infeasible start returns an all-"infeasible" Allocation instead of raising.
+    def failed(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(success=False, status=9, message="scripted", x=np.zeros(6))
+
+    monkeypatch.setattr(optimize_module, "minimize", failed)
+    with pytest.raises(PortfolioInfeasibleError, match="did not converge"):
+        _build(_research())
+
+
 @pytest.mark.parametrize(
     ("params", "message"),
     [
@@ -296,6 +325,28 @@ def test_rejects_benchmark_with_a_row_after_the_snapshot() -> None:
     benchmark = pd.concat([_benchmark(), extra])
     with pytest.raises(ValueError, match="benchmark must end on"):
         build_portfolio(_research(), _snapshot(), benchmark)
+
+
+def test_validate_inputs_rejects_a_benchmark_date_mismatch() -> None:
+    with pytest.raises(ValueError, match="benchmark must end on"):
+        validate_inputs(_research(), _snapshot(), _benchmark().iloc[:-1])
+
+
+def test_tz_aware_benchmark_aligned_with_a_naive_snapshot_builds() -> None:
+    aware = _benchmark()
+    aware.index = aware.index.tz_localize("America/New_York")
+    validate_inputs(_research(), _snapshot(), aware)
+    out = build_portfolio(_research(), _snapshot(), aware, risk=RISK)
+    assert out == _build(_research())
+
+
+def test_validate_inputs_accepts_consistent_inputs() -> None:
+    validate_inputs(_research(), _snapshot(), _benchmark())
+
+
+def test_rejects_duplicate_research_tickers() -> None:
+    with pytest.raises(ValueError, match=r"duplicate.*'AAA', 'BBB'"):
+        validate_inputs(_research("BBB", "AAA", "BBB", "CCC", "AAA"), _snapshot(), _benchmark())
 
 
 def _with_candidate(ticker: str, sector: str) -> ResearchResult:

@@ -81,7 +81,7 @@ def optimize_weights(
     ``"optimizer:zero"``. Raises ValueError on invalid params and PortfolioInfeasibleError
     when SLSQP fails or its weights break any limit by more than ``1e-6``.
     """
-    _validate_params(params)
+    validate_params(params)
     n_long = sum(1 for asset in assets if asset.side is Side.LONG)
     if min(n_long, len(assets) - n_long) < params.min_names_per_side:
         return _excluded_all(assets, EXCLUDED_THIN_BOOK)
@@ -233,7 +233,7 @@ def _violation(problem: _Problem, w: NDArray[np.float64], side_gross: float) -> 
 _FLOAT_FIELDS = ("risk_aversion", "gross", "max_weight", "beta_band", "sector_net", "sector_gross")
 
 
-def _validate_params(params: OptimizeParams) -> None:
+def validate_params(params: OptimizeParams) -> None:
     """Type check first: bool, float and NaN would slip past plain range comparisons."""
     for name in _FLOAT_FIELDS:
         value = getattr(params, name)

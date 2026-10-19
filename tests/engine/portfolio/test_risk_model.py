@@ -246,15 +246,16 @@ def test_alignment_can_drop_every_name() -> None:
     assert (model.betas, model.vols, model.delta, model.observations) == ({}, {}, 0.0, 0)
 
 
-def test_infinite_returns_from_a_zero_close_are_missing() -> None:
-    # A's close in row 3 is 0: return row 3 is -1 (finite) and row 4 is x / 0 - 1 = inf,
-    # which must count as missing. Rows 1-3, 5, 6 remain shared = 5 observations.
-    zero_close = _prices(WIGGLE)
-    zero_close[3] = 0.0
-    closes = _closes({"A": zero_close, "B": _prices(WIGGLE[::-1])})
+@pytest.mark.parametrize("bad_close", [0.0, -5.0])
+def test_infinite_returns_from_a_zero_close_are_missing(bad_close: float) -> None:
+    # A non-positive close in row 3 is missing, so the returns on rows 3 (its own, -100% for
+    # zero) and 4 (x / 0 - 1 = inf) are both NaN. Rows 1, 2, 5, 6 remain shared = 4.
+    bad_prices = _prices(WIGGLE)
+    bad_prices[3] = bad_close
+    closes = _closes({"A": bad_prices, "B": _prices(WIGGLE[::-1])})
     model = risk_model(closes, _spy(_prices(WIGGLE[::-1])), params=SIX)
     assert model.excluded == {}
-    assert model.observations == 5
+    assert model.observations == 4
     assert np.isfinite(model.sigma.to_numpy()).all()
     assert np.isfinite(model.corr.to_numpy()).all()
     assert np.isfinite(list(model.betas.values())).all()

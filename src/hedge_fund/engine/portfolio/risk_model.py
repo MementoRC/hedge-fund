@@ -107,8 +107,9 @@ def ledoit_wolf(returns: NDArray[np.float64]) -> tuple[NDArray[np.float64], floa
 def _returns(prices: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
     """Simple returns; a NaN close makes the returns on both adjacent rows NaN.
 
-    A zero or negative prior close yields an infinite return, which is treated as missing.
+    Non-positive closes are treated as missing, which leaves NaN returns on both adjacent rows.
     """
+    prices = prices.where(prices > 0)
     return (prices / prices.shift(1) - 1).replace([np.inf, -np.inf], np.nan)
 
 

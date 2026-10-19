@@ -9,6 +9,7 @@ import pytest
 from hedge_fund.engine.portfolio.risk_model import (
     DEFAULT_RISK,
     RiskParams,
+    _validate_params,
     ledoit_wolf,
     risk_model,
 )
@@ -41,6 +42,14 @@ def test_rejects_min_obs_outside_two_to_lookback(lookback: int, min_obs: int) ->
     params = RiskParams(lookback=lookback, min_obs=min_obs)
     with pytest.raises(ValueError, match="2 <= min_obs <= lookback"):
         risk_model(NO_PRICES, NO_BENCHMARK, params=params)
+
+
+@pytest.mark.parametrize(
+    ("lookback", "min_obs"),
+    [(10, 10), (10, 2), (2, 2)],
+)
+def test_accepts_boundary_valid_params(lookback: int, min_obs: int) -> None:
+    _validate_params(RiskParams(lookback=lookback, min_obs=min_obs))
 
 
 # --- Ledoit-Wolf -----------------------------------------------------------

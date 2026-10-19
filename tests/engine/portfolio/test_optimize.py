@@ -222,3 +222,181 @@ def test_lp_solver_failure_is_infeasible(monkeypatch: pytest.MonkeyPatch) -> Non
     assets = _paired(3)
     out = optimize_weights(assets, _sigma(assets))
     assert out.excluded == dict.fromkeys(["L1", "L2", "L3", "S1", "S2", "S3"], "infeasible")
+
+
+# --- QP solve --------------------------------------------------------------
+
+TOL = 1e-6
+
+
+def _assert_within_limits(
+    assets: list[Asset], out: Allocation, params: OptimizeParams = DEFAULT_OPTIMIZE
+) -> None:
+    w = {asset.ticker: out.weights.get(asset.ticker, 0.0) for asset in assets}
+    for asset in assets:
+        low, high = (0.0, params.max_weight) if asset.side is LONG else (-params.max_weight, 0.0)
+        assert low - TOL <= w[asset.ticker] <= high + TOL
+    longs = sum(w[a.ticker] for a in assets if a.side is LONG)
+    shorts = sum(w[a.ticker] for a in assets if a.side is SHORT)
+    assert longs == pytest.approx(-shorts, abs=TOL)
+    assert longs <= params.gross / 2 + TOL
+    assert abs(sum(a.beta * w[a.ticker] for a in assets)) <= params.beta_band + TOL
+    for sector in {asset.sector for asset in assets}:
+        members = [a.ticker for a in assets if a.sector == sector]
+        assert abs(sum(w[t] for t in members)) <= params.sector_net + TOL
+        assert sum(abs(w[t]) for t in members) <= params.sector_gross + TOL
+
+
+def test_weights_tilt_toward_alpha_and_zero_weights_are_dropped() -> None:
+    # Diagonal sigma 0.04, risk_aversion 1: per side maximize sum(a_i w_i) - 0.04 sum(w_i^2)
+    # with sum(w) = 0.3, so w_i = (a_i - lam) / 0.08, floored at 0. With L4 at 0:
+    # (0.030 - 3 lam) / 0.08 = 0.3 -> lam = 0.002 -> w = 0.125, 0.1, 0.075; L4's alpha
+    # 0.001 < lam keeps it at 0. Shorts mirror. Paired sectors: every sector net is 0.
+    params = OptimizeParams(gross=0.6, max_weight=0.15, min_names_per_side=2)
+    assets = _paired(4, [0.012, 0.010, 0.008, 0.001])
+    out = optimize_weights(assets, _sigma(assets), params=params)
+    expected = {"L1": 0.125, "L2": 0.1, "L3": 0.075, "S1": -0.125, "S2": -0.1, "S3": -0.075}
+    assert out.weights == pytest.approx(expected, abs=TOL)
+    assert list(out.weights) == ["L1", "L2", "L3", "S1", "S2", "S3"]
+    assert out.excluded == {"L4": "optimizer:zero", "S4": "optimizer:zero"}
+    _assert_within_limits(assets, out, params)
+
+
+def test_every_name_at_its_bound_still_solves() -> None:
+    # g* = cap = 3 * max_weight = 0.3: every bound is active together with the side sums.
+    assets = _paired(3)
+    out = optimize_weights(assets, _sigma(assets))
+    expected = {"L1": 0.1, "L2": 0.1, "L3": 0.1, "S1": -0.1, "S2": -0.1, "S3": -0.1}
+    assert out.weights == pytest.approx(expected, abs=TOL)
+    assert out.excluded == {}
+
+
+def test_thinner_side_sets_the_side_gross() -> None:
+    # 4 longs, 3 shorts: side gross 0.3, so every short sits at -0.1. Longs:
+    # (0.036 - 4 lam) / 0.08 = 0.3 -> lam = 0.003 -> w = 0.0975, 0.0875, 0.075, 0.04.
+    assets = _paired(4, [0.0108, 0.010, 0.009, 0.0062])[:7]
+    out = optimize_weights(assets, _sigma(assets))
+    expected = {
+        "L1": 0.0975,
+        "L2": 0.0875,
+        "L3": 0.075,
+        "L4": 0.04,
+        "S1": -0.1,
+        "S2": -0.1,
+        "S3": -0.1,
+    }
+    assert out.weights == pytest.approx(expected, abs=TOL)
+    _assert_within_limits(assets, out)
+
+
+def test_lopsided_sectors_size_the_book_to_the_lp_optimum() -> None:
+    # Same setup as the LP test: sector_net binds at g = 0.10, side_gross = 0.10 * (1 - 1e-6).
+    assets = _lopsided()
+    out = optimize_weights(assets, _sigma(assets))
+    longs = sum(weight for weight in out.weights.values() if weight > 0)
+    shorts = sum(weight for weight in out.weights.values() if weight < 0)
+    assert longs == pytest.approx(0.10 * (1 - 1e-6), rel=1e-9)
+    assert shorts == pytest.approx(-0.10 * (1 - 1e-6), rel=1e-9)
+    assert out.excluded == {}
+    _assert_within_limits(assets, out)
+
+
+def test_mixed_book_respects_every_limit() -> None:
+    # Correlated names (0.04 variance, 0.01 covariance), uneven betas, shared sectors.
+    params = OptimizeParams(gross=0.6, min_names_per_side=2)
+    assets = [
+        _asset("L1", "Tech", LONG, 0.012, 1.5),
+        _asset("L2", "Tech", LONG, 0.010, 1.2),
+        _asset("L3", "Health", LONG, 0.008, 0.8),
+        _asset("L4", "Energy", LONG, 0.006, 0.5),
+        _asset("S1", "Tech", SHORT, -0.012, 0.6),
+        _asset("S2", "Health", SHORT, -0.010, 0.9),
+        _asset("S3", "Health", SHORT, -0.008, 1.1),
+        _asset("S4", "Energy", SHORT, -0.006, 1.4),
+    ]
+    tickers = [asset.ticker for asset in assets]
+    sigma = pd.DataFrame(0.01 + 0.03 * np.eye(8), index=tickers, columns=tickers)
+    out = optimize_weights(assets, sigma, params=params)
+    assert out.weights
+    _assert_within_limits(assets, out, params)
+
+
+def test_repeat_runs_give_identical_weights() -> None:
+    assets = _paired(4, [0.0108, 0.010, 0.009, 0.0062])[:7]
+    assert optimize_weights(assets, _sigma(assets)) == optimize_weights(assets, _sigma(assets))
+
+
+def _fake_minimize(monkeypatch: pytest.MonkeyPatch, *, success: bool, x: list[float]) -> None:
+    def fake(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            success=success, status=0 if success else 9, message="scripted", x=np.array(x)
+        )
+
+    monkeypatch.setattr(optimize_module, "minimize", fake)
+
+
+def test_solver_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_minimize(monkeypatch, success=False, x=[0.1, 0.1, 0.1, -0.1, -0.1, -0.1])
+    assets = _paired(3)
+    with pytest.raises(PortfolioInfeasibleError, match=r"status 9 \(scripted\): did not converge"):
+        optimize_weights(assets, _sigma(assets))
+
+
+def test_solution_breaking_a_side_sum_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # All-zero weights pass every bound but miss the long side sum of 0.3 by 0.3.
+    _fake_minimize(monkeypatch, success=True, x=[0.0] * 6)
+    assets = _paired(3)
+    with pytest.raises(PortfolioInfeasibleError, match="long side sum violated by 0.3"):
+        optimize_weights(assets, _sigma(assets))
+
+
+def test_solution_breaking_a_bound_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Side sums hold (0.2 + 0.05 + 0.05 = 0.3) but L1 exceeds max_weight 0.1 by 0.1.
+    _fake_minimize(monkeypatch, success=True, x=[0.2, 0.05, 0.05, -0.1, -0.1, -0.1])
+    assets = _paired(3)
+    with pytest.raises(PortfolioInfeasibleError, match="L1 weight bounds violated by 0.1"):
+        optimize_weights(assets, _sigma(assets))
+
+
+def test_solution_breaking_a_sector_limit_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4 + 4 paired names, side gross 0.3. Bounds and side sums hold (0.1 * 3 = 0.3), beta is
+    # 0.3 - 0.3 = 0, but Sec1 net = 0.1 + 0.0 = 0.1 exceeds sector_net 0.05 by 0.05.
+    _fake_minimize(monkeypatch, success=True, x=[0.1, 0.1, 0.1, 0.0, 0.0, -0.1, -0.1, -0.1])
+    params = OptimizeParams(gross=0.6, min_names_per_side=2, sector_net=0.05)
+    assets = _paired(4)
+    with pytest.raises(PortfolioInfeasibleError, match="sector Sec1 net <= sector_net violated"):
+        optimize_weights(assets, _sigma(assets), params=params)
+
+
+def test_solution_breaking_the_short_side_sum_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Bounds and the long sum (0.3) hold; the shorts sum to -0.2, missing -0.3 by 0.1.
+    _fake_minimize(monkeypatch, success=True, x=[0.1, 0.1, 0.1, -0.1, -0.1, 0.0])
+    assets = _paired(3)
+    with pytest.raises(PortfolioInfeasibleError, match="short side sum violated by 0.1"):
+        optimize_weights(assets, _sigma(assets))
+
+
+def test_solution_breaking_the_beta_band_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Long betas 3, 1, 1 and short betas 1: book beta = 3 w1 + w2 + w3 - g = 2 w1, so
+    # beta_band 0.05 caps w1 at 0.025 and the LP gives g* = 0.225 (side_gross 0.225 minus
+    # 1e-6 slack). The fake weights keep bounds, side sums (within 2.25e-7) and sectors
+    # (net at most 0.1 - 0.075 = 0.025), but beta = 2 * 0.1 = 0.2 breaks 0.05 by 0.15.
+    _fake_minimize(monkeypatch, success=True, x=[0.1, 0.1, 0.025, -0.075, -0.075, -0.075])
+    betas = [3.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    assets = [dataclasses.replace(a, beta=b) for a, b in zip(_paired(3), betas, strict=True)]
+    params = OptimizeParams(beta_band=0.05)
+    with pytest.raises(PortfolioInfeasibleError, match="beta <= beta_band violated by 0.15"):
+        optimize_weights(assets, _sigma(assets), params=params)
+
+
+def test_zero_drops_do_not_rerun_the_thin_book_check() -> None:
+    # Lopsided sectors: side_gross = 0.10 * (1 - 1e-6). L1's alpha 0.05 dwarfs the others:
+    # if only L1 is held, lam = 0.05 - 0.08 * 0.1 = 0.042 > 0.001, so L2 and L3 stay at 0
+    # (S side mirrors). One name per side is left, below min_names_per_side 3, yet the
+    # book is returned: the thin-book rule runs once, before the LP.
+    alphas = [0.05, 0.001, 0.001, -0.05, -0.001, -0.001]
+    assets = [dataclasses.replace(a, alpha=x) for a, x in zip(_lopsided(), alphas, strict=True)]
+    out = optimize_weights(assets, _sigma(assets))
+    side_gross = 0.10 * (1 - 1e-6)
+    assert out.weights == pytest.approx({"L1": side_gross, "S1": -side_gross}, abs=TOL)
+    assert out.excluded == dict.fromkeys(["L2", "L3", "S2", "S3"], "optimizer:zero")

@@ -9,14 +9,20 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
-from scipy.optimize import linprog
+from scipy.optimize import linprog, minimize
 
-from hedge_fund.domain.portfolio import EXCLUDED_INFEASIBLE, EXCLUDED_THIN_BOOK
+from hedge_fund.domain.portfolio import (
+    EXCLUDED_INFEASIBLE,
+    EXCLUDED_OPTIMIZER_ZERO,
+    EXCLUDED_THIN_BOOK,
+)
 from hedge_fund.domain.shortlist import Side
 
 _SLACK = 1e-6  # relative shrink of g* when a limit binds below the cap
 _CAP_TOLERANCE = 1e-9
 _MIN_SIDE_GROSS = 1e-6
+_ZERO_WEIGHT = 1e-9
+_TOLERANCE = 1e-6
 
 
 class PortfolioInfeasibleError(ValueError):
@@ -64,7 +70,17 @@ def optimize_weights(
     *,
     params: OptimizeParams = DEFAULT_OPTIMIZE,
 ) -> Allocation:
-    """Thin-book rule and the LP feasible side gross; the QP arrives in the next task."""
+    """Maximize ``alpha'w - risk_aversion * w' sigma w`` for a market-neutral book.
+
+    Longs get ``0 <= w <= max_weight`` and shorts ``-max_weight <= w <= 0``. With fewer than
+    ``min_names_per_side`` names on either side every name is ``"thin-book"``. The side gross
+    comes from an LP (see ``_feasible_start``); a failed LP or a side gross below ``1e-6``
+    makes every name ``"infeasible"``. Otherwise SLSQP solves the QP with both side sums
+    fixed at the side gross (net 0), beta within ``beta_band`` and per-sector net and gross
+    limits; ``sigma`` is labelled by ticker. Weights below ``1e-9`` in size are dropped as
+    ``"optimizer:zero"``. Raises ValueError on invalid params and PortfolioInfeasibleError
+    when SLSQP fails or its weights break any limit by more than ``1e-6``.
+    """
     _validate_params(params)
     n_long = sum(1 for asset in assets if asset.side is Side.LONG)
     if min(n_long, len(assets) - n_long) < params.min_names_per_side:
@@ -73,7 +89,15 @@ def optimize_weights(
     start = _feasible_start(problem, params)
     if start is None:
         return _excluded_all(assets, EXCLUDED_INFEASIBLE)
-    raise NotImplementedError
+    side_gross, initial = start
+    weights = _solve(problem, side_gross, initial, params.risk_aversion)
+    pairs = list(zip(problem.tickers, weights.tolist(), strict=True))
+    return Allocation(
+        weights={ticker: weight for ticker, weight in pairs if weight != 0.0},
+        excluded={
+            ticker: EXCLUDED_OPTIMIZER_ZERO for ticker, weight in sorted(pairs) if weight == 0.0
+        },
+    )
 
 
 def _excluded_all(assets: Sequence[Asset], reason: str) -> Allocation:
@@ -158,6 +182,52 @@ def _feasible_start(
     if side_gross < _MIN_SIDE_GROSS:
         return None
     return side_gross, np.asarray(result.x[:n], dtype=float) * (side_gross / best)
+
+
+def _solve(
+    problem: _Problem, side_gross: float, initial: NDArray[np.float64], risk_aversion: float
+) -> NDArray[np.float64]:
+    """SLSQP from the LP start; tiny weights zeroed, then every limit re-verified."""
+    p = problem
+    result = minimize(
+        lambda w: float(-p.alpha @ w + risk_aversion * (w @ p.sigma @ w)),
+        initial,
+        jac=lambda w: -p.alpha + 2 * risk_aversion * (p.sigma @ w),
+        bounds=p.bounds,
+        constraints=[
+            {"type": "eq", "fun": lambda w: p.long @ w - side_gross, "jac": lambda w: p.long},
+            {"type": "eq", "fun": lambda w: p.short @ w + side_gross, "jac": lambda w: p.short},
+            {"type": "ineq", "fun": lambda w: p.h - p.g @ w, "jac": lambda w: -p.g},
+        ],
+        method="SLSQP",
+        options={"ftol": 1e-12, "maxiter": 1000},
+    )
+    status = f"optimizer status {result.status} ({result.message})"
+    if not result.success:
+        raise PortfolioInfeasibleError(f"{status}: did not converge")
+    weights = np.array(result.x, dtype=float)
+    weights[np.abs(weights) < _ZERO_WEIGHT] = 0.0
+    violation = _violation(p, weights, side_gross)
+    if violation is not None:
+        raise PortfolioInfeasibleError(f"{status}: {violation}")
+    return weights
+
+
+def _violation(problem: _Problem, w: NDArray[np.float64], side_gross: float) -> str | None:
+    """The first bound, side sum or linear limit broken by more than ``1e-6``, if any."""
+    excess: list[tuple[str, float]] = [
+        (f"{ticker} weight bounds", max(low - value, value - high))
+        for ticker, value, (low, high) in zip(
+            problem.tickers, w.tolist(), problem.bounds, strict=True
+        )
+    ]
+    excess.append(("long side sum", abs(float(problem.long @ w) - side_gross)))
+    excess.append(("short side sum", abs(float(problem.short @ w) + side_gross)))
+    excess.extend(zip(problem.labels, (problem.g @ w - problem.h).tolist(), strict=True))
+    for label, amount in excess:
+        if amount > _TOLERANCE:
+            return f"{label} violated by {amount:.3g}"
+    return None
 
 
 _FLOAT_FIELDS = ("risk_aversion", "gross", "max_weight", "beta_band", "sector_net", "sector_gross")

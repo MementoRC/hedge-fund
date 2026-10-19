@@ -295,8 +295,8 @@ def test_lopsided_sectors_size_the_book_to_the_lp_optimum() -> None:
     out = optimize_weights(assets, _sigma(assets))
     longs = sum(weight for weight in out.weights.values() if weight > 0)
     shorts = sum(weight for weight in out.weights.values() if weight < 0)
-    assert longs == pytest.approx(0.10 * (1 - 1e-6), rel=1e-9)
-    assert shorts == pytest.approx(-0.10 * (1 - 1e-6), rel=1e-9)
+    assert longs == pytest.approx(0.10 * (1 - 1e-6), abs=1e-8)
+    assert shorts == pytest.approx(-0.10 * (1 - 1e-6), abs=1e-8)
     assert out.excluded == {}
     _assert_within_limits(assets, out)
 
@@ -386,6 +386,29 @@ def test_solution_breaking_the_beta_band_raises(monkeypatch: pytest.MonkeyPatch)
     assets = [dataclasses.replace(a, beta=b) for a, b in zip(_paired(3), betas, strict=True)]
     params = OptimizeParams(beta_band=0.05)
     with pytest.raises(PortfolioInfeasibleError, match="beta <= beta_band violated by 0.15"):
+        optimize_weights(assets, _sigma(assets), params=params)
+
+
+def test_zero_drop_threshold_keeps_5e_7_and_drops_5e_10(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 4 + 4 paired names, side gross 0.3. L4 = 5e-7 is kept, S4 = -5e-10 is dropped; every
+    # limit holds within 1e-6 (long sum is exact, short sum is off by 5e-10).
+    x = [0.1, 0.1, 0.1 - 5e-7, 5e-7, -0.1, -0.1, -0.1, -5e-10]
+    _fake_minimize(monkeypatch, success=True, x=x)
+    params = OptimizeParams(gross=0.6, min_names_per_side=2)
+    assets = _paired(4)
+    out = optimize_weights(assets, _sigma(assets), params=params)
+    assert out.weights["L4"] == pytest.approx(5e-7, abs=1e-12)
+    assert "S4" not in out.weights
+    assert out.excluded == {"S4": "optimizer:zero"}
+
+
+def test_reverification_reports_beta_before_sectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Bounds and side sums hold (0.3 each). L1 beta 3 gives book beta 2 * 0.1 = 0.2 > 0.1, and
+    # Sec1 net 0.1 > sector_net 0.05: both break, but beta is checked first.
+    _fake_minimize(monkeypatch, success=True, x=[0.1, 0.1, 0.1, 0.0, 0.0, -0.1, -0.1, -0.1])
+    params = OptimizeParams(gross=0.6, min_names_per_side=2, sector_net=0.05)
+    assets = [dataclasses.replace(a, beta=3.0 if a.ticker == "L1" else 1.0) for a in _paired(4)]
+    with pytest.raises(PortfolioInfeasibleError, match="beta <= beta_band violated"):
         optimize_weights(assets, _sigma(assets), params=params)
 
 

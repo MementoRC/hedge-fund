@@ -126,6 +126,10 @@ def validate_inputs(
         raise ValueError(
             f"benchmark must end on the snapshot's last date {last.date()}, but ends on {got}"
         )
+    tickers = [name.candidate.ticker for name in research.names]
+    duplicates = sorted({ticker for ticker in tickers if tickers.count(ticker) > 1})
+    if duplicates:
+        raise ValueError(f"duplicate research tickers: {', '.join(map(repr, duplicates))}")
     for name in research.names:
         ticker, sector = name.candidate.ticker, name.candidate.sector
         if ticker not in snapshot.closes.columns:

@@ -312,6 +312,11 @@ def test_validate_inputs_accepts_consistent_inputs() -> None:
     validate_inputs(_research(), _snapshot(), _benchmark())
 
 
+def test_rejects_duplicate_research_tickers() -> None:
+    with pytest.raises(ValueError, match=r"duplicate.*'AAA', 'BBB'"):
+        validate_inputs(_research("BBB", "AAA", "BBB", "CCC", "AAA"), _snapshot(), _benchmark())
+
+
 def _with_candidate(ticker: str, sector: str) -> ResearchResult:
     candidate = Candidate(ticker=ticker, sector=sector, side=LONG, depth=1, composite=1.0)
     name = dataclasses.replace(_research("AAA").names[0], candidate=candidate)

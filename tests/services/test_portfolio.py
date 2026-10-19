@@ -244,8 +244,11 @@ def test_invalid_params_are_rejected_even_for_empty_research(
 
 
 def test_positions_are_ordered_longs_then_shorts_by_size_then_ticker() -> None:
-    # Diagonal sigma 0.04: w' sigma w = 0.04 * (0.05^2 + 0.1^2 + 0.1^2 + 0.05^2 + 0.05^2)
-    # = 0.04 * 0.0275 = 0.0011. Q has no weight, so it is not a position.
+    # Sigma is 0.04 on the diagonal with cov(A, B) = 0.01, cov(X, Z) = 0.01 and, for the
+    # dropped Q, cov(Q, A) = cov(Q, B) = 0.02; its index order differs from `assets`.
+    # w' sigma w over the five positions (Q has no weight, so it is not one):
+    # 0.04 * 0.0275 = 0.0011 diagonal, + 2 * 0.01 * (0.05 * 0.10) = 0.0001 for A-B,
+    # + 2 * 0.01 * (-0.05 * -0.10) = 0.0001 for X-Z: 0.0013.
     assets = [
         Asset(ticker="A", sector="Tech", side=LONG, alpha=0.01, beta=1.0),
         Asset(ticker="B", sector="Tech", side=LONG, alpha=0.02, beta=1.0),
@@ -255,15 +258,22 @@ def test_positions_are_ordered_longs_then_shorts_by_size_then_ticker() -> None:
         Asset(ticker="Z", sector="Energy", side=SHORT, alpha=-0.02, beta=1.0),
     ]
     weights = {"A": 0.05, "B": 0.10, "Y": -0.05, "X": -0.05, "Z": -0.10}
-    tickers = [asset.ticker for asset in assets]
+    tickers = ["Z", "Q", "X", "A", "Y", "B"]
     sigma = pd.DataFrame(0.04 * np.eye(6), index=tickers, columns=tickers)
+    for left, right, cov in [
+        ("A", "B", 0.01),
+        ("X", "Z", 0.01),
+        ("Q", "A", 0.02),
+        ("Q", "B", 0.02),
+    ]:
+        sigma.loc[left, right] = sigma.loc[right, left] = cov
     out = _assemble(AS_OF, assets, weights, sigma, {"Q": "optimizer:zero"})
     assert [p.ticker for p in out.positions] == ["B", "A", "Z", "X", "Y"]
     assert out.excluded == {"Q": "optimizer:zero"}
     assert out.gross == pytest.approx(0.35)  # 0.05 + 0.1 + 0.05 + 0.05 + 0.1
     assert out.net == pytest.approx(-0.05)  # 0.15 - 0.2
     assert out.beta == pytest.approx(-0.05)  # every beta 1
-    assert out.expected_vol == pytest.approx(math.sqrt(0.0011))
+    assert out.expected_vol == pytest.approx(math.sqrt(0.0013))
 
 
 def test_rejects_as_of_mismatch() -> None:
@@ -277,6 +287,13 @@ def test_rejects_as_of_mismatch() -> None:
     ids=["ends-early", "empty"],
 )
 def test_rejects_benchmark_not_ending_with_the_snapshot(benchmark: pd.Series) -> None:
+    with pytest.raises(ValueError, match="benchmark must end on"):
+        build_portfolio(_research(), _snapshot(), benchmark)
+
+
+def test_rejects_benchmark_with_a_row_after_the_snapshot() -> None:
+    extra = pd.Series([1.0], index=[INDEX[-1] + pd.offsets.BDay(1)])
+    benchmark = pd.concat([_benchmark(), extra])
     with pytest.raises(ValueError, match="benchmark must end on"):
         build_portfolio(_research(), _snapshot(), benchmark)
 

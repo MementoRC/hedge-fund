@@ -247,7 +247,7 @@ def test_alignment_can_drop_every_name() -> None:
 
 
 @pytest.mark.parametrize("bad_close", [0.0, -5.0])
-def test_infinite_returns_from_a_zero_close_are_missing(bad_close: float) -> None:
+def test_non_positive_closes_are_missing(bad_close: float) -> None:
     # A non-positive close in row 3 is missing, so the returns on rows 3 (its own, -100% for
     # zero) and 4 (x / 0 - 1 = inf) are both NaN. Rows 1, 2, 5, 6 remain shared = 4.
     bad_prices = _prices(WIGGLE)

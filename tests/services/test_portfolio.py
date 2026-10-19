@@ -4,6 +4,7 @@ import dataclasses
 import math
 from collections.abc import Sequence
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -13,9 +14,10 @@ from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.research import NameResearch, ResearchResult, Verdict
 from hedge_fund.domain.shortlist import Candidate, Side
 from hedge_fund.domain.snapshot import PriceSnapshot
+from hedge_fund.engine.portfolio import optimize as optimize_module
 from hedge_fund.engine.portfolio.alpha import AlphaParams
 from hedge_fund.engine.portfolio.correlation import CorrelationParams
-from hedge_fund.engine.portfolio.optimize import Asset, OptimizeParams
+from hedge_fund.engine.portfolio.optimize import Asset, OptimizeParams, PortfolioInfeasibleError
 from hedge_fund.engine.portfolio.risk_model import RiskParams
 from hedge_fund.services.portfolio import (
     _assemble,
@@ -238,6 +240,18 @@ def test_params_are_passed_to_every_step() -> None:
     assert out.positions == ()
     doubled = _build(_research(), alpha=AlphaParams(ic=0.1))
     assert doubled.positions[0].alpha == pytest.approx(0.1 * VOL)  # AAA, score 1
+
+
+def test_optimizer_infeasibility_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The full universe reaches SLSQP (6 sized names); a failed solve must not be swallowed.
+    # Real inputs only reach this raise through a solver failure, so the solve is scripted:
+    # an LP-infeasible start returns an all-"infeasible" Allocation instead of raising.
+    def failed(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(success=False, status=9, message="scripted", x=np.zeros(6))
+
+    monkeypatch.setattr(optimize_module, "minimize", failed)
+    with pytest.raises(PortfolioInfeasibleError, match="did not converge"):
+        _build(_research())
 
 
 @pytest.mark.parametrize(

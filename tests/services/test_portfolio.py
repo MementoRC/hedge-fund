@@ -17,7 +17,12 @@ from hedge_fund.engine.portfolio.alpha import AlphaParams
 from hedge_fund.engine.portfolio.correlation import CorrelationParams
 from hedge_fund.engine.portfolio.optimize import Asset, OptimizeParams
 from hedge_fund.engine.portfolio.risk_model import RiskParams
-from hedge_fund.services.portfolio import _assemble, build_portfolio, fetch_benchmark
+from hedge_fund.services.portfolio import (
+    _assemble,
+    build_portfolio,
+    fetch_benchmark,
+    validate_inputs,
+)
 from tests.fakes import FakeProvider
 
 AS_OF = date(2026, 9, 30)  # Wednesday
@@ -296,6 +301,15 @@ def test_rejects_benchmark_with_a_row_after_the_snapshot() -> None:
     benchmark = pd.concat([_benchmark(), extra])
     with pytest.raises(ValueError, match="benchmark must end on"):
         build_portfolio(_research(), _snapshot(), benchmark)
+
+
+def test_validate_inputs_rejects_a_benchmark_date_mismatch() -> None:
+    with pytest.raises(ValueError, match="benchmark must end on"):
+        validate_inputs(_research(), _snapshot(), _benchmark().iloc[:-1])
+
+
+def test_validate_inputs_accepts_consistent_inputs() -> None:
+    validate_inputs(_research(), _snapshot(), _benchmark())
 
 
 def _with_candidate(ticker: str, sector: str) -> ResearchResult:

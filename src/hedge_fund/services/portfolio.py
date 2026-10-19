@@ -26,8 +26,8 @@ from hedge_fund.engine.portfolio.optimize import (
     Asset,
     OptimizeParams,
     optimize_weights,
+    validate_params,
 )
-from hedge_fund.engine.portfolio.optimize import _validate_params as _validate_optimize
 from hedge_fund.engine.portfolio.risk_model import DEFAULT_RISK, RiskParams, risk_model
 from hedge_fund.engine.portfolio.risk_model import _validate_params as _validate_risk
 from hedge_fund.ports.data import DataProvider
@@ -74,11 +74,11 @@ def build_portfolio(
     up front, even for empty research); engine errors (short or flat benchmark,
     PortfolioInfeasibleError) propagate.
     """
-    _validate_inputs(research, snapshot, benchmark)
+    validate_inputs(research, snapshot, benchmark)
     _validate_alpha(alpha)
     _validate_risk(risk)
     _validate_correlation(correlation)
-    _validate_optimize(optimize)
+    validate_params(optimize)
     eligible, excluded = gate(research.names)
     if not eligible:
         return _assemble(research.as_of, [], {}, pd.DataFrame(), excluded)
@@ -113,7 +113,7 @@ def build_portfolio(
     return _assemble(research.as_of, assets, allocation.weights, model.sigma, excluded)
 
 
-def _validate_inputs(
+def validate_inputs(
     research: ResearchResult, snapshot: PriceSnapshot, benchmark: pd.Series
 ) -> None:
     if research.as_of != snapshot.as_of:

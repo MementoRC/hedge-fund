@@ -122,7 +122,10 @@ def _validate_inputs(
         )
     last = snapshot.closes.index[-1]
     if benchmark.empty or benchmark.index[-1] != last:
-        raise ValueError(f"benchmark must end on the snapshot's last date {last.date()}")
+        got = "nothing" if benchmark.empty else str(benchmark.index[-1].date())
+        raise ValueError(
+            f"benchmark must end on the snapshot's last date {last.date()}, but ends on {got}"
+        )
     for name in research.names:
         ticker, sector = name.candidate.ticker, name.candidate.sector
         if ticker not in snapshot.closes.columns:

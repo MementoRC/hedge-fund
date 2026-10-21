@@ -4,12 +4,47 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from hedge_fund.engine.portfolio.risk_model import (
+    DEFAULT_RISK,
+    TRADING_DAYS,
+    RiskParams,
+    simple_returns,
+    validate_risk_params,
+)
+
 MARKET = "market"
+
+
+@dataclass(frozen=True, eq=False)
+class Regression:
+    """Usable days only: factor returns (days x factors) and residuals (days x names).
+
+    A residual is NaN on a usable day where its name had no return.
+    """
+
+    factor_returns: pd.DataFrame
+    residuals: pd.DataFrame
+
+
+@dataclass(frozen=True, eq=False)
+class FactorModel:
+    """Exposures (estimation names x factors), annualised F, and D for assessable names.
+
+    ``exposures`` columns are ``market`` then the sorted sectors; ``factor_cov`` is labelled
+    by factor on both axes. ``specific_var`` only holds names with at least ``min_obs``
+    residuals: exactly the names a book can be assessed on.
+    """
+
+    exposures: pd.DataFrame
+    factor_cov: pd.DataFrame
+    specific_var: dict[str, float]
+    usable_days: int
 
 
 def betas(returns: pd.DataFrame, spy: pd.Series) -> dict[str, float]:
@@ -61,3 +96,94 @@ def estimation_universe(
     kept = [str(t) for t in returns.columns if counts[t] >= min_obs]
     size = Counter(sectors[t] for t in kept)
     return sorted(t for t in kept if size[sectors[t]] >= 2)
+
+
+def regress(returns: pd.DataFrame, exposures: pd.DataFrame, *, min_obs: int) -> Regression:
+    """Daily cross-sectional OLS ``r_t = X_t f_t + u_t`` over the names with a return.
+
+    ``exposures`` comes from ``exposures()``; ``returns`` must hold its tickers as columns.
+    A day is usable only when every sector has >= 2 names with a return and ``rank(X_t)``
+    equals the factor count; other days are skipped whole. Raises ValueError with fewer
+    than ``min_obs`` usable days.
+    """
+    names = list(exposures.index)
+    x = exposures.to_numpy(dtype=float)
+    days: list[object] = []
+    factor_rows: list[NDArray[np.float64]] = []
+    residual_rows: list[NDArray[np.float64]] = []
+    for day, row in zip(returns.index, returns[names].to_numpy(dtype=float), strict=True):
+        present = ~np.isnan(row)
+        x_t = x[present]
+        if not _usable(x_t):
+            continue
+        f_t = np.linalg.lstsq(x_t, row[present], rcond=None)[0]
+        u = np.full(len(names), np.nan)
+        u[present] = row[present] - x_t @ f_t
+        days.append(day)
+        factor_rows.append(f_t)
+        residual_rows.append(u)
+    if len(days) < min_obs:
+        raise ValueError(f"{len(days)} usable regression days, needs min_obs={min_obs}")
+    index = pd.Index(days)
+    return Regression(
+        factor_returns=pd.DataFrame(factor_rows, index=index, columns=exposures.columns),
+        residuals=pd.DataFrame(residual_rows, index=index, columns=names),
+    )
+
+
+def _usable(x_t: NDArray[np.float64]) -> bool:
+    """Every sector column has >= 2 names and the day's exposures have full column rank."""
+    k = int(x_t.shape[1])
+    if len(x_t) < k or bool(np.any(x_t[:, 1:].sum(axis=0) < 2)):
+        return False
+    return int(np.linalg.matrix_rank(x_t)) == k
+
+
+def covariances(regression: Regression, *, min_obs: int) -> tuple[pd.DataFrame, dict[str, float]]:
+    """``F = 252 cov(f)`` over usable days and ``D_i = 252 var(u_i)``, both ddof=0.
+
+    A name with fewer than ``min_obs`` residuals gets no ``D_i`` (it is unassessable).
+    """
+    f = regression.factor_returns.to_numpy(dtype=float)
+    centred = f - f.mean(axis=0)
+    factors = list(regression.factor_returns.columns)
+    factor_cov = pd.DataFrame(
+        TRADING_DAYS * (centred.T @ centred) / len(f), index=factors, columns=factors
+    )
+    residuals = regression.residuals
+    counts = residuals.notna().sum()
+    variances = residuals.var(ddof=0)
+    specific = {
+        str(t): TRADING_DAYS * float(variances[t])
+        for t in residuals.columns
+        if counts[t] >= min_obs
+    }
+    return factor_cov, specific
+
+
+def fit_factor_model(
+    closes: pd.DataFrame,
+    benchmark: pd.Series,
+    sectors: Mapping[str, str],
+    *,
+    params: RiskParams = DEFAULT_RISK,
+) -> FactorModel:
+    """Fit the model on every name in ``closes`` over the last ``lookback`` returns.
+
+    Returns follow ``simple_returns``; ``benchmark`` is reindexed to ``closes``' dates first
+    (its other dates are ignored). Raises ValueError on invalid params, zero benchmark
+    variance on a name's rows, or fewer than ``min_obs`` usable regression days.
+    """
+    validate_risk_params(params)
+    returns = simple_returns(closes).iloc[-params.lookback :]
+    spy = simple_returns(benchmark.reindex(closes.index)).iloc[-params.lookback :]
+    names = estimation_universe(returns, sectors, min_obs=params.min_obs)
+    x = exposures(betas(returns[names], spy), {t: sectors[t] for t in names})
+    regression = regress(returns, x, min_obs=params.min_obs)
+    factor_cov, specific = covariances(regression, min_obs=params.min_obs)
+    return FactorModel(
+        exposures=x,
+        factor_cov=factor_cov,
+        specific_var=specific,
+        usable_days=len(regression.factor_returns),
+    )

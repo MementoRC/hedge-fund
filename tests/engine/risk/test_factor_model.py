@@ -4,7 +4,17 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from hedge_fund.engine.risk.factor_model import betas, estimation_universe, exposures
+from hedge_fund.engine.portfolio.risk_model import RiskParams, simple_returns
+from hedge_fund.engine.risk.factor_model import (
+    Regression,
+    betas,
+    covariances,
+    estimation_universe,
+    exposures,
+    fit_factor_model,
+    regress,
+)
+from tests.factories import make_closes
 
 NAN = float("nan")
 SPY = [0.01, -0.02, 0.015, 0.005, -0.01, 0.02]
@@ -123,3 +133,157 @@ def test_universe_is_sorted_and_ignores_extra_sector_keys() -> None:
     returns = _frame({"D": FULL, "C": FULL, "B": FULL, "A": FULL})
     sectors = {"A": "Tech", "B": "Energy", "C": "Tech", "D": "Energy", "Q": "Solo"}
     assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B", "C", "D"]
+
+
+# --- regression ------------------------------------------------------------
+
+# Tech: A, B share beta 1.0 and C has 2.0; Energy: D, E share 0.5 and G has 1.5.
+X = exposures(
+    {"A": 1.0, "B": 1.0, "C": 2.0, "D": 0.5, "E": 0.5, "G": 1.5},
+    {"A": "Tech", "B": "Tech", "C": "Tech", "D": "Energy", "E": "Energy", "G": "Energy"},
+)
+# Factor returns per day as (market, Energy, Tech).
+TRUE_F = np.array(
+    [
+        [0.010, 0.002, -0.003],
+        [-0.004, 0.001, 0.002],
+        [0.006, -0.002, 0.001],
+        [0.003, 0.004, -0.001],
+        [-0.008, 0.000, 0.003],
+        [0.002, -0.001, -0.002],
+    ]
+)
+# Day 1: E and G missing -> Energy has one name -> skipped.
+# Day 2: C and G missing -> beta is constant within each sector, so the market column is a
+#        combination of the dummies and rank(X_t) = 2 < 3 -> skipped.
+# Day 3: G missing -> Tech betas still differ, rank 3 -> usable.
+MISSING = {1: ["E", "G"], 2: ["C", "G"], 3: ["G"]}
+
+
+def _exact_returns() -> pd.DataFrame:
+    returns = pd.DataFrame(TRUE_F @ X.to_numpy().T, index=_index(6), columns=list(X.index))
+    for row, tickers in MISSING.items():
+        returns.iloc[row, [returns.columns.get_loc(t) for t in tickers]] = NAN
+    return returns
+
+
+def test_regression_skips_unusable_days_and_recovers_exact_factor_returns() -> None:
+    out = regress(_exact_returns(), X, min_obs=4)
+    assert list(out.factor_returns.index) == list(_index(6)[[0, 3, 4, 5]])
+    assert list(out.factor_returns.columns) == ["market", "Energy", "Tech"]
+    np.testing.assert_allclose(out.factor_returns.to_numpy(), TRUE_F[[0, 3, 4, 5]], atol=1e-12)
+    residuals = out.residuals
+    assert list(residuals.columns) == ["A", "B", "C", "D", "E", "G"]
+    assert np.isnan(residuals.loc[_index(6)[3], "G"])
+    np.testing.assert_allclose(residuals.drop(columns="G").to_numpy(), 0.0, atol=1e-12)
+
+
+def test_regression_needs_min_obs_usable_days() -> None:
+    with pytest.raises(ValueError, match="4 usable regression days, needs min_obs=5"):
+        regress(_exact_returns(), X, min_obs=5)
+
+
+def test_covariances_annualise_with_ddof_zero() -> None:
+    # Factor returns: market [0.01, -0.01], Tech [0.02, 0.0]; both centre to +-0.01, so every
+    # entry of F is 252 * 1e-4 = 0.0252. A's residuals [0.01, -0.01] give D = 0.0252; B has
+    # one residual (< min_obs 2), so no estimate.
+    index = _index(2)
+    regression = Regression(
+        factor_returns=pd.DataFrame({"market": [0.01, -0.01], "Tech": [0.02, 0.0]}, index=index),
+        residuals=pd.DataFrame({"A": [0.01, -0.01], "B": [0.01, NAN]}, index=index),
+    )
+    factor_cov, specific = covariances(regression, min_obs=2)
+    expected = pd.DataFrame(0.0252, index=["market", "Tech"], columns=["market", "Tech"])
+    pd.testing.assert_frame_equal(factor_cov, expected)
+    assert specific == {"A": pytest.approx(0.0252)}
+
+
+def test_recovers_known_factor_and_specific_covariances() -> None:
+    # 3 sectors x 30 names, 2000 days of r_t = X f_t + u_t with f_t ~ N(0, F / 252) and
+    # u_t ~ N(0, diag(D) / 252), seeded, every day usable. Regressing on the true X,
+    # f-hat = f + A u and u-hat = M u with A = (X'X)^-1 X' and M = I - X A, so
+    #   E[F-hat] = F + A diag(D) A'        E[D-hat_i] = sum_j M_ij^2 D_j
+    # (the leakage terms are a few percent here). What remains is sampling error: a variance
+    # estimated from T = 2000 normal draws has relative standard error sqrt(2 / T) ~ 3.2%,
+    # and an off-diagonal covariance about sqrt(F_ii F_jj / T) ~ 2.2% of sqrt(F_ii F_jj).
+    # A 20% band on that scale is over 6 standard errors (no flakes, seed or not) yet fails
+    # a missing x252, transposed exposures or residuals taken from the wrong fit.
+    rng = np.random.default_rng(20261019)
+    sectors = {f"{s}{i:02d}": s for s in ("Energy", "Health", "Tech") for i in range(30)}
+    tickers = sorted(sectors)
+    x = exposures(dict(zip(tickers, rng.uniform(0.5, 1.5, len(tickers)), strict=True)), sectors)
+    true_f = np.array(
+        [
+            [0.04, 0.0, 0.003, 0.0],
+            [0.0, 0.0225, 0.0, 0.0],
+            [0.003, 0.0, 0.01, 0.0],
+            [0.0, 0.0, 0.0, 0.0144],
+        ]
+    )  # market, Energy, Health, Tech
+    true_d = rng.uniform(0.02, 0.09, len(tickers))
+    days = 2000
+    f = rng.multivariate_normal(np.zeros(4), true_f / 252, size=days)
+    u = rng.normal(0.0, np.sqrt(true_d / 252), size=(days, len(tickers)))
+    xa = x.to_numpy()
+    returns = pd.DataFrame(f @ xa.T + u, index=_index(days), columns=tickers)
+    factor_cov, specific = covariances(regress(returns, x, min_obs=days), min_obs=days)
+    a = np.linalg.solve(xa.T @ xa, xa.T)
+    m = np.eye(len(tickers)) - xa @ a
+    expected_f = true_f + a @ np.diag(true_d) @ a.T
+    expected_d = (m**2) @ true_d
+    scale = np.sqrt(np.outer(np.diag(expected_f), np.diag(expected_f)))
+    assert np.all(np.abs(factor_cov.to_numpy() - expected_f) <= 0.2 * scale)
+    np.testing.assert_allclose([specific[t] for t in tickers], expected_d, rtol=0.2)
+
+
+# --- fit_factor_model ------------------------------------------------------
+
+UNIVERSE = {
+    "AAA": "Tech",
+    "ABB": "Tech",
+    "ACC": "Tech",
+    "BAA": "Health",
+    "BBB": "Health",
+    "BCC": "Health",
+    "CAA": "Energy",
+    "CBB": "Energy",
+}
+FIT = RiskParams(lookback=60, min_obs=40)
+
+
+def _fit_inputs(
+    extra: dict[str, str] | None = None,
+) -> tuple[pd.DataFrame, pd.Series, dict[str, str]]:
+    sectors = UNIVERSE | (extra or {})
+    closes = make_closes(list(sectors), n_days=80, seed=5)
+    spy = make_closes(["SPY"], n_days=80, seed=9)["SPY"]
+    return closes, spy, sectors
+
+
+def test_fit_uses_the_last_lookback_returns_of_every_name() -> None:
+    closes, spy, sectors = _fit_inputs()
+    model = fit_factor_model(closes, spy, sectors, params=FIT)
+    assert model.usable_days == 60
+    assert list(model.exposures.columns) == ["market", "Energy", "Health", "Tech"]
+    assert list(model.exposures.index) == sorted(UNIVERSE)
+    assert set(model.specific_var) == set(UNIVERSE)
+    window = simple_returns(closes).iloc[-60:]
+    spy_window = simple_returns(spy).iloc[-60:]
+    assert model.exposures["market"].to_dict() == pytest.approx(betas(window, spy_window))
+    np.testing.assert_allclose(model.factor_cov.to_numpy(), model.factor_cov.to_numpy().T)
+
+
+def test_fit_ignores_benchmark_dates_absent_from_the_snapshot() -> None:
+    closes, spy, sectors = _fit_inputs()
+    weekend = pd.Series([1000.0], index=[pd.Timestamp("2026-09-27")])  # a Sunday
+    noisy = pd.concat([spy, weekend]).sort_index()
+    out = fit_factor_model(closes, noisy, sectors, params=FIT)
+    pd.testing.assert_frame_equal(
+        out.exposures, fit_factor_model(closes, spy, sectors, params=FIT).exposures
+    )
+
+
+def test_fit_rejects_invalid_params() -> None:
+    closes, spy, sectors = _fit_inputs()
+    with pytest.raises(ValueError, match="2 <= min_obs <= lookback"):
+        fit_factor_model(closes, spy, sectors, params=RiskParams(lookback=1, min_obs=1))

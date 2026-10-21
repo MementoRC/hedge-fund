@@ -31,3 +31,14 @@ def test_rejects_band_out_of_range(band: float) -> None:
         ValueError, match=r"no_trade_band must satisfy 0 <= no_trade_band < 1, got "
     ):
         validate_order_params(OrderParams(no_trade_band=band))
+
+
+def test_package_exports() -> None:
+    import hedge_fund.engine.orders as orders
+
+    assert orders.__all__ == [
+        "DEFAULT_ORDERS",
+        "OrderParams",
+        "generate_orders",
+        "validate_order_params",
+    ]

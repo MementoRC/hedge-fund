@@ -343,3 +343,59 @@ def test_band_beats_side_flip() -> None:
 
 def test_residual_uses_final_shares() -> None:
     assert _run({"A": 0.0625}, {"A": 1250}).residual_weight == {"A": 0.0}
+
+
+def test_short_entry_that_rounds_to_zero_is_skipped() -> None:
+    plan = _run({"A": -(2**-15)}, {})
+    assert plan.orders == ()
+    assert plan.skipped == {"A": SKIPPED_ROUNDS_TO_ZERO}
+
+
+def test_short_band_skip_keeps_current_shares() -> None:
+    plan = _run({"A": -0.1274}, {"A": -1250})
+    assert plan.orders == ()
+    assert plan.skipped == {"A": SKIPPED_BAND}
+
+
+def test_short_rebalance_that_rounds_to_current_is_skipped() -> None:
+    plan = _run({"A": -(0.125 + 2**-17)}, {"A": -1250}, band=0.0)
+    assert plan.orders == ()
+    assert plan.skipped == {"A": SKIPPED_ROUNDS_TO_ZERO}
+
+
+# --- ordering ---------------------------------------------------------------------------
+
+MIXED_WEIGHTS = {"A": 0.0625, "B": -0.125, "C": -0.0625, "D": 0.125, "F": 0.125}
+MIXED_HELD = {"A": 1250, "B": -625, "C": 1250, "E": -1250, "F": 1250}
+
+
+def test_reducing_legs_before_opening_legs() -> None:
+    plan = _run(MIXED_WEIGHTS, MIXED_HELD)
+    assert plan.orders == (
+        _order("A", SELL, 625),
+        _order("C", SELL, 1250),
+        _order("E", BUY_TO_COVER, 1250),
+        _order("B", SELL_SHORT, 625),
+        _order("C", SELL_SHORT, 625),
+        _order("D", BUY, 1250),
+    )
+    assert plan.skipped == {"F": SKIPPED_BAND}
+
+
+def test_plan_is_independent_of_input_order() -> None:
+    plan = _run(MIXED_WEIGHTS, MIXED_HELD)
+    tickers = sorted(MIXED_WEIGHTS.keys() | MIXED_HELD.keys(), reverse=True)
+    permuted = _run(
+        dict(reversed(MIXED_WEIGHTS.items())),
+        dict(reversed(MIXED_HELD.items())),
+        prices=dict.fromkeys(tickers, PRICE),
+    )
+    assert permuted == plan
+    assert list(permuted.skipped) == list(plan.skipped)
+    assert list(permuted.residual_weight) == sorted(permuted.residual_weight)
+
+
+def test_skipped_in_ticker_order() -> None:
+    plan = _run({"B": 0.125, "A": 0.125}, {"B": 1250, "A": 1250})
+    assert list(plan.skipped) == ["A", "B"]
+    assert plan.orders == ()

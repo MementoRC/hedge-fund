@@ -23,6 +23,8 @@ from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.risk import RiskVerdict
 from hedge_fund.engine.orders.params import DEFAULT_ORDERS, OrderParams, validate_order_params
 
+_REDUCING = frozenset({OrderAction.SELL, OrderAction.BUY_TO_COVER})
+
 
 def generate_orders(
     target: TargetPortfolio,
@@ -34,6 +36,8 @@ def generate_orders(
     params: OrderParams = DEFAULT_ORDERS,
 ) -> OrderPlan:
     """Orders moving ``holdings`` to ``target``, or none when the verdict blocks trading.
+
+    Reducing legs (SELL, BUY_TO_COVER) come first, then opening legs, each by ticker.
 
     Every input is validated before the verdict is consulted, so a halt never hides bad data.
     Raises ValueError on invalid params, mismatched dates, a non-finite or non-positive NAV or
@@ -58,7 +62,8 @@ def generate_orders(
         return OrderPlan(
             as_of=target.as_of, orders=(), skipped={}, residual_weight=drift, blocked=blocked
         )
-    orders: list[Order] = []
+    reducing: list[Order] = []
+    opening: list[Order] = []
     skipped: dict[str, str] = {}
     residual: dict[str, float] = {}
     for ticker in tickers:
@@ -66,11 +71,12 @@ def generate_orders(
         final, reason = _final_shares(target_w, held, price, nav, params.no_trade_band)
         if reason is not None:
             skipped[ticker] = reason
-        orders.extend(_legs(ticker, held, final, price))
+        for order in _legs(ticker, held, final, price):
+            (reducing if order.action in _REDUCING else opening).append(order)
         residual[ticker] = final * price / nav - target_w
     return OrderPlan(
         as_of=target.as_of,
-        orders=tuple(orders),
+        orders=tuple(reducing + opening),
         skipped=skipped,
         residual_weight=residual,
         blocked=None,

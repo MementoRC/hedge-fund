@@ -28,8 +28,12 @@ from hedge_fund.engine.portfolio.optimize import (
     optimize_weights,
     validate_params,
 )
-from hedge_fund.engine.portfolio.risk_model import DEFAULT_RISK, RiskParams, risk_model
-from hedge_fund.engine.portfolio.risk_model import _validate_params as _validate_risk
+from hedge_fund.engine.portfolio.risk_model import (
+    DEFAULT_RISK,
+    RiskParams,
+    risk_model,
+    validate_risk_params,
+)
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.services.snapshots import _calendar_window
 
@@ -46,14 +50,14 @@ def fetch_benchmark(
     column for an unknown ticker rather than an empty frame.
     """
     frame = provider.closes([ticker], as_of - _calendar_window(lookback_days + 1), as_of)
-    closes = _naive_dates(frame[ticker].dropna())
+    closes = naive_dates(frame[ticker].dropna())
     closes = closes.loc[closes.index <= pd.Timestamp(as_of)]
     if closes.empty:
         raise ValueError(f"no {ticker!r} closes up to {as_of}")
     return closes
 
 
-def _naive_dates(series: pd.Series) -> pd.Series:
+def naive_dates(series: pd.Series) -> pd.Series:
     """Drop the timezone of a tz-aware index, keeping the wall-clock date (no conversion)."""
     index = series.index
     if isinstance(index, pd.DatetimeIndex) and index.tz is not None:
@@ -85,10 +89,10 @@ def build_portfolio(
     up front, even for empty research); engine errors (short or flat benchmark,
     PortfolioInfeasibleError) propagate.
     """
-    benchmark = _naive_dates(benchmark)
+    benchmark = naive_dates(benchmark)
     validate_inputs(research, snapshot, benchmark)
     _validate_alpha(alpha)
-    _validate_risk(risk)
+    validate_risk_params(risk)
     _validate_correlation(correlation)
     validate_params(optimize)
     eligible, excluded = gate(research.names)
@@ -132,13 +136,7 @@ def validate_inputs(
         raise ValueError(
             f"research as_of {research.as_of} differs from snapshot as_of {snapshot.as_of}"
         )
-    benchmark = _naive_dates(benchmark)
-    last = snapshot.closes.index[-1]
-    if benchmark.empty or benchmark.index[-1] != last:
-        got = "nothing" if benchmark.empty else str(benchmark.index[-1].date())
-        raise ValueError(
-            f"benchmark must end on the snapshot's last date {last.date()}, but ends on {got}"
-        )
+    validate_benchmark_end(snapshot, benchmark)
     tickers = [name.candidate.ticker for name in research.names]
     duplicates = sorted({ticker for ticker in tickers if tickers.count(ticker) > 1})
     if duplicates:
@@ -152,6 +150,17 @@ def validate_inputs(
                 f"{ticker!r} sector {sector!r} differs from the snapshot's "
                 f"{snapshot.sectors[ticker]!r}"
             )
+
+
+def validate_benchmark_end(snapshot: PriceSnapshot, benchmark: pd.Series) -> None:
+    """The benchmark, tz-normalised by ``naive_dates``, must end on the snapshot's last date."""
+    benchmark = naive_dates(benchmark)
+    last = snapshot.closes.index[-1]
+    if benchmark.empty or benchmark.index[-1] != last:
+        got = "nothing" if benchmark.empty else str(benchmark.index[-1].date())
+        raise ValueError(
+            f"benchmark must end on the snapshot's last date {last.date()}, but ends on {got}"
+        )
 
 
 def _assemble(

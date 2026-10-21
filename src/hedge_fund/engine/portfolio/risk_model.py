@@ -60,9 +60,9 @@ def risk_model(
     last) is dropped as ``"history"``. Raises ValueError on invalid params, on a benchmark
     with fewer than ``min_obs`` returns, or on zero benchmark variance in the aligned rows.
     """
-    _validate_params(params)
-    returns = _returns(closes).iloc[-params.lookback :]
-    spy = _returns(benchmark.reindex(closes.index)).iloc[-params.lookback :]
+    validate_risk_params(params)
+    returns = simple_returns(closes).iloc[-params.lookback :]
+    spy = simple_returns(benchmark.reindex(closes.index)).iloc[-params.lookback :]
     available = int(spy.notna().sum())
     if available < params.min_obs:
         raise ValueError(
@@ -104,7 +104,7 @@ def ledoit_wolf(returns: NDArray[np.float64]) -> tuple[NDArray[np.float64], floa
     return delta * target + (1 - delta) * sample, delta
 
 
-def _returns(prices: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
+def simple_returns(prices: pd.DataFrame | pd.Series) -> pd.DataFrame | pd.Series:
     """Simple returns; a NaN close makes the returns on both adjacent rows NaN.
 
     Non-positive closes are treated as missing, which leaves NaN returns on both adjacent rows.
@@ -145,7 +145,7 @@ def _estimate(window: pd.DataFrame, spy: pd.Series, excluded: dict[str, str]) ->
     )
 
 
-def _validate_params(params: RiskParams) -> None:
+def validate_risk_params(params: RiskParams) -> None:
     """Type check first: bool, float and NaN would slip past plain range comparisons."""
     for name in ("lookback", "min_obs"):
         value = getattr(params, name)

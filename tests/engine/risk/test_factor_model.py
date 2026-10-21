@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from hedge_fund.engine.risk.factor_model import betas, exposures
+from hedge_fund.engine.risk.factor_model import betas, estimation_universe, exposures
 
 NAN = float("nan")
 SPY = [0.01, -0.02, 0.015, 0.005, -0.01, 0.02]
@@ -79,3 +79,33 @@ def test_exposures_are_beta_then_sorted_sector_dummies() -> None:
         columns=["market", "Energy", "Tech"],
     )
     pd.testing.assert_frame_equal(out, expected)
+
+
+# --- estimation universe ---------------------------------------------------
+
+FULL = [0.01] * 6
+SHORT_HISTORY = _with_nan(FULL, 0, 1, 2)  # 3 returns < min_obs 4
+
+
+def test_universe_drops_short_history() -> None:
+    returns = _frame({"A": FULL, "B": FULL, "C": SHORT_HISTORY})
+    sectors = dict.fromkeys(["A", "B", "C"], "Tech")
+    assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B"]
+
+
+def test_universe_drops_a_single_name_sector() -> None:
+    returns = _frame({"A": FULL, "B": FULL, "S": FULL})
+    sectors = {"A": "Tech", "B": "Tech", "S": "Solo"}
+    assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B"]
+
+
+def test_universe_drops_a_sector_left_with_one_name_by_the_history_filter() -> None:
+    returns = _frame({"A": FULL, "B": FULL, "E": FULL, "F": SHORT_HISTORY})
+    sectors = {"A": "Tech", "B": "Tech", "E": "Energy", "F": "Energy"}
+    assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B"]
+
+
+def test_universe_is_sorted_and_ignores_extra_sector_keys() -> None:
+    returns = _frame({"D": FULL, "C": FULL, "B": FULL, "A": FULL})
+    sectors = {"A": "Tech", "B": "Energy", "C": "Tech", "D": "Energy", "Q": "Solo"}
+    assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B", "C", "D"]

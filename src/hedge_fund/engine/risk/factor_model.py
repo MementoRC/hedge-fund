@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 
 import numpy as np
@@ -50,3 +51,13 @@ def exposures(betas: Mapping[str, float], sectors: Mapping[str, str]) -> pd.Data
     names = sorted({sectors[t] for t in tickers})
     rows = [[betas[t], *(1.0 if sectors[t] == s else 0.0 for s in names)] for t in tickers]
     return pd.DataFrame(rows, index=tickers, columns=[MARKET, *names], dtype=float)
+
+
+def estimation_universe(
+    returns: pd.DataFrame, sectors: Mapping[str, str], *, min_obs: int
+) -> list[str]:
+    """Sorted tickers with >= ``min_obs`` returns whose sector keeps >= 2 such names."""
+    counts = returns.notna().sum()
+    kept = [str(t) for t in returns.columns if counts[t] >= min_obs]
+    size = Counter(sectors[t] for t in kept)
+    return sorted(t for t in kept if size[sectors[t]] >= 2)

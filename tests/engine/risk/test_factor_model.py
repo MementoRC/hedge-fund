@@ -1,14 +1,21 @@
 """Tests for the factor risk model: betas, exposures, universe, regression, F, D, decompose."""
 
+import dataclasses
+import math
+
 import numpy as np
 import pandas as pd
 import pytest
 
+from hedge_fund.domain.risk import RiskBreakdown
 from hedge_fund.engine.portfolio.risk_model import RiskParams, simple_returns
 from hedge_fund.engine.risk.factor_model import (
+    FactorModel,
     Regression,
     betas,
     covariances,
+    decompose,
+    empty_breakdown,
     estimation_universe,
     exposures,
     fit_factor_model,
@@ -287,3 +294,124 @@ def test_fit_rejects_invalid_params() -> None:
     closes, spy, sectors = _fit_inputs()
     with pytest.raises(ValueError, match="2 <= min_obs <= lookback"):
         fit_factor_model(closes, spy, sectors, params=RiskParams(lookback=1, min_obs=1))
+
+
+# --- decompose -------------------------------------------------------------
+
+FACTORS = ["market", "Energy", "Tech"]
+HAND = FactorModel(
+    exposures=pd.DataFrame(
+        [
+            [1.0, 0.0, 1.0],
+            [0.5, 0.0, 1.0],
+            [1.5, 0.0, 1.0],
+            [-0.5, 1.0, 0.0],
+            [0.5, 1.0, 0.0],
+        ],
+        index=["A", "B", "C", "E1", "E2"],
+        columns=FACTORS,
+    ),
+    factor_cov=pd.DataFrame(
+        [[0.04, 0.0, 0.005], [0.0, 0.01, 0.0], [0.005, 0.0, 0.02]],
+        index=FACTORS,
+        columns=FACTORS,
+    ),
+    specific_var={"A": 0.04, "B": 0.09, "C": 0.0625, "E1": 0.01, "E2": 0.0225},
+    usable_days=252,
+)
+
+
+def _assert_additive(out: RiskBreakdown) -> None:
+    assert out.factor_vol**2 + out.specific_vol**2 == pytest.approx(out.total_vol**2, rel=1e-10)
+    assert sum(out.by_factor.values()) == pytest.approx(out.factor_vol**2, rel=1e-10)
+    assert sum(out.by_name.values()) == pytest.approx(1.0, rel=1e-10)
+
+
+def test_single_name_book_by_hand() -> None:
+    # w_A = 0.1: x = X'w = (0.1, 0, 0.1); Fx = (0.0045, 0, 0.0025);
+    # factor_var = 0.1 * 0.0045 + 0.1 * 0.0025 = 0.0007; specific = 0.01 * 0.04 = 0.0004.
+    out = decompose(HAND, {"A": 0.1})
+    assert out.total_vol == pytest.approx(math.sqrt(0.0011))
+    assert out.factor_vol == pytest.approx(math.sqrt(0.0007))
+    assert out.specific_vol == pytest.approx(math.sqrt(0.0004))
+    assert out.factor_share == pytest.approx(7 / 11)
+    assert out.by_factor == pytest.approx({"market": 0.00045, "Energy": 0.0, "Tech": 0.00025})
+    assert out.by_name == pytest.approx({"A": 1.0})
+    assert out.unassessed == ()
+
+
+def test_mixed_book_is_additive() -> None:
+    out = decompose(HAND, {"A": 0.1, "B": -0.05, "C": 0.03, "E1": -0.08, "E2": 0.06})
+    _assert_additive(out)
+    assert list(out.by_name) == ["A", "B", "C", "E1", "E2"]
+    assert 0.0 < out.factor_share < 1.0
+
+
+def test_specific_only_book_has_no_factor_risk() -> None:
+    # Tech weights (-0.1, 0.05, 0.05) on betas (1.0, 0.5, 1.5): sector net 0 and beta
+    # exposure -0.1 + 0.025 + 0.075 = 0, so x = 0. Specific: 0.01 * 0.04 + 0.0025 * 0.09 +
+    # 0.0025 * 0.0625 = 0.00078125.
+    out = decompose(HAND, {"A": -0.1, "B": 0.05, "C": 0.05})
+    assert out.factor_share == pytest.approx(0.0, abs=1e-12)
+    assert out.total_vol == pytest.approx(math.sqrt(0.00078125))
+    assert sum(out.by_name.values()) == pytest.approx(1.0, rel=1e-10)
+
+
+def test_pure_sector_bet_loads_on_that_sector() -> None:
+    # E1 and E2 long 0.1 each: betas -0.5 and 0.5 cancel, so x = (0, 0.2, 0) and all factor
+    # variance is Energy's: 0.2 * 0.01 * 0.2 = 0.0004.
+    out = decompose(HAND, {"E1": 0.1, "E2": 0.1})
+    assert out.by_factor == pytest.approx({"market": 0.0, "Energy": 0.0004, "Tech": 0.0})
+    assert out.factor_vol**2 == pytest.approx(0.0004)
+    _assert_additive(out)
+
+
+def test_unassessable_names_are_left_out_and_listed() -> None:
+    out = decompose(HAND, {"A": 0.1, "Q": 0.05, "P": -0.02})
+    assert out.unassessed == ("P", "Q")
+    assert dataclasses.replace(out, unassessed=()) == decompose(HAND, {"A": 0.1})
+
+
+def test_empty_and_fully_unassessed_books_are_all_zero() -> None:
+    zero = RiskBreakdown(0.0, 0.0, 0.0, 0.0, {}, {}, ())
+    assert empty_breakdown() == zero
+    assert decompose(HAND, {}) == zero
+    assert decompose(HAND, {"Q": 0.1}) == dataclasses.replace(zero, unassessed=("Q",))
+
+
+def test_zero_variance_book_has_zero_shares() -> None:
+    flat = FactorModel(
+        exposures=pd.DataFrame(
+            [[0.0, 1.0], [0.0, 1.0]], index=["A", "B"], columns=["market", "Tech"]
+        ),
+        factor_cov=pd.DataFrame(0.0, index=["market", "Tech"], columns=["market", "Tech"]),
+        specific_var={"A": 0.0, "B": 0.0},
+        usable_days=1,
+    )
+    out = decompose(flat, {"A": 0.1, "B": -0.1})
+    assert (out.total_vol, out.factor_share) == (0.0, 0.0)
+    assert out.by_name == {"A": 0.0, "B": 0.0}
+
+
+def test_fitted_model_unassessable_names() -> None:
+    # SOLO is the only name in its sector (dropped); THIN lacks history; GONE is not in
+    # the snapshot. All three are unassessable; the rest of the book is decomposed.
+    closes, spy, sectors = _fit_inputs({"SOLO": "Solo", "THIN": "Tech"})
+    closes.iloc[:50, closes.columns.get_loc("THIN")] = NAN  # 29 returns left < 40
+    model = fit_factor_model(closes, spy, sectors, params=FIT)
+    assert "SOLO" not in model.exposures.index
+    assert "THIN" not in model.exposures.index
+    out = decompose(model, {"AAA": 0.1, "CAA": -0.1, "SOLO": 0.05, "THIN": 0.05, "GONE": 0.01})
+    assert out.unassessed == ("GONE", "SOLO", "THIN")
+    assert list(out.by_name) == ["AAA", "CAA"]
+    _assert_additive(out)
+
+
+def test_fitted_model_full_book_is_additive() -> None:
+    closes, spy, sectors = _fit_inputs()
+    model = fit_factor_model(closes, spy, sectors, params=FIT)
+    weights = {t: 0.1 if i % 2 == 0 else -0.1 for i, t in enumerate(sorted(UNIVERSE))}
+    out = decompose(model, weights)
+    _assert_additive(out)
+    assert out.unassessed == ()
+    assert all(math.isfinite(v) for v in (out.total_vol, out.factor_share))

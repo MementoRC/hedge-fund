@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from hedge_fund.domain.risk import RiskBreakdown
 from hedge_fund.engine.portfolio.risk_model import (
     DEFAULT_RISK,
     TRADING_DAYS,
@@ -186,4 +188,49 @@ def fit_factor_model(
         factor_cov=factor_cov,
         specific_var=specific,
         usable_days=len(regression.factor_returns),
+    )
+
+
+def empty_breakdown(unassessed: tuple[str, ...] = ()) -> RiskBreakdown:
+    """All-zero breakdown for a book with no assessable name."""
+    return RiskBreakdown(
+        total_vol=0.0,
+        factor_vol=0.0,
+        specific_vol=0.0,
+        factor_share=0.0,
+        by_factor={},
+        by_name={},
+        unassessed=unassessed,
+    )
+
+
+def decompose(model: FactorModel, weights: Mapping[str, float]) -> RiskBreakdown:
+    """Euler decomposition of the book's risk over its assessable names.
+
+    With ``x = X'w``: ``factor_var = x'Fx``, ``specific_var = sum w_i^2 D_i``,
+    ``by_factor[k] = x_k (Fx)_k`` and ``by_name[i] = w_i (Sigma w)_i / total`` with
+    ``Sigma = X F X' + D``. A ticker without ``specific_var`` is unassessed and left out.
+    Zero total variance gives zero shares.
+    """
+    unassessed = tuple(sorted(t for t in weights if t not in model.specific_var))
+    tickers = sorted(t for t in weights if t in model.specific_var)
+    if not tickers:
+        return empty_breakdown(unassessed)
+    w = np.array([weights[t] for t in tickers], dtype=float)
+    x_names = model.exposures.loc[tickers].to_numpy(dtype=float)
+    d = np.array([model.specific_var[t] for t in tickers], dtype=float)
+    x = x_names.T @ w
+    fx = model.factor_cov.to_numpy(dtype=float) @ x
+    factor_var = float(x @ fx)
+    specific_var = float((w * w) @ d)
+    total = factor_var + specific_var
+    shares = w * (x_names @ fx + d * w) / total if total > 0 else np.zeros_like(w)
+    return RiskBreakdown(
+        total_vol=math.sqrt(max(total, 0.0)),
+        factor_vol=math.sqrt(max(factor_var, 0.0)),
+        specific_vol=math.sqrt(specific_var),
+        factor_share=factor_var / total if total > 0 else 0.0,
+        by_factor=dict(zip(map(str, model.exposures.columns), (x * fx).tolist(), strict=True)),
+        by_name=dict(zip(tickers, shares.tolist(), strict=True)),
+        unassessed=unassessed,
     )

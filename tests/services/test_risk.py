@@ -81,11 +81,16 @@ def test_layer4_book_passes_the_l4_rechecks_and_net() -> None:
     breakdown = verdict.breakdown
     assert breakdown.unassessed == ()
     assert set(breakdown.by_name) == set(SECTORS)
-    # vol, name_risk and factor_share are recorded for the limit-setting step, not held to
-    # the provisional defaults.
     values = [breakdown.total_vol, breakdown.factor_share, *breakdown.by_name.values()]
     assert all(math.isfinite(v) for v in values)
     assert sum(breakdown.by_name.values()) == pytest.approx(1.0, rel=1e-10)
+
+
+def test_layer4_book_is_vetoed_on_name_risk_only() -> None:
+    """Strict veto by design: the equal-weight fixture book concentrates variance in a few names."""
+    verdict = _assess(_book())
+    assert verdict.approved is False
+    assert {v.check.split(":")[0] for v in verdict.violations} == {"name_risk"}
 
 
 def test_hand_edited_breaching_book_is_rejected() -> None:

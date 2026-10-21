@@ -20,8 +20,9 @@ _Measure = tuple[str, float, float, str, float]
 class RiskLimits:
     """L4 re-checks (``OptimizeParams`` defaults) and L5's own limits, as fractions.
 
-    The ``vol``, ``name_risk`` and ``factor_share`` defaults are PROVISIONAL until they are
-    fixed from fixture-book measurements.
+    Risk defaults, fixed 2026-10 from fixture-book measurements: ``vol`` 0.10 (ex-ante annual
+    volatility), ``name_risk`` 0.15 (absolute share of total variance per name) and
+    ``factor_share`` 0.50 (factor share of total variance).
     """
 
     gross: float = 2.0
@@ -30,9 +31,9 @@ class RiskLimits:
     sector_net: float = 0.10
     sector_gross: float = 0.50
     net: float = 0.10
-    vol: float = 0.10  # PROVISIONAL
-    name_risk: float = 0.15  # PROVISIONAL
-    factor_share: float = 0.50  # PROVISIONAL
+    vol: float = 0.10
+    name_risk: float = 0.15
+    factor_share: float = 0.50
 
 
 DEFAULT_LIMITS = RiskLimits()

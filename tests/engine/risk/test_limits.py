@@ -69,8 +69,6 @@ def _breakdown(
 
 
 def test_l4_and_net_defaults() -> None:
-    # vol, name_risk and factor_share defaults are provisional and deliberately not pinned
-    # until they are fixed from fixture-book measurements.
     opt = DEFAULT_OPTIMIZE
     l4 = (opt.gross, opt.max_weight, opt.beta_band, opt.sector_net, opt.sector_gross)
     limits = DEFAULT_LIMITS
@@ -82,6 +80,7 @@ def test_l4_and_net_defaults() -> None:
         limits.sector_gross,
     ) == l4
     assert limits.net == 0.10
+    assert (limits.vol, limits.name_risk, limits.factor_share) == (0.10, 0.15, 0.50)
 
 
 @pytest.mark.parametrize("field", FIELDS)

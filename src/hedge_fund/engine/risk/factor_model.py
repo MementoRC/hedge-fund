@@ -221,15 +221,22 @@ def decompose(model: FactorModel, weights: Mapping[str, float]) -> RiskBreakdown
     d = np.array([model.specific_var[t] for t in tickers], dtype=float)
     x = x_names.T @ w
     fx = model.factor_cov.to_numpy(dtype=float) @ x
-    factor_var = float(x @ fx)
+    raw_factor_var = float(x @ fx)
     specific_var = float((w * w) @ d)
+    scale = max(abs(raw_factor_var), specific_var, 1e-300)
+    if raw_factor_var < -1e-12 * scale or raw_factor_var + specific_var < -1e-12 * scale:
+        raise ValueError(
+            f"negative factor/total variance (factor {raw_factor_var:.3e}, "
+            f"specific {specific_var:.3e}): the factor covariance is not positive semidefinite"
+        )
+    factor_var = max(raw_factor_var, 0.0)
     total = factor_var + specific_var
     shares = w * (x_names @ fx + d * w) / total if total > 0 else np.zeros_like(w)
     return RiskBreakdown(
-        total_vol=math.sqrt(max(total, 0.0)),
-        factor_vol=math.sqrt(max(factor_var, 0.0)),
+        total_vol=math.sqrt(total),
+        factor_vol=math.sqrt(factor_var),
         specific_vol=math.sqrt(specific_var),
-        factor_share=factor_var / total if total > 0 else 0.0,
+        factor_share=min(max(factor_var / total, 0.0), 1.0) if total > 0 else 0.0,
         by_factor=dict(zip(map(str, model.exposures.columns), (x * fx).tolist(), strict=True)),
         by_name=dict(zip(tickers, shares.tolist(), strict=True)),
         unassessed=unassessed,

@@ -393,6 +393,28 @@ def test_zero_variance_book_has_zero_shares() -> None:
     assert out.by_name == {"A": 0.0, "B": 0.0}
 
 
+def _one_factor_model(factor_variance: float) -> FactorModel:
+    return FactorModel(
+        exposures=pd.DataFrame([[1.0]], index=["A"], columns=["market"]),
+        factor_cov=pd.DataFrame([[factor_variance]], index=["market"], columns=["market"]),
+        specific_var={"A": 0.01},
+        usable_days=252,
+    )
+
+
+def test_materially_negative_variance_raises() -> None:
+    with pytest.raises(ValueError, match="negative"):
+        decompose(_one_factor_model(-0.04), {"A": 1.0})
+
+
+def test_roundoff_negative_factor_variance_is_clamped() -> None:
+    out = decompose(_one_factor_model(-1e-20), {"A": 1.0})
+    assert out.factor_vol == 0.0
+    assert out.factor_share == 0.0
+    assert out.total_vol == pytest.approx(0.1)
+    assert out.by_name == pytest.approx({"A": 1.0})
+
+
 def test_fitted_model_unassessable_names() -> None:
     # SOLO is the only name in its sector (dropped); THIN lacks history; GONE is not in
     # the snapshot. All three are unassessable; the rest of the book is decomposed.

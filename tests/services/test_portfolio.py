@@ -23,6 +23,8 @@ from hedge_fund.services.portfolio import (
     _assemble,
     build_portfolio,
     fetch_benchmark,
+    naive_dates,
+    validate_benchmark_end,
     validate_inputs,
 )
 from tests.fakes import FakeProvider
@@ -363,3 +365,21 @@ def test_rejects_ticker_missing_from_snapshot() -> None:
 def test_rejects_sector_mismatch() -> None:
     with pytest.raises(ValueError, match="'AAA' sector 'Energy' differs"):
         _build(_with_candidate("AAA", "Energy"))
+
+
+def test_naive_dates_keeps_the_wall_clock_date() -> None:
+    aware = _benchmark()
+    aware.index = aware.index.tz_localize("America/New_York")
+    out = naive_dates(aware)
+    assert out.index.tz is None
+    assert out.index.equals(INDEX)
+    plain = _benchmark()
+    assert naive_dates(plain) is plain
+
+
+def test_validate_benchmark_end_normalises_and_names_what_it_got() -> None:
+    aware = _benchmark()
+    aware.index = aware.index.tz_localize("America/New_York")
+    validate_benchmark_end(_snapshot(), aware)
+    with pytest.raises(ValueError, match="but ends on nothing"):
+        validate_benchmark_end(_snapshot(), _benchmark().iloc[:0])

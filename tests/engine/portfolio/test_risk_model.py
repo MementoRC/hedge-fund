@@ -11,9 +11,10 @@ from hedge_fund.engine.portfolio.correlation import CorrelationParams, correlati
 from hedge_fund.engine.portfolio.risk_model import (
     DEFAULT_RISK,
     RiskParams,
-    _validate_params,
     ledoit_wolf,
     risk_model,
+    simple_returns,
+    validate_risk_params,
 )
 
 NAN = float("nan")
@@ -78,7 +79,7 @@ def test_rejects_min_obs_outside_two_to_lookback(lookback: int, min_obs: int) ->
     [(10, 10), (10, 2), (2, 2)],
 )
 def test_accepts_boundary_valid_params(lookback: int, min_obs: int) -> None:
-    _validate_params(RiskParams(lookback=lookback, min_obs=min_obs))
+    validate_risk_params(RiskParams(lookback=lookback, min_obs=min_obs))
 
 
 # --- Ledoit-Wolf -----------------------------------------------------------
@@ -297,3 +298,10 @@ def test_rejects_benchmark_without_variance() -> None:
     closes = _closes({"A": _prices(SPY_RETURNS)})
     with pytest.raises(ValueError, match="zero variance"):
         risk_model(closes, _spy([400.0] * 5), params=FOUR)
+
+
+def test_simple_returns_mask_non_positive_closes() -> None:
+    # The 0.0 close is treated as missing, so the returns on both adjacent rows are NaN.
+    out = simple_returns(pd.Series([100.0, 110.0, 0.0, 121.0, 133.1]))
+    assert np.isnan(out.iloc[[0, 2, 3]]).all()
+    assert out.iloc[[1, 4]].tolist() == pytest.approx([0.1, 0.1])

@@ -407,6 +407,19 @@ def test_materially_negative_variance_raises() -> None:
         decompose(_one_factor_model(-0.04), {"A": 1.0})
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_factor_variance_raises(bad: float) -> None:
+    with pytest.raises(ValueError, match="non-finite"):
+        decompose(_one_factor_model(bad), {"A": 1.0})
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_non_finite_specific_variance_raises(bad: float) -> None:
+    model = dataclasses.replace(_one_factor_model(0.04), specific_var={"A": bad})
+    with pytest.raises(ValueError, match="non-finite"):
+        decompose(model, {"A": 1.0})
+
+
 def test_roundoff_negative_factor_variance_is_clamped() -> None:
     out = decompose(_one_factor_model(-1e-20), {"A": 1.0})
     assert out.factor_vol == 0.0

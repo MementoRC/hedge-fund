@@ -231,6 +231,8 @@ def decompose(model: FactorModel, weights: Mapping[str, float]) -> RiskBreakdown
         )
     factor_var = max(raw_factor_var, 0.0)
     total = factor_var + specific_var
+    if not (math.isfinite(factor_var) and math.isfinite(total)):
+        raise ValueError(f"non-finite factor/total variance (factor {factor_var}, total {total})")
     shares = w * (x_names @ fx + d * w) / total if total > 0 else np.zeros_like(w)
     return RiskBreakdown(
         total_vol=math.sqrt(total),

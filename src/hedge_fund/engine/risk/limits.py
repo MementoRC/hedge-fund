@@ -21,7 +21,7 @@ class RiskLimits:
     """L4 re-checks (``OptimizeParams`` defaults) and L5's own limits, as fractions.
 
     Risk defaults, fixed 2026-10 from fixture-book measurements: ``vol`` 0.10 (ex-ante annual
-    volatility), ``name_risk`` 0.15 (absolute share of total variance per name) and
+    volatility), ``name_risk`` 0.15 (signed share of total variance; hedges (negative shares) never breach) and
     ``factor_share`` 0.50 (factor share of total variance).
     """
 

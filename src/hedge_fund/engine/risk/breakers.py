@@ -46,7 +46,8 @@ def check_breakers(nav: NavHistory, *, params: BreakerParams = DEFAULT_BREAKERS)
 
 def validate_breakers(params: BreakerParams) -> None:
     """Type check first: bool and NaN would slip past plain range comparisons."""
-    for name in ("daily_loss", "drawdown"):
+    names = ("daily_loss", "drawdown")
+    for name in names:
         value = getattr(params, name)
         if (
             isinstance(value, bool)
@@ -54,6 +55,8 @@ def validate_breakers(params: BreakerParams) -> None:
             or not math.isfinite(value)
         ):
             raise ValueError(f"{name} must be a finite number, got {value!r}")
+    for name in names:
+        value = getattr(params, name)
         if not 0 < value < 1:
             raise ValueError(f"{name} must satisfy 0 < {name} < 1, got {value!r}")
 

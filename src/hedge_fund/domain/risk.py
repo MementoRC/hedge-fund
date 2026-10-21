@@ -37,7 +37,7 @@ class Violation:
 class RiskBreakdown:
     """Annualised ex-ante factor-model risk of the assessable names of a book.
 
-    ``by_factor`` holds variance contributions (they sum to ``factor_vol ** 2``) and
+    ``by_factor`` holds variance contributions (they sum to the factor variance, ``factor_vol ** 2`` up to the roundoff clamp) and
     ``by_name`` shares of total variance (they sum to 1; a hedge can be negative), keyed by
     ticker in sorted order. ``unassessed`` lists the sorted book tickers left out. A book
     with nothing assessable is all zeros with empty mappings.

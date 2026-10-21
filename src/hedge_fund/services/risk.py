@@ -44,10 +44,10 @@ def assess_portfolio(
     which gets a zero breakdown). Raises ValueError when ``target`` and ``snapshot``
     disagree on ``as_of``, when ``benchmark`` (tz-normalised) does not end on the snapshot's
     last date, on duplicate book tickers, on a non-finite position weight or beta, on a
-    position sector that differs from the
-    snapshot's, on a NAV history ending after ``as_of`` or malformed, or on any invalid
-    param set (all checked up front, even for an empty book); factor-model errors (zero
-    benchmark variance, too few usable days) propagate.
+    position sector that differs from the snapshot's, on a NAV history ending after
+    ``as_of`` or malformed, or on any invalid param set (all checked up front, even for an
+    empty book); factor-model errors (zero benchmark variance, too few usable days)
+    propagate.
     """
     benchmark = naive_dates(benchmark)
     validate_book_inputs(target, snapshot, benchmark, nav)

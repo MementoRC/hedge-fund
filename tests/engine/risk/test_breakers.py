@@ -49,6 +49,11 @@ def test_rejects_thresholds_outside_zero_one(field: str, value: float) -> None:
         check_breakers((), params=params)
 
 
+def test_type_errors_precede_range_errors() -> None:
+    with pytest.raises(ValueError, match="drawdown must be a finite number"):
+        validate_breakers(BreakerParams(daily_loss=2.0, drawdown=NAN))
+
+
 def test_accepts_thresholds_just_inside_zero_one() -> None:
     validate_breakers(BreakerParams(daily_loss=1e-9, drawdown=0.999))
 

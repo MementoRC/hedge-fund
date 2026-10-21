@@ -105,6 +105,20 @@ def test_universe_drops_a_sector_left_with_one_name_by_the_history_filter() -> N
     assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B"]
 
 
+def test_universe_keeps_exactly_min_obs_returns_and_drops_one_fewer() -> None:
+    exact = _with_nan(FULL, 0, 1)  # 4 returns == min_obs 4
+    one_fewer = _with_nan(FULL, 0, 1, 2)  # 3 returns
+    returns = _frame({"A": FULL, "B": exact, "C": one_fewer})
+    sectors = dict.fromkeys(["A", "B", "C"], "Tech")
+    assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B"]
+
+
+def test_universe_does_not_count_sector_names_missing_from_returns() -> None:
+    returns = _frame({"A": FULL, "B": FULL, "E": FULL})
+    sectors = {"A": "Tech", "B": "Tech", "E": "Energy", "X": "Energy"}  # X is not in returns
+    assert estimation_universe(returns, sectors, min_obs=4) == ["A", "B"]
+
+
 def test_universe_is_sorted_and_ignores_extra_sector_keys() -> None:
     returns = _frame({"D": FULL, "C": FULL, "B": FULL, "A": FULL})
     sectors = {"A": "Tech", "B": "Energy", "C": "Tech", "D": "Energy", "Q": "Solo"}

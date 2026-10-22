@@ -1,4 +1,4 @@
-"""In-memory providers, vendor-shaped frames and a scripted researcher for tests."""
+"""In-memory providers, vendor-shaped frames, a scripted researcher and broker for tests."""
 
 import threading
 from collections.abc import Mapping, Sequence
@@ -7,6 +7,8 @@ from typing import Any
 
 import pandas as pd
 
+from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, RunRecord
 
 
@@ -119,4 +121,51 @@ class ScriptedResearcher:
             reports={},
             seconds=0.5,
             error=None,
+        )
+
+
+SCRIPTED_REJECTION = "scripted rejection"
+
+
+class ScriptedBroker:
+    """Broker returning a scripted status (or raising) per client_order_id; records submits.
+
+    Unscripted ids are ACCEPTED. ACCEPTED and DUPLICATE results carry broker id
+    ``b-<client_order_id>``; REJECTED results carry reason SCRIPTED_REJECTION. Every
+    submitted id is appended to ``submitted``, including ids whose script raises.
+    """
+
+    def __init__(
+        self,
+        script: Mapping[str, SubmitStatus | BaseException] | None = None,
+        *,
+        equity: float = 1_000_000.0,
+        holdings: tuple[Holding, ...] = (),
+    ) -> None:
+        self.script = dict(script or {})
+        self.equity = equity
+        self.holdings = holdings
+        self.submitted: list[str] = []
+
+    def account(self) -> Account:
+        return Account(equity=self.equity)
+
+    def positions(self) -> tuple[Holding, ...]:
+        return self.holdings
+
+    def submit(self, request: OrderRequest) -> SubmitResult:
+        client_order_id = request.client_order_id
+        self.submitted.append(client_order_id)
+        outcome = self.script.get(client_order_id, SubmitStatus.ACCEPTED)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if outcome is SubmitStatus.REJECTED:
+            return SubmitResult(
+                request=request, status=outcome, broker_order_id=None, reason=SCRIPTED_REJECTION
+            )
+        return SubmitResult(
+            request=request,
+            status=outcome,
+            broker_order_id=f"b-{client_order_id}",
+            reason=None,
         )

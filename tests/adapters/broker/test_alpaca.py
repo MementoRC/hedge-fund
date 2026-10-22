@@ -519,7 +519,7 @@ def test_422_lookup_with_a_malformed_order_raises(payload: Any) -> None:
         _broker(get, post).submit(REQUEST)
 
 
-@pytest.mark.parametrize("status", [400, 401, 403])
+@pytest.mark.parametrize("status", [201, 400, 401, 403])
 def test_422_lookup_other_status_raises(status: int) -> None:
     get = FakeGet(FakeResponse(status))
     post = FakePost(FakeResponse(422, NOT_UNIQUE))
@@ -551,6 +551,40 @@ def test_post_gives_up_after_three_retries() -> None:
     with pytest.raises(BrokerError, match="POST /v2/orders: HTTP 503; gave up after 3 retries"):
         _broker(post=post).submit(REQUEST)
     assert len(post.calls) == 4
+
+
+def test_post_is_retried_after_a_transport_timeout() -> None:
+    fake_time = FakeTime()
+    post = FakePost(requests.Timeout("slow"), FakeResponse(200, {"id": "ord-1"}))
+    assert _broker(post=post, clock=fake_time).submit(REQUEST) == _result(
+        SubmitStatus.ACCEPTED, broker_order_id="ord-1"
+    )
+    assert len(post.calls) == 2
+    assert fake_time.sleeps == [1.0]
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_422_lookup_is_retried_on_429_and_5xx(status: int) -> None:
+    get = FakeGet(FakeResponse(status), FakeResponse(200, _existing()))
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    assert _broker(get, post).submit(REQUEST) == _result(
+        SubmitStatus.DUPLICATE, broker_order_id="ord-9"
+    )
+    assert len(get.calls) == 2
+    assert len(post.calls) == 1
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_422_lookup_gives_up_after_three_retries(status: int) -> None:
+    get = FakeGet(*[FakeResponse(status)] * 4)
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    with pytest.raises(
+        BrokerError,
+        match=f"GET /v2/orders:by_client_order_id: HTTP {status}; gave up after 3 retries",
+    ):
+        _broker(get, post).submit(REQUEST)
+    assert len(get.calls) == 4
+    assert len(post.calls) == 1
 
 
 def test_lookup_is_throttled_after_the_post() -> None:

@@ -11,11 +11,13 @@ import math
 import os
 import time
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import requests
 
 from hedge_fund.domain.execution import Account
+from hedge_fund.domain.orders import Holding
 from hedge_fund.ports.broker import BrokerError
 
 BASE_URL = "https://paper-api.alpaca.markets"
@@ -27,6 +29,9 @@ BACKOFF_SECONDS = 1.0  # 1 s, 2 s, 4 s
 REQUEST_TIMEOUT = 30
 
 ACCOUNT_PATH = "/v2/account"
+POSITIONS_PATH = "/v2/positions"
+
+_SIDE_SIGN = {"long": 1, "short": -1}
 
 HttpCall = Callable[..., Any]
 
@@ -75,6 +80,28 @@ class AlpacaPaperBroker:
         if not math.isfinite(value):
             raise BrokerError(f"{what}: equity {equity!r} is not finite")
         return Account(equity=value)
+
+    def positions(self) -> tuple[Holding, ...]:
+        """Signed whole-share holdings sorted by ticker, one per ticker, none with zero shares.
+
+        The sign comes from ``side`` (Alpaca does not say whether a short ``qty`` is
+        negative). Raises BrokerError on a malformed entry, a non-equity asset, a ``qty`` that
+        is not a whole number, or a duplicate symbol.
+        """
+        body = self._get_json(POSITIONS_PATH)
+        if not isinstance(body, list):
+            raise BrokerError(f"GET {POSITIONS_PATH}: body is not an array")
+        shares: dict[str, int] = {}
+        for entry in body:
+            ticker, signed = _position(entry)
+            if ticker in shares:
+                raise BrokerError(f"GET {POSITIONS_PATH}: duplicate symbol {ticker!r}")
+            shares[ticker] = signed
+        return tuple(
+            Holding(ticker=ticker, shares=signed)
+            for ticker, signed in sorted(shares.items())
+            if signed != 0
+        )
 
     def _get_json(self, path: str) -> Any:
         """Parsed body of a GET that must answer 200."""
@@ -131,3 +158,31 @@ def _json(response: Any, what: str) -> Any:
         return response.json()
     except ValueError as exc:
         raise BrokerError(f"{what}: invalid JSON: {exc}") from exc
+
+
+def _position(entry: Any) -> tuple[str, int]:
+    """(ticker, signed shares) of one /v2/positions entry."""
+    what = f"GET {POSITIONS_PATH}"
+    if not isinstance(entry, dict):
+        raise BrokerError(f"{what}: position is not an object")
+    symbol, qty, side = entry.get("symbol"), entry.get("qty"), entry.get("side")
+    if not isinstance(symbol, str) or not symbol:
+        raise BrokerError(f"{what}: position symbol is missing or not a string")
+    if not isinstance(qty, str) or not isinstance(side, str) or side not in _SIDE_SIGN:
+        raise BrokerError(f"{what}: {symbol} has a malformed qty or side")
+    asset_class = entry.get("asset_class")
+    if asset_class != "us_equity":
+        raise BrokerError(f"{what}: {symbol} asset_class {asset_class!r} is not us_equity")
+    return symbol, _SIDE_SIGN[side] * abs(_whole_shares(qty, symbol))
+
+
+def _whole_shares(qty: str, symbol: str) -> int:
+    """``qty`` as an int: finite, integral and written without an exponent."""
+    what = f"GET {POSITIONS_PATH}"
+    try:
+        value = Decimal(qty)
+    except InvalidOperation as exc:
+        raise BrokerError(f"{what}: {symbol} qty {qty!r} is not a number") from exc
+    if not value.is_finite() or "e" in qty.lower() or value != value.to_integral_value():
+        raise BrokerError(f"{what}: {symbol} qty {qty!r} is not a whole number")
+    return int(value)

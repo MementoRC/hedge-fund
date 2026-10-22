@@ -11,6 +11,7 @@ import requests
 
 from hedge_fund.adapters.broker.alpaca import BASE_URL, AlpacaPaperBroker
 from hedge_fund.domain.execution import Account
+from hedge_fund.domain.orders import Holding
 from hedge_fund.ports.broker import BrokerError
 
 KEY_ID = "test-key-id"
@@ -253,3 +254,108 @@ def test_no_wait_when_enough_time_has_passed() -> None:
     broker.account()
     broker.account()
     assert fake_time.sleeps == []
+
+
+# --- positions --------------------------------------------------------------------------
+
+
+def _position(**overrides: Any) -> dict[str, Any]:
+    return {
+        "symbol": "AAPL",
+        "qty": "10",
+        "side": "long",
+        "asset_class": "us_equity",
+        "avg_entry_price": "150.0",
+        **overrides,
+    }
+
+
+def _without(key: str) -> dict[str, Any]:
+    entry = _position()
+    del entry[key]
+    return entry
+
+
+def _holdings(payload: Any) -> tuple[Holding, ...]:
+    return _broker(FakeGet(FakeResponse(200, payload))).positions()
+
+
+def test_positions_request() -> None:
+    get = FakeGet(FakeResponse(200, []))
+    assert _broker(get).positions() == ()
+    assert get.calls == [
+        (f"{BASE_URL}/v2/positions", {"headers": HEADERS, "params": None, "timeout": 30})
+    ]
+
+
+def test_positions_are_signed_by_side_and_sorted() -> None:
+    payload = [
+        _position(symbol="MSFT", qty="10"),
+        _position(symbol="AAPL", qty="-5", side="short"),
+        _position(symbol="TSLA", qty="7", side="short"),  # positive qty, short side
+        _position(symbol="KO", qty="-3", side="long"),  # negative qty, long side
+    ]
+    assert _holdings(payload) == (
+        Holding(ticker="AAPL", shares=-5),
+        Holding(ticker="KO", shares=3),
+        Holding(ticker="MSFT", shares=10),
+        Holding(ticker="TSLA", shares=-7),
+    )
+
+
+@pytest.mark.parametrize(("qty", "shares"), [("100", 100), ("100.0", 100), ("-100", 100)])
+def test_whole_number_qty_forms(qty: str, shares: int) -> None:
+    assert _holdings([_position(qty=qty)]) == (Holding(ticker="AAPL", shares=shares),)
+
+
+@pytest.mark.parametrize("qty", ["0", "0.0", "-0"])
+def test_zero_share_positions_are_dropped(qty: str) -> None:
+    payload = [_position(qty=qty), _position(symbol="MSFT")]
+    assert _holdings(payload) == (Holding(ticker="MSFT", shares=10),)
+
+
+@pytest.mark.parametrize(
+    "qty", ["1.5", "-0.25", "nan", "NaN", "inf", "-Infinity", "1e2", "1E2", "abc", ""]
+)
+def test_rejects_qty_that_is_not_a_whole_number(qty: str) -> None:
+    with pytest.raises(BrokerError, match=r"GET /v2/positions: AAPL qty"):
+        _holdings([_position(qty=qty)])
+
+
+def test_unparseable_qty_is_chained() -> None:
+    with pytest.raises(BrokerError, match="is not a number") as info:
+        _holdings([_position(qty="abc")])
+    assert info.value.__cause__ is not None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(ValueError("not json"), id="invalid-json"),
+        pytest.param({"symbol": "AAPL"}, id="not-an-array"),
+        pytest.param(["AAPL"], id="entry-not-an-object"),
+        pytest.param([_without("symbol")], id="missing-symbol"),
+        pytest.param([_position(symbol=5)], id="non-string-symbol"),
+        pytest.param([_position(symbol="")], id="empty-symbol"),
+        pytest.param([_without("qty")], id="missing-qty"),
+        pytest.param([_position(qty=10)], id="non-string-qty"),
+        pytest.param([_without("side")], id="missing-side"),
+        pytest.param([_position(side="flat")], id="unknown-side"),
+        pytest.param([_position(side=["long"])], id="unhashable-side"),
+        pytest.param([_without("asset_class")], id="missing-asset-class"),
+        pytest.param([_position(asset_class="crypto")], id="non-equity"),
+    ],
+)
+def test_rejects_malformed_positions(payload: Any) -> None:
+    with pytest.raises(BrokerError, match="GET /v2/positions"):
+        _holdings(payload)
+
+
+def test_rejects_duplicate_symbol() -> None:
+    with pytest.raises(BrokerError, match="duplicate symbol 'AAPL'"):
+        _holdings([_position(), _position(qty="5")])
+
+
+def test_positions_non_200_raises() -> None:
+    with pytest.raises(BrokerError, match="GET /v2/positions: HTTP 401"):
+        _broker(FakeGet(FakeResponse(401))).positions()

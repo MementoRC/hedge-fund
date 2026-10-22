@@ -125,6 +125,7 @@ class ScriptedResearcher:
 
 
 SCRIPTED_REJECTION = "scripted rejection"
+BROKER_STATUSES = frozenset({SubmitStatus.ACCEPTED, SubmitStatus.DUPLICATE, SubmitStatus.REJECTED})
 
 
 class ScriptedBroker:
@@ -143,6 +144,12 @@ class ScriptedBroker:
         holdings: tuple[Holding, ...] = (),
     ) -> None:
         self.script = dict(script or {})
+        for outcome in self.script.values():
+            if isinstance(outcome, SubmitStatus) and outcome not in BROKER_STATUSES:
+                raise ValueError(
+                    f"ScriptedBroker cannot return {outcome.name}: a real broker only "
+                    "returns ACCEPTED, DUPLICATE or REJECTED (raise BrokerError for ERROR)"
+                )
         self.equity = equity
         self.holdings = holdings
         self.submitted: list[str] = []

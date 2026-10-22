@@ -45,6 +45,16 @@ def test_scripted_statuses(
     )
 
 
+@pytest.mark.parametrize(
+    "status", [SubmitStatus.ERROR, SubmitStatus.DEFERRED, SubmitStatus.SKIPPED]
+)
+def test_scripted_broker_rejects_statuses_a_real_broker_never_returns(
+    status: SubmitStatus,
+) -> None:
+    with pytest.raises(ValueError, match=status.name):
+        ScriptedBroker({CID: status})
+
+
 def test_scripted_broker_raises_scripted_exceptions() -> None:
     fake = ScriptedBroker({CID: BrokerError("down")})
     with pytest.raises(BrokerError, match="down"):

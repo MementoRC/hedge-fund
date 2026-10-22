@@ -120,3 +120,9 @@ def test_accepts_id_of_exactly_128_characters() -> None:
 def test_rejects_id_over_128_characters() -> None:
     with pytest.raises(ValueError, match="exceeds 128 characters"):
         prepare_submission(_plan(_order("X" * 108, SELL, 1)))
+
+
+def test_package_exports() -> None:
+    import hedge_fund.engine.execution as execution
+
+    assert execution.__all__ == ["PreparedSubmission", "prepare_submission"]

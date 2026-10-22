@@ -559,3 +559,10 @@ def test_lookup_is_throttled_after_the_post() -> None:
     post = FakePost(FakeResponse(422, NOT_UNIQUE))
     _broker(get, post, fake_time).submit(REQUEST)
     assert fake_time.sleeps == [pytest.approx(0.3)]
+
+
+def test_package_exports() -> None:
+    import hedge_fund.adapters.broker as broker
+
+    assert broker.__all__ == ["AlpacaPaperBroker"]
+    assert broker.AlpacaPaperBroker is AlpacaPaperBroker

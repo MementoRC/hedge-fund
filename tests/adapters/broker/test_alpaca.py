@@ -13,7 +13,7 @@ import requests
 from hedge_fund.adapters.broker.alpaca import BASE_URL, AlpacaPaperBroker
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Holding, Order, OrderAction
-from hedge_fund.ports.broker import BrokerError
+from hedge_fund.ports.broker import Broker, BrokerError
 
 KEY_ID = "test-key-id"
 SECRET = "test-secret"  # noqa: S105  # nosec B105 (fake test key)
@@ -90,6 +90,11 @@ def _broker(
 
 
 # --- construction -----------------------------------------------------------------------
+
+
+def test_alpaca_paper_broker_satisfies_the_port() -> None:
+    broker: Broker = _broker()
+    assert isinstance(broker, AlpacaPaperBroker)
 
 
 def test_base_url_is_the_paper_host() -> None:

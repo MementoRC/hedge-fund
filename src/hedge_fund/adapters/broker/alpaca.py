@@ -3,6 +3,8 @@
 The host is the paper endpoint, fixed in BASE_URL with no constructor or env override, so
 no live-money path exists. Requests are spaced MIN_REQUEST_INTERVAL apart; HTTP 429, 5xx,
 timeouts and connection errors are retried MAX_RETRIES times with exponential backoff.
+Retrying a POST is safe: a repeat of an order that did reach Alpaca comes back as a
+duplicate client_order_id.
 """
 
 from __future__ import annotations
@@ -16,8 +18,8 @@ from typing import Any
 
 import requests
 
-from hedge_fund.domain.execution import Account
-from hedge_fund.domain.orders import Holding
+from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.orders import Holding, OrderAction
 from hedge_fund.ports.broker import BrokerError
 
 BASE_URL = "https://paper-api.alpaca.markets"
@@ -30,8 +32,17 @@ REQUEST_TIMEOUT = 30
 
 ACCOUNT_PATH = "/v2/account"
 POSITIONS_PATH = "/v2/positions"
+ORDERS_PATH = "/v2/orders"
+LOOKUP_PATH = "/v2/orders:by_client_order_id"
 
 _SIDE_SIGN = {"long": 1, "short": -1}
+_ORDER_SIDE = {
+    OrderAction.BUY: "buy",
+    OrderAction.BUY_TO_COVER: "buy",
+    OrderAction.SELL: "sell",
+    OrderAction.SELL_SHORT: "sell",
+}
+_DEAD_STATUSES = frozenset({"canceled", "expired", "rejected"})
 
 HttpCall = Callable[..., Any]
 
@@ -102,6 +113,58 @@ class AlpacaPaperBroker:
             for ticker, signed in sorted(shares.items())
             if signed != 0
         )
+
+    def submit(self, request: OrderRequest) -> SubmitResult:
+        """Market order for the opening auction (``time_in_force=opg``).
+
+        200 -> ACCEPTED; 403 -> REJECTED; 422 -> look the id up: DUPLICATE when an order
+        with it is live or filled, else REJECTED. Any other status raises BrokerError.
+        """
+        order = request.order
+        body = {
+            "symbol": order.ticker,
+            "qty": str(order.shares),
+            "side": _ORDER_SIDE[order.action],
+            "type": "market",
+            "time_in_force": "opg",
+            "client_order_id": request.client_order_id,
+        }
+        what = f"POST {ORDERS_PATH}"
+        response = self._call(
+            what,
+            lambda: self._post(
+                BASE_URL + ORDERS_PATH, headers=self._headers, json=body, timeout=REQUEST_TIMEOUT
+            ),
+        )
+        status = response.status_code
+        if status == 200:
+            order_id = _order_id(_json(response, what), what)
+            return _result(request, SubmitStatus.ACCEPTED, broker_order_id=order_id)
+        if status == 403:
+            return _result(request, SubmitStatus.REJECTED, reason=_reason(response))
+        if status == 422:
+            return self._resolve_422(request, _reason(response))
+        raise BrokerError(f"{what}: HTTP {status}")
+
+    def _resolve_422(self, request: OrderRequest, reason: str) -> SubmitResult:
+        """Alpaca does not document its duplicate-id response, so look the id up.
+
+        Found and live or filled -> DUPLICATE. Found but canceled, expired or rejected ->
+        REJECTED (the id is used up and nothing is live; 6d reconciles). 404 -> REJECTED with
+        the 422's ``reason``. Any other status or a malformed order raises BrokerError.
+        """
+        what = f"GET {LOOKUP_PATH}"
+        client_order_id = request.client_order_id
+        response = self._get_response(LOOKUP_PATH, {"client_order_id": client_order_id})
+        status = response.status_code
+        if status == 404:
+            return _result(request, SubmitStatus.REJECTED, reason=reason)
+        if status != 200:
+            raise BrokerError(f"{what}: HTTP {status}")
+        order_id, order_status = _existing_order(_json(response, what), client_order_id, what)
+        if order_status in _DEAD_STATUSES:
+            return _result(request, SubmitStatus.REJECTED, reason=f"existing order {order_status}")
+        return _result(request, SubmitStatus.DUPLICATE, broker_order_id=order_id)
 
     def _get_json(self, path: str) -> Any:
         """Parsed body of a GET that must answer 200."""
@@ -186,3 +249,43 @@ def _whole_shares(qty: str, symbol: str) -> int:
     if not value.is_finite() or "e" in qty.lower() or value != value.to_integral_value():
         raise BrokerError(f"{what}: {symbol} qty {qty!r} is not a whole number")
     return int(value)
+
+
+def _result(
+    request: OrderRequest,
+    status: SubmitStatus,
+    *,
+    broker_order_id: str | None = None,
+    reason: str | None = None,
+) -> SubmitResult:
+    return SubmitResult(
+        request=request, status=status, broker_order_id=broker_order_id, reason=reason
+    )
+
+
+def _order_id(body: Any, what: str) -> str:
+    """Non-empty string ``id`` of an order object."""
+    order_id = body.get("id") if isinstance(body, dict) else None
+    if not isinstance(order_id, str) or not order_id:
+        raise BrokerError(f"{what}: response has no order id")
+    return order_id
+
+
+def _existing_order(body: Any, client_order_id: str, what: str) -> tuple[str, str]:
+    """(id, status) of the looked-up order, which must carry ``client_order_id``."""
+    if not isinstance(body, dict) or body.get("client_order_id") != client_order_id:
+        raise BrokerError(f"{what}: response is not the order {client_order_id!r}")
+    order_id, status = body.get("id"), body.get("status")
+    if not isinstance(order_id, str) or not order_id or not isinstance(status, str):
+        raise BrokerError(f"{what}: order {client_order_id!r} lacks an id or a status")
+    return order_id, status
+
+
+def _reason(response: Any) -> str:
+    """Broker ``message`` of an error body, else ``HTTP <status>``; never raises."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    message = body.get("message") if isinstance(body, dict) else None
+    return message if isinstance(message, str) and message else f"HTTP {response.status_code}"

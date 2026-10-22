@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import time
 from typing import Any
@@ -10,8 +11,8 @@ import pytest
 import requests
 
 from hedge_fund.adapters.broker.alpaca import BASE_URL, AlpacaPaperBroker
-from hedge_fund.domain.execution import Account
-from hedge_fund.domain.orders import Holding
+from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.orders import Holding, Order, OrderAction
 from hedge_fund.ports.broker import BrokerError
 
 KEY_ID = "test-key-id"
@@ -359,3 +360,202 @@ def test_rejects_duplicate_symbol() -> None:
 def test_positions_non_200_raises() -> None:
     with pytest.raises(BrokerError, match="GET /v2/positions: HTTP 401"):
         _broker(FakeGet(FakeResponse(401))).positions()
+
+
+# --- submit -----------------------------------------------------------------------------
+
+CID = "hf-2026-10-21-AAPL-sell_short-625"
+ORDER = Order(
+    ticker="AAPL", action=OrderAction.SELL_SHORT, shares=625, ref_price=100.0, notional=62_500.0
+)
+REQUEST = OrderRequest(order=ORDER, client_order_id=CID)
+ORDERS_URL = f"{BASE_URL}/v2/orders"
+LOOKUP_URL = f"{BASE_URL}/v2/orders:by_client_order_id"
+NOT_UNIQUE = {"code": 42210000, "message": "client_order_id must be unique"}
+
+
+def _result(
+    status: SubmitStatus, broker_order_id: str | None = None, reason: str | None = None
+) -> SubmitResult:
+    return SubmitResult(
+        request=REQUEST, status=status, broker_order_id=broker_order_id, reason=reason
+    )
+
+
+def _existing(**overrides: Any) -> dict[str, Any]:
+    return {
+        "id": "ord-9",
+        "client_order_id": CID,
+        "status": "accepted",
+        "symbol": "AAPL",
+        **overrides,
+    }
+
+
+def test_submit_posts_a_market_on_open_order() -> None:
+    get, post = FakeGet(), FakePost(FakeResponse(200, {"id": "ord-1", "status": "accepted"}))
+    assert _broker(get, post).submit(REQUEST) == _result(
+        SubmitStatus.ACCEPTED, broker_order_id="ord-1"
+    )
+    assert post.calls == [
+        (
+            ORDERS_URL,
+            {
+                "headers": HEADERS,
+                "json": {
+                    "symbol": "AAPL",
+                    "qty": "625",
+                    "side": "sell",
+                    "type": "market",
+                    "time_in_force": "opg",
+                    "client_order_id": CID,
+                },
+                "timeout": 30,
+            },
+        )
+    ]
+    assert get.calls == []
+
+
+@pytest.mark.parametrize(
+    ("action", "side"),
+    [
+        (OrderAction.BUY, "buy"),
+        (OrderAction.BUY_TO_COVER, "buy"),
+        (OrderAction.SELL, "sell"),
+        (OrderAction.SELL_SHORT, "sell"),
+    ],
+)
+def test_side_follows_the_action(action: OrderAction, side: str) -> None:
+    request = OrderRequest(order=dataclasses.replace(ORDER, action=action), client_order_id=CID)
+    post = FakePost(FakeResponse(200, {"id": "ord-1"}))
+    _broker(post=post).submit(request)
+    assert post.calls[0][1]["json"]["side"] == side
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(ValueError("not json"), id="invalid-json"),
+        pytest.param(["ord-1"], id="not-an-object"),
+        pytest.param({"status": "accepted"}, id="missing-id"),
+        pytest.param({"id": ""}, id="empty-id"),
+        pytest.param({"id": 7}, id="non-string-id"),
+    ],
+)
+def test_accepted_without_an_order_id_raises(payload: Any) -> None:
+    with pytest.raises(BrokerError, match="POST /v2/orders"):
+        _broker(post=FakePost(FakeResponse(200, payload))).submit(REQUEST)
+
+
+def test_403_is_rejected_with_the_broker_message() -> None:
+    post = FakePost(FakeResponse(403, {"code": 40310000, "message": "insufficient buying power"}))
+    assert _broker(post=post).submit(REQUEST) == _result(
+        SubmitStatus.REJECTED, reason="insufficient buying power"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [ValueError("not json"), None, ["x"], {}, {"message": 5}, {"message": ""}],
+    ids=["invalid-json", "null", "array", "no-message", "non-string", "empty"],
+)
+def test_403_without_a_message_falls_back_to_the_status(payload: Any) -> None:
+    post = FakePost(FakeResponse(403, payload))
+    assert _broker(post=post).submit(REQUEST) == _result(SubmitStatus.REJECTED, reason="HTTP 403")
+
+
+@pytest.mark.parametrize("status", ["new", "accepted", "pending_new", "partially_filled", "filled"])
+def test_422_with_a_live_or_filled_order_is_duplicate(status: str) -> None:
+    get = FakeGet(FakeResponse(200, _existing(status=status)))
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    assert _broker(get, post).submit(REQUEST) == _result(
+        SubmitStatus.DUPLICATE, broker_order_id="ord-9"
+    )
+    assert get.calls == [
+        (LOOKUP_URL, {"headers": HEADERS, "params": {"client_order_id": CID}, "timeout": 30})
+    ]
+
+
+@pytest.mark.parametrize("status", ["canceled", "expired", "rejected"])
+def test_422_with_a_dead_order_is_rejected(status: str) -> None:
+    get = FakeGet(FakeResponse(200, _existing(status=status)))
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    assert _broker(get, post).submit(REQUEST) == _result(
+        SubmitStatus.REJECTED, reason=f"existing order {status}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        ({"code": 42210000, "message": "qty must be > 0"}, "qty must be > 0"),
+        (ValueError("not json"), "HTTP 422"),
+        ({}, "HTTP 422"),
+    ],
+    ids=["message", "invalid-json", "no-message"],
+)
+def test_422_without_an_existing_order_is_rejected(payload: Any, reason: str) -> None:
+    get = FakeGet(FakeResponse(404, {"message": "order not found"}))
+    post = FakePost(FakeResponse(422, payload))
+    assert _broker(get, post).submit(REQUEST) == _result(SubmitStatus.REJECTED, reason=reason)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(ValueError("not json"), id="invalid-json"),
+        pytest.param([_existing()], id="not-an-object"),
+        pytest.param(_existing(client_order_id="hf-other"), id="mismatched-client-order-id"),
+        pytest.param({**_existing(), "id": None}, id="null-id"),
+        pytest.param(_existing(id=""), id="empty-id"),
+        pytest.param(_existing(status=None), id="non-string-status"),
+    ],
+)
+def test_422_lookup_with_a_malformed_order_raises(payload: Any) -> None:
+    get = FakeGet(FakeResponse(200, payload))
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    with pytest.raises(BrokerError, match="GET /v2/orders:by_client_order_id"):
+        _broker(get, post).submit(REQUEST)
+
+
+@pytest.mark.parametrize("status", [400, 401, 403])
+def test_422_lookup_other_status_raises(status: int) -> None:
+    get = FakeGet(FakeResponse(status))
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    with pytest.raises(BrokerError, match=f"GET /v2/orders:by_client_order_id: HTTP {status}"):
+        _broker(get, post).submit(REQUEST)
+
+
+@pytest.mark.parametrize("status", [201, 400, 401, 404])
+def test_other_post_status_raises(status: int) -> None:
+    get, post = FakeGet(), FakePost(FakeResponse(status, {"message": "nope"}))
+    with pytest.raises(BrokerError, match=f"POST /v2/orders: HTTP {status}"):
+        _broker(get, post).submit(REQUEST)
+    assert len(post.calls) == 1
+    assert get.calls == []
+
+
+def test_post_is_retried_on_429() -> None:
+    fake_time = FakeTime()
+    post = FakePost(FakeResponse(429), FakeResponse(200, {"id": "ord-1"}))
+    assert _broker(post=post, clock=fake_time).submit(REQUEST) == _result(
+        SubmitStatus.ACCEPTED, broker_order_id="ord-1"
+    )
+    assert len(post.calls) == 2
+    assert fake_time.sleeps == [1.0]
+
+
+def test_post_gives_up_after_three_retries() -> None:
+    post = FakePost(*[FakeResponse(503)] * 4)
+    with pytest.raises(BrokerError, match="POST /v2/orders: HTTP 503; gave up after 3 retries"):
+        _broker(post=post).submit(REQUEST)
+    assert len(post.calls) == 4
+
+
+def test_lookup_is_throttled_after_the_post() -> None:
+    fake_time = FakeTime()
+    get = FakeGet(FakeResponse(200, _existing()))
+    post = FakePost(FakeResponse(422, NOT_UNIQUE))
+    _broker(get, post, fake_time).submit(REQUEST)
+    assert fake_time.sleeps == [pytest.approx(0.3)]

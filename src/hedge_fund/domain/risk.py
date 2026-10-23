@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class NavPoint:
-    """Net asset value of the book at the close of ``date``."""
+    """Net asset value of the book: account equity observed on ``date`` (not a close)."""
 
     date: datetime.date
     nav: float

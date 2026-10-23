@@ -1,4 +1,4 @@
-"""In-memory providers, vendor-shaped frames, a scripted researcher and broker for tests."""
+"""In-memory providers, vendor-shaped frames, a scripted researcher, broker and gate for tests."""
 
 import threading
 from collections.abc import Mapping, Sequence
@@ -176,3 +176,21 @@ class ScriptedBroker:
             broker_order_id=f"b-{client_order_id}",
             reason=None,
         )
+
+
+class ScriptedApprovalGate:
+    """ApprovalGate returning scripted answers in order; records every summary it is shown.
+
+    Running out of answers raises AssertionError: the code under test asked more often than
+    the test expected.
+    """
+
+    def __init__(self, answers: Sequence[bool]) -> None:
+        self.answers = list(answers)
+        self.summaries: list[str] = []
+
+    def confirm(self, summary: str) -> bool:
+        self.summaries.append(summary)
+        if not self.answers:
+            raise AssertionError("ScriptedApprovalGate is out of answers")
+        return self.answers.pop(0)

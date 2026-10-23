@@ -55,6 +55,18 @@ def test_scripted_broker_rejects_statuses_a_real_broker_never_returns(
         ScriptedBroker({CID: status})
 
 
+def test_scripted_broker_raises_scripted_read_errors() -> None:
+    fake = ScriptedBroker(
+        account_error=BrokerError("account down"), positions_error=BrokerError("positions down")
+    )
+    with pytest.raises(BrokerError, match="account down"):
+        fake.account()
+    with pytest.raises(BrokerError, match="positions down"):
+        fake.positions()
+    fake.account_error = None
+    assert fake.account() == Account(equity=1_000_000.0)
+
+
 def test_scripted_broker_raises_scripted_exceptions() -> None:
     fake = ScriptedBroker({CID: BrokerError("down")})
     with pytest.raises(BrokerError, match="down"):

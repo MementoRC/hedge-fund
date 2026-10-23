@@ -10,7 +10,8 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 
 from hedge_fund.domain.account import AccountSnapshot
-from hedge_fund.engine.account import validate_snapshot
+from hedge_fund.domain.risk import NavHistory
+from hedge_fund.engine.account import nav_history, validate_snapshot
 from hedge_fund.ports.account import SnapshotStore
 from hedge_fund.ports.broker import Broker
 
@@ -35,3 +36,11 @@ def record_snapshot(
     validate_snapshot(snapshot)
     store.save(snapshot)
     return snapshot
+
+
+def load_nav_history(store: SnapshotStore, *, as_of: date) -> NavHistory:
+    """Every stored snapshot folded by ``nav_history``, for ``assess_portfolio(nav=...)``.
+
+    SnapshotStoreError from the store and ValueError from ``nav_history`` propagate.
+    """
+    return nav_history(store.snapshots(), as_of=as_of)

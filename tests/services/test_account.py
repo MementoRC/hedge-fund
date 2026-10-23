@@ -5,13 +5,20 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
+from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.orders import Holding
+from hedge_fund.domain.portfolio import TargetPortfolio
+from hedge_fund.domain.risk import NavPoint
+from hedge_fund.ports.account import SnapshotStore, SnapshotStoreError
 from hedge_fund.ports.broker import BrokerError
-from hedge_fund.services.account import record_snapshot
+from hedge_fund.services.account import load_nav_history, record_snapshot
+from hedge_fund.services.risk import assess_portfolio
+from tests.factories import make_closes, snapshot_from
 from tests.fakes import InMemorySnapshotStore, ScriptedBroker
 
 AS_OF = date(2026, 10, 23)
@@ -91,3 +98,91 @@ def test_the_account_is_read_before_the_positions() -> None:
     )
     with pytest.raises(BrokerError, match="account first"):
         record_snapshot(broker, InMemorySnapshotStore(), as_of=AS_OF, now=_at(OBSERVED_AT))
+
+
+# --- load_nav_history -------------------------------------------------------------------
+
+
+def test_load_folds_the_stored_snapshots() -> None:
+    reads = [
+        AccountSnapshot(AS_OF, OBSERVED_AT, 97.0, ()),
+        AccountSnapshot(AS_OF - timedelta(days=1), OBSERVED_AT - timedelta(days=1), 100.0, ()),
+        AccountSnapshot(AS_OF + timedelta(days=1), OBSERVED_AT + timedelta(days=1), 1.0, ()),
+    ]
+    assert load_nav_history(InMemorySnapshotStore(reads), as_of=AS_OF) == (
+        NavPoint(date=AS_OF - timedelta(days=1), nav=100.0),
+        NavPoint(date=AS_OF, nav=97.0),
+    )
+
+
+def test_load_propagates_a_store_failure() -> None:
+    store = InMemorySnapshotStore(fail_on_read=SnapshotStoreError("x.json: digest mismatch"))
+    with pytest.raises(SnapshotStoreError, match="digest mismatch"):
+        load_nav_history(store, as_of=AS_OF)
+
+
+def test_load_of_an_empty_store_is_an_empty_history() -> None:
+    assert load_nav_history(InMemorySnapshotStore(), as_of=AS_OF) == ()
+
+
+# --- end to end with assess_portfolio ---------------------------------------------------
+
+SECTORS = {"AAA": "Tech", "BBB": "Health"}
+PRICES = snapshot_from(make_closes(list(SECTORS), seed=3), SECTORS)
+SPY = make_closes(["SPY"], seed=11)["SPY"]
+RISK_AS_OF = PRICES.as_of  # 2026-09-30
+EMPTY_BOOK = TargetPortfolio(
+    as_of=RISK_AS_OF, positions=(), excluded={}, gross=0.0, net=0.0, beta=0.0, expected_vol=0.0
+)
+
+
+def _record_runs(store: SnapshotStore, equities: list[float]) -> None:
+    """One run per day, the last on RISK_AS_OF, the broker reporting each equity in turn."""
+    broker = ScriptedBroker()
+    first = RISK_AS_OF - timedelta(days=len(equities) - 1)
+    for offset, equity in enumerate(equities):
+        day = first + timedelta(days=offset)
+        broker.equity = equity
+        moment = datetime(day.year, day.month, day.day, 13, 0, tzinfo=UTC)
+        record_snapshot(broker, store, as_of=day, now=_at(moment))
+
+
+def test_a_three_percent_day_trips_the_daily_breaker() -> None:
+    store = InMemorySnapshotStore()
+    _record_runs(store, [100.0, 97.0])
+    verdict = assess_portfolio(
+        EMPTY_BOOK, PRICES, SPY, nav=load_nav_history(store, as_of=RISK_AS_OF)
+    )
+    assert verdict.breakers.daily_tripped is True
+    assert verdict.breakers.drawdown_tripped is False
+    assert (verdict.approved, verdict.halt) == (False, True)
+
+
+def test_a_fall_of_exactly_eight_percent_from_the_peak_trips_drawdown() -> None:
+    # 1 - 92 / 100 is exactly 8% below the peak; the last day is +1.1%, so only drawdown trips.
+    store = InMemorySnapshotStore()
+    _record_runs(store, [100.0, 91.0, 92.0])
+    verdict = assess_portfolio(
+        EMPTY_BOOK, PRICES, SPY, nav=load_nav_history(store, as_of=RISK_AS_OF)
+    )
+    assert verdict.breakers.drawdown == pytest.approx(0.08)
+    assert verdict.breakers.drawdown_tripped is True
+    assert verdict.breakers.daily_tripped is False
+    assert verdict.halt is True
+
+
+def test_breakers_trip_through_the_json_store(tmp_path: Path) -> None:
+    store = JsonSnapshotStore(tmp_path)
+    _record_runs(store, [100.0, 97.0])
+    nav = load_nav_history(JsonSnapshotStore(tmp_path), as_of=RISK_AS_OF)
+    assert nav == (NavPoint(RISK_AS_OF - timedelta(days=1), 100.0), NavPoint(RISK_AS_OF, 97.0))
+    assert assess_portfolio(EMPTY_BOOK, PRICES, SPY, nav=nav).breakers.daily_tripped is True
+
+
+def test_a_quiet_history_does_not_halt() -> None:
+    store = InMemorySnapshotStore()
+    _record_runs(store, [100.0, 99.0, 98.5])
+    verdict = assess_portfolio(
+        EMPTY_BOOK, PRICES, SPY, nav=load_nav_history(store, as_of=RISK_AS_OF)
+    )
+    assert (verdict.approved, verdict.halt) == (True, False)

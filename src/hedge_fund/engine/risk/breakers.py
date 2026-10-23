@@ -19,6 +19,8 @@ class BreakerParams:
 
 DEFAULT_BREAKERS = BreakerParams()
 
+_TOLERANCE = 1e-9  # float rounding at an inclusive limit must not defeat the trip
+
 
 def check_breakers(nav: NavHistory, *, params: BreakerParams = DEFAULT_BREAKERS) -> BreakerState:
     """Measure both breakers at the latest NAV point; thresholds are inclusive.
@@ -39,8 +41,8 @@ def check_breakers(nav: NavHistory, *, params: BreakerParams = DEFAULT_BREAKERS)
     return BreakerState(
         daily_loss=daily,
         drawdown=drawdown,
-        daily_tripped=daily <= -params.daily_loss,
-        drawdown_tripped=drawdown >= params.drawdown,
+        daily_tripped=daily <= -params.daily_loss + _TOLERANCE,
+        drawdown_tripped=drawdown >= params.drawdown - _TOLERANCE,
     )
 
 

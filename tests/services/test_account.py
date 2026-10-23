@@ -11,6 +11,7 @@ import pytest
 
 from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.domain.account import AccountSnapshot
+from hedge_fund.domain.execution import Account
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.risk import NavPoint
@@ -100,6 +101,26 @@ def test_the_account_is_read_before_the_positions() -> None:
         record_snapshot(broker, InMemorySnapshotStore(), as_of=AS_OF, now=_at(OBSERVED_AT))
 
 
+def test_the_clock_is_read_after_both_broker_reads() -> None:
+    events: list[str] = []
+
+    class RecordingBroker(ScriptedBroker):
+        def account(self) -> Account:
+            events.append("account")
+            return super().account()
+
+        def positions(self) -> tuple[Holding, ...]:
+            events.append("positions")
+            return super().positions()
+
+    def clock() -> datetime:
+        events.append("now")
+        return OBSERVED_AT
+
+    record_snapshot(RecordingBroker(), InMemorySnapshotStore(), as_of=AS_OF, now=clock)
+    assert events == ["account", "positions", "now"]
+
+
 # --- load_nav_history -------------------------------------------------------------------
 
 
@@ -119,6 +140,24 @@ def test_load_propagates_a_store_failure() -> None:
     store = InMemorySnapshotStore(fail_on_read=SnapshotStoreError("x.json: digest mismatch"))
     with pytest.raises(SnapshotStoreError, match="digest mismatch"):
         load_nav_history(store, as_of=AS_OF)
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "message"),
+    [
+        pytest.param(AccountSnapshot(AS_OF, OBSERVED_AT, 0.0, ()), "nav must be", id="zero-equity"),
+        pytest.param(
+            AccountSnapshot(AS_OF, OBSERVED_AT, 100.0, tuple(reversed(HOLDINGS))),
+            "strictly ascending",
+            id="unsorted-holdings",
+        ),
+    ],
+)
+def test_load_fails_closed_on_an_invalid_stored_snapshot(
+    snapshot: AccountSnapshot, message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        load_nav_history(InMemorySnapshotStore([snapshot]), as_of=AS_OF)
 
 
 def test_load_of_an_empty_store_is_an_empty_history() -> None:

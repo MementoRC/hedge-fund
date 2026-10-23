@@ -85,6 +85,23 @@ def test_other_exceptions_propagate() -> None:
     assert console.prompts == [PROMPT]
 
 
+@pytest.mark.parametrize("answer", ["y", "n"])
+def test_summary_is_shown_before_the_prompt(answer: str) -> None:
+    events: list[str] = []
+
+    def read_line(prompt: str) -> str:
+        events.append(f"prompt:{prompt}")
+        return answer
+
+    gate = ConsoleApprovalGate(
+        read_line=read_line,
+        write=lambda text: events.append(f"write:{text}"),
+        is_interactive=lambda: True,
+    )
+    gate.confirm(SUMMARY)
+    assert events[:2] == [f"write:{SUMMARY}", f"prompt:{PROMPT}"]
+
+
 # --- defaults ---------------------------------------------------------------------------
 
 

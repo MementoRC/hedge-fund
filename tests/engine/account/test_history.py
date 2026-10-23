@@ -80,6 +80,17 @@ def test_equal_observed_at_with_different_content_raises() -> None:
         nav_history([first, second], as_of=AS_OF)
 
 
+def test_conflict_at_one_instant_in_different_offsets_raises() -> None:
+    # 09:00 at UTC-4 is the same instant as 13:00 UTC.
+    utc = _snap(AS_OF, 13, 100.0)
+    eastern = dataclasses.replace(
+        _snap(AS_OF, 0, 101.0), observed_at=datetime(2026, 10, 23, 9, tzinfo=EASTERN)
+    )
+    for snapshots in ([utc, eastern], [eastern, utc]):
+        with pytest.raises(ValueError, match="two different snapshots"):
+            nav_history(snapshots, as_of=AS_OF)
+
+
 def test_conflict_raises_even_when_a_later_read_would_win() -> None:
     later = _snap(AS_OF, 15, 97.0)
     conflict = [_snap(AS_OF, 13, 100.0), _snap(AS_OF, 13, 101.0)]

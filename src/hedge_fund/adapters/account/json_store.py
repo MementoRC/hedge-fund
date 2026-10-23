@@ -19,6 +19,7 @@ from hedge_fund.domain.orders import Holding
 from hedge_fund.ports.account import SnapshotStoreError
 
 ACCOUNT_DIR = "account"
+_KEYS = frozenset({"as_of", "observed_at", "equity", "holdings"})
 
 
 class JsonSnapshotStore:
@@ -77,7 +78,7 @@ def _load(path: Path) -> AccountSnapshot:
         payload = json.loads(path.read_text(encoding="utf-8"))["snapshot"]
         digest = _digest(payload)
         snapshot = _snapshot(payload)
-    except (OSError, KeyError, TypeError, ValueError) as exc:
+    except (OSError, KeyError, TypeError, ValueError, OverflowError, RecursionError) as exc:
         raise SnapshotStoreError(f"{path.name}: malformed snapshot file: {exc}") from exc
     name_as_of, _, name_digest = path.stem.partition("_")
     if name_digest != digest:
@@ -93,17 +94,24 @@ def _load(path: Path) -> AccountSnapshot:
 
 def _snapshot(payload: Mapping[str, Any]) -> AccountSnapshot:
     """Typed fields, or KeyError / TypeError / ValueError; values are not range-checked."""
+    if set(payload) != _KEYS:
+        raise ValueError(f"payload keys must be exactly {sorted(_KEYS)}, got {sorted(payload)}")
     equity = payload["equity"]
     if isinstance(equity, bool) or not isinstance(equity, int | float):
         raise TypeError(f"equity must be a JSON number, got {equity!r}")
     observed_at = datetime.fromisoformat(payload["observed_at"])
     if observed_at.tzinfo is None:
         raise ValueError(f"observed_at must carry a UTC offset, got {payload['observed_at']!r}")
+    if observed_at.isoformat() != payload["observed_at"]:
+        raise ValueError(f"observed_at is not canonical ISO, got {payload['observed_at']!r}")
+    as_of = date.fromisoformat(payload["as_of"])
+    if as_of.isoformat() != payload["as_of"]:
+        raise ValueError(f"as_of is not canonical ISO, got {payload['as_of']!r}")
     holdings = payload["holdings"]
     if not isinstance(holdings, list):
         raise TypeError(f"holdings must be a list, got {holdings!r}")
     return AccountSnapshot(
-        as_of=date.fromisoformat(payload["as_of"]),
+        as_of=as_of,
         observed_at=observed_at,
         equity=float(equity),
         holdings=tuple(_holding(item) for item in holdings),

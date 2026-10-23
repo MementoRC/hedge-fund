@@ -223,6 +223,70 @@ def test_rejects_a_missing_field(tmp_path: Path, field: str) -> None:
         JsonSnapshotStore(tmp_path).snapshots()
 
 
+def _raw(root: Path, text: str, name: str | None = None) -> Path:
+    path = root / "account" / (name or f"2026-10-23_{_sha12(PAYLOAD)}.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_rejects_an_equity_too_large_for_a_float(tmp_path: Path) -> None:
+    path = _forge(tmp_path, {**PAYLOAD, "equity": 10**400})
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+def test_rejects_a_body_nested_too_deeply_to_parse(tmp_path: Path) -> None:
+    path = _raw(tmp_path, "[" * 100_000)
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+def test_rejects_a_non_canonical_as_of(tmp_path: Path) -> None:
+    path = _forge(tmp_path, {**PAYLOAD, "as_of": "20261023"}, as_of="20261023")
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+@pytest.mark.parametrize("observed_at", ["2026-10-23T13:00:00+0000", "2026-10-23T13:00:00Z"])
+def test_rejects_a_non_canonical_observed_at(tmp_path: Path, observed_at: str) -> None:
+    path = _forge(tmp_path, {**PAYLOAD, "observed_at": observed_at})
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+@pytest.mark.parametrize("payload", [{**PAYLOAD, "extra": 1}], ids=["extra-key"])
+def test_rejects_unexpected_keys(tmp_path: Path, payload: dict[str, Any]) -> None:
+    path = _forge(tmp_path, payload)
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_rejects_a_non_finite_equity_token(tmp_path: Path, token: str) -> None:
+    text = json.dumps({"snapshot": {**PAYLOAD, "equity": 0}}).replace(
+        '"equity": 0', f'"equity": {token}'
+    )
+    path = _raw(tmp_path, text)
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+@pytest.mark.parametrize("text", ["[]", "null"])
+def test_rejects_a_body_that_is_not_an_object(tmp_path: Path, text: str) -> None:
+    path = _raw(tmp_path, text)
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+@pytest.mark.parametrize("name", ["latest.json", "2026-10-23.json", "2026-10-23_ABCDEF123456.json"])
+def test_rejects_a_json_file_whose_name_is_not_date_and_digest(tmp_path: Path, name: str) -> None:
+    body = {"created_at": "x", "snapshot": PAYLOAD}
+    path = _raw(tmp_path, json.dumps(body), name)
+    with pytest.raises(SnapshotStoreError, match=re.escape(path.name)):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
 def test_one_bad_file_fails_the_whole_read(tmp_path: Path) -> None:
     store = JsonSnapshotStore(tmp_path)
     store.save(SNAPSHOT)

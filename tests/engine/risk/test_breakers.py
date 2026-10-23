@@ -71,7 +71,7 @@ def test_single_point_has_no_daily_loss_and_no_drawdown() -> None:
 
 @pytest.mark.parametrize(
     ("last", "tripped"),
-    [(31.0, True), (31.0 - 1e-9, True), (31.0 + 1e-9, False)],
+    [(31.0, True), (31.0 - 1e-6, True), (31.0 + 1e-6, False)],
     ids=["at", "past", "short"],
 )
 def test_daily_loss_threshold_is_inclusive(last: float, tripped: bool) -> None:
@@ -88,7 +88,7 @@ def test_daily_loss_at_the_threshold_is_exact() -> None:
 
 @pytest.mark.parametrize(
     ("last", "tripped"),
-    [(7.0, True), (7.0 - 1e-9, True), (7.0 + 1e-9, False)],
+    [(7.0, True), (7.0 - 1e-6, True), (7.0 + 1e-6, False)],
     ids=["at", "past", "short"],
 )
 def test_drawdown_threshold_is_inclusive(last: float, tripped: bool) -> None:
@@ -104,6 +104,37 @@ def test_default_thresholds() -> None:
     assert check_breakers(_nav(100.0, 98.0)).daily_tripped is False  # -2%
     assert check_breakers(_nav(100.0, 90.0, 91.0)).drawdown_tripped is True  # 9%
     assert check_breakers(_nav(100.0, 90.0, 93.0)).drawdown_tripped is False  # 7%
+
+
+@pytest.mark.parametrize(
+    ("peak", "last"),
+    [(100.0, 92.0), (50.0, 46.0), (1_000_000.0, 920_000.0), (12.5, 11.5)],
+)
+def test_drawdown_trips_at_exactly_the_default_limit_despite_float_rounding(
+    peak: float, last: float
+) -> None:
+    state = check_breakers(_nav(peak, last))
+    assert state.drawdown_tripped is True
+    assert state.drawdown == 1 - last / peak  # reported value stays the raw computation
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [(99.0, 96.525), (100.0, 97.5), (40.0, 39.0), (80.0, 78.0)],  # only 99 -> 96.525 misses
+)
+def test_daily_loss_trips_at_exactly_the_default_limit_despite_float_rounding(
+    before: float, after: float
+) -> None:
+    state = check_breakers(_nav(before, after))
+    assert state.daily_tripped is True
+    assert state.daily_loss == after / before - 1  # reported value stays the raw computation
+
+
+def test_just_inside_the_default_limits_does_not_trip() -> None:
+    drawdown = check_breakers(_nav(100.0, 92.01))
+    assert drawdown.drawdown_tripped is False
+    daily = check_breakers(_nav(100.0, 97.51))
+    assert daily.daily_tripped is False
 
 
 def test_new_high_resets_the_drawdown() -> None:

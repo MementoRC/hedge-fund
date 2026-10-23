@@ -120,7 +120,7 @@ def _totals(orders: Sequence[Order]) -> str:
 
 def _risk(breakdown: RiskBreakdown, breakers: BreakerState) -> list[str]:
     """Vol line, top factors (shares of factor variance), top names, unassessed, breakers."""
-    factor_variance = breakdown.factor_vol**2
+    factor_variance = breakdown.factor_vol**2 if math.isfinite(breakdown.factor_vol) else math.nan
     factor_shares = (
         {name: value / factor_variance for name, value in breakdown.by_factor.items()}
         if factor_variance != 0
@@ -165,9 +165,17 @@ def _violations(violations: Sequence[Violation]) -> list[str]:
 def _top(values: Mapping[str, float], limit: int) -> str:
     """Up to ``limit`` ``<key> <signed pct>`` entries, largest absolute value first.
 
-    Ties go to the smaller key; ``(none)`` when ``values`` is empty.
+    Ties go to the smaller key; non-finite values rank after every finite one;
+    ``(none)`` when ``values`` is empty.
     """
-    ranked = sorted(values.items(), key=lambda item: (-abs(item[1]), item[0]))[:limit]
+    ranked = sorted(
+        values.items(),
+        key=lambda item: (
+            not math.isfinite(item[1]),
+            -abs(item[1]) if math.isfinite(item[1]) else 0.0,
+            item[0],
+        ),
+    )[:limit]
     return ", ".join(f"{key} {_pct(value, signed=True)}" for key, value in ranked) or NONE
 
 

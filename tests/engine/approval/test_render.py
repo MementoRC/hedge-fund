@@ -321,6 +321,22 @@ def test_no_top_factors_without_factor_variance(factor_vol: float) -> None:
     assert _risk_lines(breakdown)[1] == "  top factors   (none)"
 
 
+@pytest.mark.parametrize("factor_vol", [math.inf, -math.inf], ids=["inf", "-inf"])
+def test_infinite_factor_vol_prints_na_for_top_factors(factor_vol: float) -> None:
+    breakdown = dataclasses.replace(QUIET, factor_vol=factor_vol, by_factor={"value": 0.01})
+    assert _risk_lines(breakdown)[1] == "  top factors   value n/a"
+
+
+def test_top_names_rank_finite_first_and_nan_last() -> None:
+    breakdown = dataclasses.replace(
+        QUIET,
+        by_name={"AAA": math.nan, "BBB": 0.001, "CCC": -0.003, "DDD": math.nan, "EEE": 0.002},
+    )
+    assert _risk_lines(breakdown)[2] == (
+        "  top names     CCC -0.30%, EEE +0.20%, BBB +0.10%, AAA n/a, DDD n/a"
+    )
+
+
 def test_unassessed_lists_every_ticker() -> None:
     breakdown = dataclasses.replace(QUIET, unassessed=("BRK.B", "ZZZ"))
     assert _risk_lines(breakdown)[3] == "  unassessed    BRK.B, ZZZ"

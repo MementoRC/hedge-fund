@@ -287,6 +287,13 @@ def test_unknown_blocked_value_raises() -> None:
         render_proposal(_verdict(), _plan(blocked="paused"))
 
 
+def test_package_exports() -> None:
+    import hedge_fund.engine.approval as approval
+
+    assert approval.__all__ == ["plan_fingerprint", "render_proposal"]
+    assert approval.render_proposal is render_proposal
+
+
 # --- skipped and residuals --------------------------------------------------------------
 
 

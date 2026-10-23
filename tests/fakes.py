@@ -1,4 +1,4 @@
-"""In-memory providers, vendor-shaped frames, a scripted researcher, broker and gate for tests."""
+"""In-memory providers and stores, vendor-shaped frames, a scripted researcher, broker and gate."""
 
 import threading
 from collections.abc import Mapping, Sequence
@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 
+from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, RunRecord
@@ -134,6 +135,8 @@ class ScriptedBroker:
     Unscripted ids are ACCEPTED. ACCEPTED and DUPLICATE results carry broker id
     ``b-<client_order_id>``; REJECTED results carry reason SCRIPTED_REJECTION. Every
     submitted id is appended to ``submitted``, including ids whose script raises.
+    ``account()`` and ``positions()`` raise ``account_error`` / ``positions_error`` when
+    set; like ``equity`` and ``holdings`` they are plain attributes a test may change.
     """
 
     def __init__(
@@ -142,6 +145,8 @@ class ScriptedBroker:
         *,
         equity: float = 1_000_000.0,
         holdings: tuple[Holding, ...] = (),
+        account_error: Exception | None = None,
+        positions_error: Exception | None = None,
     ) -> None:
         self.script = dict(script or {})
         for outcome in self.script.values():
@@ -152,12 +157,18 @@ class ScriptedBroker:
                 )
         self.equity = equity
         self.holdings = holdings
+        self.account_error = account_error
+        self.positions_error = positions_error
         self.submitted: list[str] = []
 
     def account(self) -> Account:
+        if self.account_error is not None:
+            raise self.account_error
         return Account(equity=self.equity)
 
     def positions(self) -> tuple[Holding, ...]:
+        if self.positions_error is not None:
+            raise self.positions_error
         return self.holdings
 
     def submit(self, request: OrderRequest) -> SubmitResult:
@@ -194,3 +205,27 @@ class ScriptedApprovalGate:
         if not self.answers:
             raise AssertionError("ScriptedApprovalGate is out of answers")
         return self.answers.pop(0)
+
+
+class InMemorySnapshotStore:
+    """SnapshotStore keeping snapshots in ``saved``, in save order; ``save`` appends.
+
+    ``snapshots()`` raises ``fail_on_read`` when it is set.
+    """
+
+    def __init__(
+        self,
+        snapshots: Sequence[AccountSnapshot] = (),
+        *,
+        fail_on_read: Exception | None = None,
+    ) -> None:
+        self.saved = list(snapshots)
+        self.fail_on_read = fail_on_read
+
+    def save(self, snapshot: AccountSnapshot) -> None:
+        self.saved.append(snapshot)
+
+    def snapshots(self) -> tuple[AccountSnapshot, ...]:
+        if self.fail_on_read is not None:
+            raise self.fail_on_read
+        return tuple(self.saved)

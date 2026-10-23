@@ -262,6 +262,21 @@ def test_rejects_unexpected_keys(tmp_path: Path, payload: dict[str, Any]) -> Non
         JsonSnapshotStore(tmp_path).snapshots()
 
 
+@pytest.mark.parametrize("snapshot", [[], None], ids=["list-snapshot", "null-snapshot"])
+def test_rejects_a_snapshot_that_is_not_an_object(tmp_path: Path, snapshot: Any) -> None:
+    path = _forge(tmp_path, snapshot)
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
+def test_rejects_a_file_that_is_not_utf8(tmp_path: Path) -> None:
+    path = tmp_path / "account" / f"2026-10-23_{_sha12(PAYLOAD)}.json"
+    path.parent.mkdir()
+    path.write_bytes(b"\xff\xfe{")
+    with pytest.raises(SnapshotStoreError, match=f"{re.escape(path.name)}: malformed"):
+        JsonSnapshotStore(tmp_path).snapshots()
+
+
 @pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
 def test_rejects_a_non_finite_equity_token(tmp_path: Path, token: str) -> None:
     text = json.dumps({"snapshot": {**PAYLOAD, "equity": 0}}).replace(

@@ -1,1 +1,1 @@
-"""Eight sector-neutral factors, composite score and crowding check."""
+"""Sector-neutral factor scoring: factor definitions, normalization, and score()."""

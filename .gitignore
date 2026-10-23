@@ -40,6 +40,8 @@ Thumbs.db
 
 # Project-specific
 .claude/
+CLAUDE.md
+docs/superpowers/
 .mcp.json
 .locks/
 logs/
@@ -51,7 +53,7 @@ agents/
 .worktrees/
 
 # Local data and caches
-data/
+/data/
 .tradingagents/
 tradingagents_cache/
 eval_results/

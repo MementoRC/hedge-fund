@@ -30,13 +30,13 @@ rich = ">=14.0.0"
 typer = ">=0.21.0"
 typing-extensions = ">=4.14.0"
 yfinance = ">=1.7.0"
+pyarrow = ">=15"
+pandas-ta = "*"
 
 [tasks]
 install-editable = "python -m pip install --no-deps --no-build-isolation -e ."
 install-tradingagents = "python -m pip install --no-deps --no-build-isolation -e ../TradingAgents"
-# Not on conda-forge yet (staged-recipe pending): pure-python, deps (pandas/numpy) come from conda.
-install-non-conda = "python -m pip install --no-deps --no-build-isolation 'stockstats>=0.6.5'"
-setup-dev = { depends-on = ["install-editable", "install-tradingagents", "install-non-conda"] }
+setup-dev = { depends-on = ["install-editable", "install-tradingagents"] }
 
 [feature.ci.dependencies]
 ruff = ">=0.8.4"
@@ -64,9 +64,17 @@ build = "python -m build"
 [feature.dev.tasks]
 app = "streamlit run app.py"
 
+[feature.py311.dependencies]
+python = "3.11.*"
+
+[feature.py312.dependencies]
+python = "3.12.*"
+
 [environments]
 default = { solve-group = "default" }
 dev = { features = ["ci", "dev"], solve-group = "default" }
 ci = { features = ["ci"], solve-group = "default" }
+py311 = { features = ["py311", "ci"], solve-group = "py311" }
+py312 = { features = ["py312", "ci"], solve-group = "py312" }
 quality-extended = { features = ["ci"], solve-group = "default" }
 quality-ci = { features = ["ci"], solve-group = "default" }

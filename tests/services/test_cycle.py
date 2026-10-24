@@ -248,6 +248,23 @@ def test_a_completed_cycle_whose_report_cannot_be_saved_raises_report_save_error
     assert info.value.__cause__ is disk_full
 
 
+def test_a_submitted_cycle_whose_report_cannot_be_saved_still_carries_the_execution() -> None:
+    disk_full = OSError("disk full")
+    world = World(report_store=InMemoryReportStore(fail=disk_full))
+    with pytest.raises(ReportSaveError, match="could not be saved") as info:
+        _run(world)
+    report = info.value.report
+    assert report.outcome is CycleOutcome.SUBMITTED
+    assert report.decision is not None
+    assert report.decision.status is ApprovalStatus.APPROVED
+    assert report.execution is not None
+    submitted = [result.request.client_order_id for result in report.execution.results]
+    assert submitted != []
+    assert submitted == world.broker.submitted
+    assert submitted == _ids(report.plan)
+    assert info.value.__cause__ is disk_full
+
+
 def test_a_failed_cycle_whose_report_cannot_be_saved_raises_the_original_error() -> None:
     world = World(
         broker=ScriptedBroker(account_error=BrokerError("account down")),

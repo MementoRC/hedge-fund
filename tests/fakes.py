@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
+from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
@@ -249,3 +250,19 @@ class InMemoryResearchStore:
         self.loaded.append(as_of)
         matches = [result for result in self.saved if result.as_of == as_of]
         return matches[-1] if matches else None
+
+
+class InMemoryReportStore:
+    """CycleReportStore keeping reports in ``saved``, in save order.
+
+    ``save`` raises ``fail`` instead, keeping nothing, when it is set.
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[CycleReport] = []
+        self.fail = fail
+
+    def save(self, report: CycleReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.saved.append(report)

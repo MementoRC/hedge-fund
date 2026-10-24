@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import re
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -13,7 +14,7 @@ import pytest
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.orders import Holding, OrderAction
-from hedge_fund.domain.research import Verdict
+from hedge_fund.domain.research import ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
 from hedge_fund.engine.orders import OrderParams
 from hedge_fund.engine.portfolio.alpha import AlphaParams
@@ -447,3 +448,68 @@ def test_risk_params_and_nav_reach_the_portfolio_and_the_risk_check() -> None:
     )
     assert report.verdict == expected
     assert report.verdict.breakers.daily_loss == pytest.approx(EQUITY / 1_020_000.0 - 1)
+
+
+# --- step 6: research reuse --------------------------------------------------------------
+
+
+def _stored(world: World) -> ResearchResult:
+    """Run one dry cycle so the store holds today's research; forget the researcher calls."""
+    research = _run(world, options=DRY).research
+    assert research is not None
+    world.researcher.calls.clear()
+    return research
+
+
+def test_matching_stored_research_is_reused_without_calling_the_researcher() -> None:
+    world = World()
+    stored = _stored(world)
+    report = _run(world, options=DRY)
+    assert world.researcher.calls == []
+    assert report.research_reused is True
+    assert report.research is stored
+    assert world.research_store.saved == [stored]
+    assert world.research_store.loaded == [AS_OF, AS_OF]
+
+
+def _drop_last_name(result: ResearchResult) -> ResearchResult:
+    return dataclasses.replace(result, names=result.names[:-1])
+
+
+def _reverse_names(result: ResearchResult) -> ResearchResult:
+    return dataclasses.replace(result, names=result.names[::-1])
+
+
+def _with_error_run(result: ResearchResult) -> ResearchResult:
+    first = result.names[0]
+    failed = dataclasses.replace(first.runs[0], rating=None, error="RuntimeError: boom")
+    name = dataclasses.replace(first, runs=(failed, *first.runs[1:]))
+    return dataclasses.replace(result, names=(name, *result.names[1:]))
+
+
+@pytest.mark.parametrize(
+    ("change", "options"),
+    [
+        pytest.param(None, CycleOptions(dry_run=True, fresh_research=True), id="fresh-research"),
+        pytest.param(None, CycleOptions(dry_run=True, k=2), id="k-mismatch"),
+        pytest.param(_drop_last_name, DRY, id="changed-shortlist"),
+        pytest.param(_reverse_names, DRY, id="reordered-shortlist"),
+        pytest.param(_with_error_run, DRY, id="error-run"),
+    ],
+)
+def test_research_reruns_and_is_saved_unless_it_matches(
+    change: Callable[[ResearchResult], ResearchResult] | None, options: CycleOptions
+) -> None:
+    world = World()
+    stored = _stored(world)
+    if change is not None:
+        world.research_store.saved = [change(stored)]
+    report = _run(world, options=options)
+    assert len(world.researcher.calls) == options.k * len(SECTORS)
+    assert report.research_reused is False
+    assert report.research is not None
+    assert world.research_store.saved[-1] is report.research
+    assert len(world.research_store.saved) == 2
+    # The first cycle loaded (and found nothing); a fresh one does not even look.
+    loads = [AS_OF] if options.fresh_research else [AS_OF, AS_OF]
+    assert world.research_store.loaded == loads

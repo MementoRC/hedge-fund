@@ -228,7 +228,7 @@ def _plan(
     candidates = shortlist(score(snapshot, fundamentals), params=params.shortlist)
     run.shortlist = candidates
     run.stage = "research"
-    research = _research(deps, candidates, today=today, options=options)
+    research = _research(deps, run, candidates, today=today, options=options)
     run.research = research
     run.stage = "portfolio"
     benchmark = fetch_benchmark(deps.prices, run.as_of, lookback_days=params.risk.lookback)
@@ -279,9 +279,15 @@ def _data(deps: CycleDeps, run: _Run) -> tuple[PriceSnapshot, FundamentalsSnapsh
 
 
 def _research(
-    deps: CycleDeps, candidates: Shortlist, *, today: date, options: CycleOptions
+    deps: CycleDeps, run: _Run, candidates: Shortlist, *, today: date, options: CycleOptions
 ) -> ResearchResult:
-    """Step 6: research the shortlist and save the result (a cache, so dry runs save too)."""
+    """Step 6: reuse today's stored research if it matches (decision 2), else research the
+    shortlist and save the result (a cache, so dry runs save too).
+    """
+    stored = None if options.fresh_research else deps.research_store.load(run.as_of)
+    if stored is not None and _reusable(stored, candidates, k=options.k):
+        run.research_reused = True
+        return stored
     result = research_shortlist(
         deps.researcher,
         candidates,
@@ -292,6 +298,16 @@ def _research(
     )
     deps.research_store.save(result)
     return result
+
+
+def _reusable(stored: ResearchResult, candidates: Shortlist, *, k: int) -> bool:
+    """The shortlist's tickers in its order, ``k`` runs per name and no error run."""
+    names = stored.names
+    return (
+        [name.candidate.ticker for name in names] == [c.ticker for c in candidates.candidates]
+        and all(len(name.runs) == k for name in names)
+        and all(record.error is None for name in names for record in name.runs)
+    )
 
 
 def _order_prices(

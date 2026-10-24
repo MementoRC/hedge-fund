@@ -1,11 +1,11 @@
-"""Researcher port: one independent research run on a ticker."""
+"""Research ports: one independent research run on a ticker, and stored research results."""
 
 from __future__ import annotations
 
 from datetime import date
 from typing import Protocol
 
-from hedge_fund.domain.research import RunRecord
+from hedge_fund.domain.research import ResearchResult, RunRecord
 
 
 class Researcher(Protocol):
@@ -16,4 +16,17 @@ class Researcher(Protocol):
 
         ``run_index`` labels the repetition and has no other effect. May raise on any
         failure; the research service turns exceptions into error records.
+        """
+
+
+class ResearchStore(Protocol):
+    """Research result storage. Implementations live in adapters/research/."""
+
+    def save(self, result: ResearchResult) -> None:
+        """Persist ``result``; never overwrites or drops a stored one."""
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        """The newest stored result for ``as_of``, or None when there is none.
+
+        Raises ValueError when a stored file for ``as_of`` is malformed.
         """

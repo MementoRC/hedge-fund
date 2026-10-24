@@ -125,4 +125,11 @@ def test_rejects_id_over_128_characters() -> None:
 def test_package_exports() -> None:
     import hedge_fund.engine.execution as execution
 
-    assert execution.__all__ == ["PreparedSubmission", "prepare_submission"]
+    assert execution.__all__ == [
+        "MARKET_TZ",
+        "SESSION_END",
+        "SESSION_START",
+        "PreparedSubmission",
+        "in_session_window",
+        "prepare_submission",
+    ]

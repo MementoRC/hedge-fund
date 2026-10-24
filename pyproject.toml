@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 
+[project.scripts]
+hedge-fund = "hedge_fund.cli:app"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

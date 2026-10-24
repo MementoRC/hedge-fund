@@ -17,7 +17,7 @@ from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.risk import NavPoint
 from hedge_fund.ports.account import SnapshotStore, SnapshotStoreError
 from hedge_fund.ports.broker import BrokerError
-from hedge_fund.services.account import load_nav_history, record_snapshot
+from hedge_fund.services.account import load_nav_history, read_snapshot, record_snapshot
 from hedge_fund.services.risk import assess_portfolio
 from tests.factories import make_closes, snapshot_from
 from tests.fakes import InMemorySnapshotStore, ScriptedBroker
@@ -225,3 +225,66 @@ def test_a_quiet_history_does_not_halt() -> None:
         EMPTY_BOOK, PRICES, SPY, nav=load_nav_history(store, as_of=RISK_AS_OF)
     )
     assert (verdict.approved, verdict.halt) == (True, False)
+
+
+# --- read_snapshot ----------------------------------------------------------------------
+
+
+def test_read_returns_the_validated_snapshot() -> None:
+    broker = ScriptedBroker(equity=250_000.0, holdings=HOLDINGS)
+    assert read_snapshot(broker, as_of=AS_OF, now=_at(OBSERVED_AT)) == AccountSnapshot(
+        as_of=AS_OF, observed_at=OBSERVED_AT, equity=250_000.0, holdings=HOLDINGS
+    )
+    assert broker.submitted == []
+
+
+def test_read_default_clock_is_utc_now() -> None:
+    before = datetime.now(UTC)
+    snapshot = read_snapshot(ScriptedBroker(), as_of=AS_OF)
+    assert before <= snapshot.observed_at <= datetime.now(UTC)
+    assert snapshot.observed_at.utcoffset() == timedelta(0)
+
+
+def test_read_takes_account_then_positions_then_the_clock() -> None:
+    events: list[str] = []
+
+    class RecordingBroker(ScriptedBroker):
+        def account(self) -> Account:
+            events.append("account")
+            return super().account()
+
+        def positions(self) -> tuple[Holding, ...]:
+            events.append("positions")
+            return super().positions()
+
+    def clock() -> datetime:
+        events.append("now")
+        return OBSERVED_AT
+
+    read_snapshot(RecordingBroker(), as_of=AS_OF, now=clock)
+    assert events == ["account", "positions", "now"]
+
+
+@pytest.mark.parametrize(
+    ("broker", "now", "message"),
+    [
+        pytest.param(ScriptedBroker(equity=0.0), OBSERVED_AT, "nav must be", id="zero-equity"),
+        pytest.param(
+            ScriptedBroker(holdings=tuple(reversed(HOLDINGS))),
+            OBSERVED_AT,
+            "strictly ascending",
+            id="unsorted-holdings",
+        ),
+        pytest.param(ScriptedBroker(), datetime(2026, 10, 23, 13, 0), "tz-aware", id="naive-clock"),
+    ],
+)
+def test_read_rejects_an_invalid_read(broker: ScriptedBroker, now: datetime, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        read_snapshot(broker, as_of=AS_OF, now=_at(now))
+
+
+@pytest.mark.parametrize("failing", ["account_error", "positions_error"])
+def test_read_propagates_a_broker_error(failing: str) -> None:
+    broker = ScriptedBroker(**{failing: BrokerError(f"{failing} boom")})
+    with pytest.raises(BrokerError, match=f"{failing} boom"):
+        read_snapshot(broker, as_of=AS_OF, now=_at(OBSERVED_AT))

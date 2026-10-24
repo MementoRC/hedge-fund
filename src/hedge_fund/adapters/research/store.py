@@ -18,6 +18,31 @@ from hedge_fund.domain.shortlist import Candidate, Side
 RESEARCH_DIR = "research"
 
 
+class JsonResearchStore:
+    """ResearchStore over ``save_research`` / ``load_research`` under ``root``."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root)
+
+    def save(self, result: ResearchResult) -> None:
+        save_research(result, self._root)
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        """The ``research/<as_of>_*.json`` result with the greatest ``created_at``.
+
+        Ties go to the greater file name; None when no file matches. Every match is loaded
+        with ``load_research`` (as_of and digest verified), so one malformed file raises
+        ValueError, as does a ``created_at`` that is missing, not ISO 8601 or naive.
+        """
+        newest: tuple[datetime, str, ResearchResult] | None = None
+        for path in sorted((self._root / RESEARCH_DIR).glob(f"{as_of.isoformat()}_*.json")):
+            result = load_research(path)
+            created_at = _created_at(path)
+            if newest is None or (created_at, path.name) > newest[:2]:
+                newest = (created_at, path.name, result)
+        return None if newest is None else newest[2]
+
+
 def save_research(result: ResearchResult, root: Path) -> Path:
     """Write research/<as_of>_<sha12>.json under root and return its path.
 
@@ -66,6 +91,21 @@ def load_research(path: Path) -> ResearchResult:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"{path.name}: malformed research file") from exc
+
+
+def _created_at(path: Path) -> datetime:
+    """The file body's tz-aware ``created_at``; ValueError naming the file otherwise."""
+    try:
+        created_at = datetime.fromisoformat(
+            json.loads(path.read_text(encoding="utf-8"))["created_at"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path.name}: malformed created_at") from exc
+    if created_at.utcoffset() is None:
+        raise ValueError(
+            f"{path.name}: malformed created_at {created_at.isoformat()!r} (no offset)"
+        )
+    return created_at
 
 
 def _payload(result: ResearchResult) -> dict[str, Any]:

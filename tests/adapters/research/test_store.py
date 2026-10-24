@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hedge_fund.adapters.research.store import load_research, save_research
+from hedge_fund.adapters.research.store import JsonResearchStore, load_research, save_research
 from hedge_fund.domain.research import (
     NameResearch,
     Rating,
@@ -18,6 +18,7 @@ from hedge_fund.domain.research import (
     Verdict,
 )
 from hedge_fund.domain.shortlist import Candidate, Side
+from hedge_fund.ports.research import ResearchStore
 
 AS_OF = date(2026, 9, 30)
 
@@ -180,3 +181,81 @@ def test_load_rejects_as_of_mismatch(tmp_path: Path) -> None:
     renamed = path.rename(path.with_name(path.name.replace("2026-09-30", "2026-09-29")))
     with pytest.raises(ValueError, match="as_of mismatch"):
         load_research(renamed)
+
+
+# --- JsonResearchStore ------------------------------------------------------------------
+
+
+def _set_created_at(path: Path, value: object) -> None:
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["created_at"] = value
+    path.write_text(json.dumps(body), encoding="utf-8")
+
+
+def test_json_store_satisfies_the_port_and_round_trips(tmp_path: Path) -> None:
+    store: ResearchStore = JsonResearchStore(tmp_path)
+    store.save(_result())
+    assert store.load(AS_OF) == _result()
+    [path] = (tmp_path / "research").iterdir()
+    assert re.fullmatch(r"2026-09-30_[0-9a-f]{12}\.json", path.name)
+
+
+@pytest.mark.parametrize("setup", ["missing-dir", "other-date", "empty-dir"])
+def test_json_store_load_is_none_when_nothing_matches(tmp_path: Path, setup: str) -> None:
+    if setup == "other-date":
+        save_research(dataclasses.replace(_result(), as_of=date(2026, 9, 29)), tmp_path)
+    if setup == "empty-dir":
+        (tmp_path / "research").mkdir()
+    assert JsonResearchStore(tmp_path).load(AS_OF) is None
+
+
+def test_json_store_newest_created_at_wins(tmp_path: Path) -> None:
+    first, second = _result(seconds=1.0), _result(seconds=2.0)
+    first_path, second_path = save_research(first, tmp_path), save_research(second, tmp_path)
+    _set_created_at(first_path, "2026-09-30T23:00:00+00:00")
+    _set_created_at(second_path, "2026-09-30T22:00:00+00:00")
+    assert JsonResearchStore(tmp_path).load(AS_OF) == first
+    _set_created_at(second_path, "2026-09-30T19:30:00-04:00")  # 23:30 UTC: newer by instant
+    assert JsonResearchStore(tmp_path).load(AS_OF) == second
+
+
+def test_json_store_created_at_tie_goes_to_the_greater_file_name(tmp_path: Path) -> None:
+    paths = {seconds: save_research(_result(seconds=seconds), tmp_path) for seconds in (1.0, 2.0)}
+    for path in paths.values():
+        _set_created_at(path, "2026-09-30T22:00:00+00:00")
+    greater = max(paths, key=lambda seconds: paths[seconds].name)
+    assert JsonResearchStore(tmp_path).load(AS_OF) == _result(seconds=greater)
+
+
+def test_json_store_rejects_a_tampered_file(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    body["result"]["names"][0]["runs"][0]["decision"] = "tampered"
+    path.write_text(json.dumps(body), encoding="utf-8")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        JsonResearchStore(tmp_path).load(AS_OF)
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        pytest.param(None, id="null"),
+        pytest.param(20260930, id="int"),
+        pytest.param("yesterday", id="unparseable"),
+        pytest.param("2026-09-30T22:00:00", id="naive"),
+    ],
+)
+def test_json_store_rejects_a_bad_created_at(tmp_path: Path, created_at: object) -> None:
+    path = save_research(_result(), tmp_path)
+    _set_created_at(path, created_at)
+    with pytest.raises(ValueError, match=f"{re.escape(path.name)}: malformed created_at"):
+        JsonResearchStore(tmp_path).load(AS_OF)
+
+
+def test_json_store_rejects_a_missing_created_at(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    body = json.loads(path.read_text(encoding="utf-8"))
+    del body["created_at"]
+    path.write_text(json.dumps(body), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"{re.escape(path.name)}: malformed created_at"):
+        JsonResearchStore(tmp_path).load(AS_OF)

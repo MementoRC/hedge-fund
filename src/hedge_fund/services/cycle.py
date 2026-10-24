@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
-from hedge_fund.domain.approval import ApprovalDecision
+from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport
 from hedge_fund.domain.fundamentals import FundamentalsSnapshot
@@ -25,6 +25,13 @@ from hedge_fund.domain.risk import NavHistory, RiskVerdict
 from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.account import nav_history
+from hedge_fund.engine.execution import (
+    MARKET_TZ,
+    SESSION_END,
+    SESSION_START,
+    in_session_window,
+    prepare_submission,
+)
 from hedge_fund.engine.factors.score import score
 from hedge_fund.engine.orders import DEFAULT_ORDERS, OrderParams, generate_orders, order_prices
 from hedge_fund.engine.portfolio.alpha import DEFAULT_ALPHA, AlphaParams
@@ -43,6 +50,8 @@ from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.fundamentals import FundamentalsProvider
 from hedge_fund.ports.research import Researcher, ResearchStore
 from hedge_fund.services.account import read_snapshot
+from hedge_fund.services.approval import request_approval
+from hedge_fund.services.execution import execute_plan
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from hedge_fund.services.portfolio import build_portfolio, fetch_benchmark
 from hedge_fund.services.research import _previous_weekday, research_shortlist
@@ -51,6 +60,12 @@ from hedge_fund.services.snapshots import build_snapshot
 from hedge_fund.universe import Universe
 
 HELD_PRICE_DAYS = 14  # calendar days of closes fetched for held names outside the snapshot
+
+_NOT_APPROVED: Mapping[ApprovalStatus, CycleOutcome] = {
+    ApprovalStatus.BLOCKED: CycleOutcome.BLOCKED,
+    ApprovalStatus.NOTHING_TO_DO: CycleOutcome.NOTHING_TO_DO,
+    ApprovalStatus.REJECTED: CycleOutcome.REJECTED,
+}
 
 
 class ReportSaveError(Exception):
@@ -193,7 +208,7 @@ def _cycle(
     options: CycleOptions,
     now: Callable[[], datetime],
 ) -> CycleOutcome:
-    """Steps 0-10, then (outside dry-run) approval and execution (Task 10)."""
+    """Steps 0-12; the caller saves the report (step 13)."""
     _check_live(run.as_of, today)
     run.stage = "account"
     current = read_snapshot(deps.broker, as_of=run.as_of, now=now)
@@ -206,10 +221,10 @@ def _cycle(
     state = check_breakers(nav, params=deps.params.breakers)
     if state.daily_tripped or state.drawdown_tripped:
         return CycleOutcome.HALTED_PREFLIGHT
-    _plan(deps, run, current, nav, today=today, options=options)
+    verdict, plan = _plan(deps, run, current, nav, today=today, options=options)
     if options.dry_run:
         return CycleOutcome.DRY_RUN
-    raise NotImplementedError("approval and execution come in Task 10")
+    return _approve_and_execute(deps, run, verdict, plan, options=options, now=now)
 
 
 def _plan(
@@ -220,7 +235,7 @@ def _plan(
     *,
     today: date,
     options: CycleOptions,
-) -> OrderPlan:
+) -> tuple[RiskVerdict, OrderPlan]:
     """Steps 4-10: data, shortlist, research, portfolio, risk, prices and orders."""
     params = deps.params
     snapshot, fundamentals = _data(deps, run)
@@ -262,7 +277,57 @@ def _plan(
         target, verdict, current.holdings, sizing, current.equity, params=params.orders
     )
     run.plan = plan
-    return plan
+    return verdict, plan
+
+
+def _approve_and_execute(
+    deps: CycleDeps,
+    run: _Run,
+    verdict: RiskVerdict,
+    plan: OrderPlan,
+    *,
+    options: CycleOptions,
+    now: Callable[[], datetime],
+) -> CycleOutcome:
+    """Steps 11-12: window check, approval, window re-check on APPROVED, then execution."""
+    _check_window(run, options, now)
+    run.stage = "approval"
+    decision = request_approval(verdict, plan, deps.gate)
+    run.decision = decision
+    if decision.status is not ApprovalStatus.APPROVED:
+        return _NOT_APPROVED[decision.status]
+    _check_window(run, options, now)  # a human may have answered after 09:25 ET
+    run.stage = "execution"
+    try:
+        run.execution = execute_plan(plan, deps.broker)
+    except BaseException:
+        run.execution_interrupted = True
+        run.planned_client_order_ids = _planned_ids(plan)
+        raise
+    return CycleOutcome.SUBMITTED
+
+
+def _check_window(run: _Run, options: CycleOptions, now: Callable[[], datetime]) -> None:
+    """Decision 7: refuse, with a fresh ``now()``, inside the weekday session window."""
+    if options.any_time:
+        return
+    run.stage = "submission_window"
+    at = now()
+    if in_session_window(at):
+        raise SubmissionWindowError(
+            f"{at.astimezone(MARKET_TZ):%a %Y-%m-%d %H:%M} ET is inside the weekday session "
+            f"window {SESSION_START:%H:%M}-{SESSION_END:%H:%M} ET: opg orders must be "
+            "submitted before 09:25 ET or after the close"
+        )
+
+
+def _planned_ids(plan: OrderPlan) -> tuple[str, ...]:
+    """The plan's client_order_ids in submission order; ``()`` if it cannot be prepared."""
+    try:
+        prepared = prepare_submission(plan)
+    except ValueError:
+        return ()
+    return tuple(request.client_order_id for request in (*prepared.reducing, *prepared.opening))
 
 
 def _data(deps: CycleDeps, run: _Run) -> tuple[PriceSnapshot, FundamentalsSnapshot]:

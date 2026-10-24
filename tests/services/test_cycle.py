@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 import re
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
 from hedge_fund.domain.account import AccountSnapshot
+from hedge_fund.domain.approval import ApprovalStatus
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
-from hedge_fund.domain.orders import Holding, OrderAction
+from hedge_fund.domain.execution import SubmitStatus
+from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
 from hedge_fund.domain.research import ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
 from hedge_fund.engine.orders import OrderParams
@@ -23,11 +26,12 @@ from hedge_fund.engine.portfolio.optimize import OptimizeParams
 from hedge_fund.engine.portfolio.risk_model import RiskParams
 from hedge_fund.engine.research.conviction import ConvictionParams
 from hedge_fund.engine.risk.breakers import BreakerParams
-from hedge_fund.engine.risk.limits import RiskLimits
+from hedge_fund.engine.risk.limits import DEFAULT_LIMITS, RiskLimits
 from hedge_fund.engine.shortlist.select import ShortlistParams
 from hedge_fund.ports.account import SnapshotStoreError
 from hedge_fund.ports.broker import BrokerError
-from hedge_fund.services.cycle import ReportSaveError, run_cycle
+from hedge_fund.services import cycle
+from hedge_fund.services.cycle import ReportSaveError, SubmissionWindowError, run_cycle
 from hedge_fund.services.portfolio import build_portfolio, fetch_benchmark
 from hedge_fund.services.risk import assess_portfolio
 from hedge_fund.services.snapshots import build_snapshot
@@ -38,12 +42,21 @@ from tests.cycle_world import (
     HELD_OUTSIDE,
     LOOSE_LIMITS,
     SECTORS,
+    SESSION,
     TODAY,
+    WEEKEND,
     Clock,
     World,
     universe,
 )
-from tests.fakes import FakeProvider, InMemoryReportStore, InMemorySnapshotStore, ScriptedBroker
+from tests.fakes import (
+    FakeProvider,
+    InMemoryReportStore,
+    InMemorySnapshotStore,
+    ScriptedApprovalGate,
+    ScriptedBroker,
+    ScriptedResearcher,
+)
 
 EQUITY = 1_000_000.0
 DRY = CycleOptions(dry_run=True)
@@ -513,3 +526,186 @@ def test_research_reruns_and_is_saved_unless_it_matches(
     # The first cycle loaded (and found nothing); a fresh one does not even look.
     loads = [AS_OF] if options.fresh_research else [AS_OF, AS_OF]
     assert world.research_store.loaded == loads
+
+
+# --- steps 11-13: submission window, approval, execution ----------------------------------
+
+HELD = (Holding(ticker=HELD_OUTSIDE, shares=100),)  # sold first: a reducing leg
+
+
+def _ids(plan: OrderPlan | None) -> list[str]:
+    """``hf-<as_of>-<ticker>-<action>-<shares>`` per order, in plan (= submission) order."""
+    assert plan is not None
+    return [f"hf-{plan.as_of}-{o.ticker}-{o.action.value}-{o.shares}" for o in plan.orders]
+
+
+@functools.cache
+def _held_ids() -> tuple[str, ...]:
+    """The client_order_ids of the plan for a book holding HELD (from one dry run)."""
+    return tuple(_ids(_run(World(broker=ScriptedBroker(holdings=HELD)), options=DRY).plan))
+
+
+class _SlowGate(ScriptedApprovalGate):
+    """Approves, but the human answers only after the session window has opened."""
+
+    def __init__(self, clock: Clock) -> None:
+        super().__init__([True])
+        self.clock = clock
+
+    def confirm(self, summary: str) -> bool:
+        self.clock.times = [SESSION]
+        return super().confirm(summary)
+
+
+def test_an_approved_plan_is_submitted() -> None:
+    world = World()
+    report = _run(world)
+    assert report.outcome is CycleOutcome.SUBMITTED
+    assert (report.failed_stage, report.error) == (None, None)
+    assert report.decision is not None
+    assert report.decision.status is ApprovalStatus.APPROVED
+    assert len(world.gate.summaries) == 1
+    assert world.broker.submitted == _ids(report.plan)
+    assert all(client_id.startswith("hf-2026-09-30-") for client_id in world.broker.submitted)
+    assert report.execution is not None
+    assert [result.status for result in report.execution.results] == [SubmitStatus.ACCEPTED] * 6
+    assert (report.execution_interrupted, report.planned_client_order_ids) == (False, ())
+    assert world.snapshot_store.saved == [report.account]
+    assert world.report_store.saved == [report]
+
+
+@pytest.mark.parametrize(
+    ("world", "outcome", "status"),
+    [
+        pytest.param(
+            World(gate=ScriptedApprovalGate([False])),
+            CycleOutcome.REJECTED,
+            ApprovalStatus.REJECTED,
+            id="rejected",
+        ),
+        pytest.param(
+            World(params=_params(limits=DEFAULT_LIMITS)),  # the seeded book breaks name_risk
+            CycleOutcome.BLOCKED,
+            ApprovalStatus.BLOCKED,
+            id="blocked-by-the-veto",
+        ),
+        pytest.param(
+            World(researcher=ScriptedResearcher()),  # every run Hold: NEUTRAL, an empty book
+            CycleOutcome.NOTHING_TO_DO,
+            ApprovalStatus.NOTHING_TO_DO,
+            id="nothing-to-do",
+        ),
+    ],
+)
+def test_a_plan_that_is_not_approved_is_never_submitted(
+    world: World, outcome: CycleOutcome, status: ApprovalStatus
+) -> None:
+    report = _run(world)
+    assert report.outcome is outcome
+    assert report.decision is not None
+    assert report.decision.status is status
+    assert world.broker.submitted == []
+    assert report.execution is None
+    assert len(world.gate.summaries) == (1 if status is ApprovalStatus.REJECTED else 0)
+
+
+def test_inside_the_session_window_the_gate_is_never_called() -> None:
+    world = World()
+    # started_at and the account read at 18:00 EDT; the window check reads 10:00 EDT.
+    with pytest.raises(SubmissionWindowError, match="opg orders must be submitted before 09:25"):
+        _run(world, now=Clock(EVENING, EVENING, SESSION))
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "submission_window")
+    assert report.error is not None
+    assert report.error.startswith("SubmissionWindowError: Wed 2026-09-30 10:00 ET")
+    assert report.plan is not None
+    assert len(report.plan.orders) == 6
+    assert report.decision is None
+    assert world.gate.summaries == []
+    assert world.broker.submitted == []
+
+
+def test_the_window_is_checked_again_after_a_slow_approval() -> None:
+    clock = Clock(EVENING)
+    world = World(gate=_SlowGate(clock))
+    with pytest.raises(SubmissionWindowError, match="opg"):
+        _run(world, now=clock)
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "submission_window")
+    assert report.decision is not None
+    assert report.decision.status is ApprovalStatus.APPROVED
+    assert len(world.gate.summaries) == 1
+    assert world.broker.submitted == []
+    assert (report.execution, report.execution_interrupted) == (None, False)
+
+
+@pytest.mark.parametrize(
+    ("now", "options", "outcome"),
+    [
+        pytest.param(SESSION, CycleOptions(any_time=True), CycleOutcome.SUBMITTED, id="any-time"),
+        pytest.param(SESSION, DRY, CycleOutcome.DRY_RUN, id="dry-run"),
+        pytest.param(WEEKEND, CycleOptions(), CycleOutcome.SUBMITTED, id="weekend"),
+        pytest.param(EVENING, CycleOptions(), CycleOutcome.SUBMITTED, id="weekday-evening"),
+    ],
+)
+def test_the_window_check_is_skipped_or_passes(
+    now: datetime, options: CycleOptions, outcome: CycleOutcome
+) -> None:
+    world = World()
+    assert _run(world, options=options, now=Clock(now)).outcome is outcome
+
+
+def test_failed_legs_still_end_submitted_with_the_failures_reported() -> None:
+    first = _held_ids()[0]
+    world = World(broker=ScriptedBroker({first: SubmitStatus.REJECTED}, holdings=HELD))
+    report = _run(world)
+    assert report.outcome is CycleOutcome.SUBMITTED
+    assert report.execution is not None
+    assert report.execution.results[0].status is SubmitStatus.REJECTED
+    assert report.execution.opening_halted is True
+    assert world.broker.submitted == [first]
+
+
+@pytest.mark.parametrize(
+    ("raised", "outcome"),
+    [
+        pytest.param(RuntimeError("socket closed"), CycleOutcome.ERROR, id="exception"),
+        pytest.param(KeyboardInterrupt(), CycleOutcome.INTERRUPTED, id="interrupt"),
+    ],
+)
+def test_an_execution_that_raises_records_the_planned_ids(
+    raised: BaseException, outcome: CycleOutcome
+) -> None:
+    ids = _held_ids()
+    world = World(broker=ScriptedBroker({ids[0]: raised}, holdings=HELD))
+    with pytest.raises(type(raised)):
+        _run(world)
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (outcome, "execution")
+    assert report.decision is not None
+    assert report.decision.status is ApprovalStatus.APPROVED
+    assert (report.execution, report.execution_interrupted) == (None, True)
+    assert report.planned_client_order_ids == ids
+    assert ids[0].startswith(f"hf-2026-09-30-{HELD_OUTSIDE}-sell-100")  # reducing leg first
+    assert world.broker.submitted == [ids[0]]
+
+
+def test_an_unpreparable_plan_records_no_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    def malformed(plan: OrderPlan) -> NoReturn:
+        raise ValueError("duplicate client_order_id")
+
+    monkeypatch.setattr(cycle, "prepare_submission", malformed)
+    world = World(broker=ScriptedBroker({_held_ids()[0]: RuntimeError("down")}, holdings=HELD))
+    with pytest.raises(RuntimeError, match="down"):
+        _run(world)
+    [report] = world.report_store.saved
+    assert (report.execution_interrupted, report.planned_client_order_ids) == (True, ())
+
+
+def test_a_failing_gate_is_an_approval_error() -> None:
+    world = World(gate=ScriptedApprovalGate([]))  # raises: out of answers
+    with pytest.raises(AssertionError, match="out of answers"):
+        _run(world)
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "approval")
+    assert report.decision is None

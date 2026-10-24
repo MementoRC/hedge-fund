@@ -9,19 +9,24 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+
+import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport
+from hedge_fund.domain.fundamentals import FundamentalsSnapshot
 from hedge_fund.domain.orders import OrderPlan
 from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.research import ResearchResult
-from hedge_fund.domain.risk import RiskVerdict
+from hedge_fund.domain.risk import NavHistory, RiskVerdict
 from hedge_fund.domain.shortlist import Shortlist
+from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.account import nav_history
-from hedge_fund.engine.orders import DEFAULT_ORDERS, OrderParams
+from hedge_fund.engine.factors.score import score
+from hedge_fund.engine.orders import DEFAULT_ORDERS, OrderParams, generate_orders, order_prices
 from hedge_fund.engine.portfolio.alpha import DEFAULT_ALPHA, AlphaParams
 from hedge_fund.engine.portfolio.correlation import DEFAULT_CORRELATION, CorrelationParams
 from hedge_fund.engine.portfolio.optimize import DEFAULT_OPTIMIZE, OptimizeParams
@@ -29,7 +34,7 @@ from hedge_fund.engine.portfolio.risk_model import DEFAULT_RISK, RiskParams
 from hedge_fund.engine.research.conviction import DEFAULT_CONVICTION, ConvictionParams
 from hedge_fund.engine.risk.breakers import DEFAULT_BREAKERS, BreakerParams, check_breakers
 from hedge_fund.engine.risk.limits import DEFAULT_LIMITS, RiskLimits
-from hedge_fund.engine.shortlist.select import DEFAULT_SHORTLIST, ShortlistParams
+from hedge_fund.engine.shortlist.select import DEFAULT_SHORTLIST, ShortlistParams, shortlist
 from hedge_fund.ports.account import SnapshotStore
 from hedge_fund.ports.approval import ApprovalGate
 from hedge_fund.ports.broker import Broker
@@ -38,8 +43,14 @@ from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.fundamentals import FundamentalsProvider
 from hedge_fund.ports.research import Researcher, ResearchStore
 from hedge_fund.services.account import read_snapshot
-from hedge_fund.services.research import _previous_weekday
+from hedge_fund.services.fundamentals import build_fundamentals_snapshot
+from hedge_fund.services.portfolio import build_portfolio, fetch_benchmark
+from hedge_fund.services.research import _previous_weekday, research_shortlist
+from hedge_fund.services.risk import assess_portfolio
+from hedge_fund.services.snapshots import build_snapshot
 from hedge_fund.universe import Universe
+
+HELD_PRICE_DAYS = 14  # calendar days of closes fetched for held names outside the snapshot
 
 
 class ReportSaveError(Exception):
@@ -182,7 +193,7 @@ def _cycle(
     options: CycleOptions,
     now: Callable[[], datetime],
 ) -> CycleOutcome:
-    """Steps 0-3; the data, research, portfolio, risk and order stages follow (Task 8)."""
+    """Steps 0-10, then (outside dry-run) approval and execution (Task 10)."""
     _check_live(run.as_of, today)
     run.stage = "account"
     current = read_snapshot(deps.broker, as_of=run.as_of, now=now)
@@ -195,7 +206,115 @@ def _cycle(
     state = check_breakers(nav, params=deps.params.breakers)
     if state.daily_tripped or state.drawdown_tripped:
         return CycleOutcome.HALTED_PREFLIGHT
-    raise NotImplementedError("stages 4-13 come in Tasks 8-10")
+    _plan(deps, run, current, nav, today=today, options=options)
+    if options.dry_run:
+        return CycleOutcome.DRY_RUN
+    raise NotImplementedError("approval and execution come in Task 10")
+
+
+def _plan(
+    deps: CycleDeps,
+    run: _Run,
+    current: AccountSnapshot,
+    nav: NavHistory,
+    *,
+    today: date,
+    options: CycleOptions,
+) -> OrderPlan:
+    """Steps 4-10: data, shortlist, research, portfolio, risk, prices and orders."""
+    params = deps.params
+    snapshot, fundamentals = _data(deps, run)
+    run.stage = "shortlist"
+    candidates = shortlist(score(snapshot, fundamentals), params=params.shortlist)
+    run.shortlist = candidates
+    run.stage = "research"
+    research = _research(deps, candidates, today=today, options=options)
+    run.research = research
+    run.stage = "portfolio"
+    benchmark = fetch_benchmark(deps.prices, run.as_of, lookback_days=params.risk.lookback)
+    target = build_portfolio(
+        research,
+        snapshot,
+        benchmark,
+        alpha=params.alpha,
+        risk=params.risk,
+        correlation=params.correlation,
+        optimize=params.optimize,
+    )
+    run.target = target
+    run.stage = "risk"
+    verdict = assess_portfolio(
+        target,
+        snapshot,
+        benchmark,
+        nav=nav,
+        limits=params.limits,
+        breakers=params.breakers,
+        risk=params.risk,
+    )
+    run.verdict = verdict
+    run.stage = "prices"
+    prices = _order_prices(deps.prices, snapshot, target, current, as_of=run.as_of)
+    run.order_prices = prices
+    run.stage = "orders"
+    sizing = {ticker: price for ticker, (price, _) in prices.items()}
+    plan = generate_orders(
+        target, verdict, current.holdings, sizing, current.equity, params=params.orders
+    )
+    run.plan = plan
+    return plan
+
+
+def _data(deps: CycleDeps, run: _Run) -> tuple[PriceSnapshot, FundamentalsSnapshot]:
+    """Step 4: prices for the universe, then fundamentals for the names that have prices."""
+    run.stage = "data"
+    prices = build_snapshot(deps.prices, deps.universe.tickers, run.as_of)
+    run.price_unresolved = prices.unresolved
+    priced = [ticker for ticker in prices.snapshot.sectors if ticker not in prices.unresolved]
+    fundamentals = build_fundamentals_snapshot(
+        deps.fundamentals, priced, run.as_of, ciks=deps.universe.ciks
+    )
+    run.fundamentals_unresolved = fundamentals.unresolved
+    return prices.snapshot, fundamentals.snapshot
+
+
+def _research(
+    deps: CycleDeps, candidates: Shortlist, *, today: date, options: CycleOptions
+) -> ResearchResult:
+    """Step 6: research the shortlist and save the result (a cache, so dry runs save too)."""
+    result = research_shortlist(
+        deps.researcher,
+        candidates,
+        k=options.k,
+        max_workers=options.max_workers,
+        params=deps.params.conviction,
+        today=today,
+    )
+    deps.research_store.save(result)
+    return result
+
+
+def _order_prices(
+    provider: DataProvider,
+    snapshot: PriceSnapshot,
+    target: TargetPortfolio,
+    current: AccountSnapshot,
+    *,
+    as_of: date,
+) -> dict[str, tuple[float, date]]:
+    """Step 9: a price for every target and held name; held names outside the snapshot
+    are fetched over the last ``HELD_PRICE_DAYS`` calendar days.
+    """
+    needed = sorted(
+        {position.ticker for position in target.positions}
+        | {holding.ticker for holding in current.holdings}
+    )
+    closes = snapshot.closes
+    missing = [ticker for ticker in needed if ticker not in closes.columns]
+    if missing:
+        fetched = provider.closes(missing, as_of - timedelta(days=HELD_PRICE_DAYS), as_of)
+        closes = pd.concat([closes, fetched], axis=1)
+    return order_prices(closes, needed, as_of=as_of)
 
 
 def _check_live(as_of: date, today: date) -> None:

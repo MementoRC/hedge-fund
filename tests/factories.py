@@ -8,6 +8,7 @@ import pandas as pd
 
 from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS, FundamentalsSnapshot
 from hedge_fund.domain.snapshot import PriceSnapshot
+from hedge_fund.engine.fundamentals.metrics import METRICS, SHARES_DEI_TAG
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts
 
 END_DATE = "2026-09-30"
@@ -111,6 +112,35 @@ def make_passing_fundamentals(
         current.loc[ticker, list(_PASSING_CURRENT)] = [f(k) for f in _PASSING_CURRENT.values()]
         prior.loc[ticker, list(_PASSING_PRIOR)] = [f(k) for f in _PASSING_PRIOR.values()]
     return FundamentalsSnapshot(base.as_of, current, prior, base.periods)
+
+
+def make_passing_facts(tickers: Sequence[str]) -> pd.DataFrame:
+    """EDGAR-like facts deriving, as of FUNDAMENTALS_AS_OF, to ``make_passing_fundamentals``.
+
+    Only the metrics the fundamental factors and quality gates read (the ``_PASSING_CURRENT``
+    keys) are reported, which keeps derivation fast; the others derive to NaN. Each is
+    reported under its first tag (shares on the dei cover tag) by two 10-K filings:
+    E = 2026-06-30 filed 2026-08-01 and E′ = 2025-06-30 filed 2025-08-01. Flows are annual
+    facts ending at E / E′, stocks are instants at E / E′.
+    """
+    target = make_passing_fundamentals(tickers)
+    rows = []
+    for ticker in target.current.index:
+        filings = (
+            (target.current, "2026-06-30", "2026-08-01", f"{ticker}-e"),
+            (target.prior, "2025-06-30", "2025-08-01", f"{ticker}-p"),
+        )
+        for values, end, filed, accn in filings:
+            for spec in METRICS:
+                if spec.name not in _PASSING_CURRENT:
+                    continue
+                tag = SHARES_DEI_TAG if spec.name == "shares_outstanding" else spec.tags[0]
+                start = None
+                if spec.kind == "flow":
+                    start = pd.Timestamp(end) - pd.DateOffset(years=1) + pd.Timedelta(days=1)
+                value = float(values.at[ticker, spec.name])
+                rows.append((ticker, tag, start, end, value, filed, "10-K", accn))
+    return coerce_facts(pd.DataFrame(rows, columns=list(FACT_COLUMNS)))
 
 
 def make_facts(tickers: Sequence[str]) -> pd.DataFrame:

@@ -9,6 +9,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import click
 import pytest
 from typer.testing import CliRunner, Result
 
@@ -112,7 +113,8 @@ def test_cycle_is_a_named_subcommand() -> None:
     result = runner.invoke(cli.app, ["--help"])
     assert result.exit_code == 0
     assert "cycle" in result.output
-    help_text = runner.invoke(cli.app, ["cycle", "--help"]).output
+    # CI (GITHUB_ACTIONS, FORCE_COLOR) makes Rich style the help; compare the plain text.
+    help_text = click.unstyle(runner.invoke(cli.app, ["cycle", "--help"]).output)
     for flag in ("--as-of", "--dry-run", "--fresh-research", "--any-time", "--k", "--root"):
         assert flag in help_text
 

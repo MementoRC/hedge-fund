@@ -10,7 +10,7 @@ import pandas as pd
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Holding
-from hedge_fund.domain.research import Rating, RunRecord
+from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
 
 
 class FakeProvider:
@@ -229,3 +229,23 @@ class InMemorySnapshotStore:
         if self.fail_on_read is not None:
             raise self.fail_on_read
         return tuple(self.saved)
+
+
+class InMemoryResearchStore:
+    """ResearchStore keeping results in ``saved``, in save order; ``save`` appends.
+
+    ``load`` returns the last saved result for the date (None if there is none) and
+    records the date in ``loaded``.
+    """
+
+    def __init__(self, results: Sequence[ResearchResult] = ()) -> None:
+        self.saved = list(results)
+        self.loaded: list[date] = []
+
+    def save(self, result: ResearchResult) -> None:
+        self.saved.append(result)
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        self.loaded.append(as_of)
+        matches = [result for result in self.saved if result.as_of == as_of]
+        return matches[-1] if matches else None

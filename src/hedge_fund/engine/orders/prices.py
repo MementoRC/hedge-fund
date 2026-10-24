@@ -15,10 +15,12 @@ import pandas as pd
 def order_prices(
     closes: pd.DataFrame, tickers: Iterable[str], *, as_of: date, max_age_days: int = 7
 ) -> dict[str, tuple[float, date]]:
-    """Ticker -> (last finite close, that close's date) for every ticker in ``tickers``.
+    """Ticker -> (last usable close, that close's date) for every ticker in ``tickers``.
 
-    A ticker that is not a column of ``closes``, whose column has no finite value, or whose
-    last finite close is dated before ``as_of - max_age_days`` calendar days has no price
+    A usable close is finite, positive and dated on or before ``as_of``: closes after
+    ``as_of`` and NaN, inf, zero or negative closes are skipped, so a future price is never
+    returned. A ticker that is not a column of ``closes``, that has no usable close, or whose
+    last usable close is dated before ``as_of - max_age_days`` calendar days has no price
     (a close exactly ``max_age_days`` old is accepted). If any ticker has no price, one
     ValueError names every such ticker, sorted, each stale one with its last close date.
     """
@@ -26,7 +28,7 @@ def order_prices(
     prices: dict[str, tuple[float, date]] = {}
     problems: dict[str, str] = {}
     for ticker in tickers:
-        found = _last_close(closes, ticker)
+        found = _last_close(closes, ticker, as_of)
         if found is None:
             problems[ticker] = "no finite close"
         elif found[1] < oldest:
@@ -41,12 +43,14 @@ def order_prices(
     return prices
 
 
-def _last_close(closes: pd.DataFrame, ticker: str) -> tuple[float, date] | None:
-    """The finite close with the latest date, or None (absent column, no finite value)."""
+def _last_close(closes: pd.DataFrame, ticker: str, as_of: date) -> tuple[float, date] | None:
+    """The finite positive close with the latest date <= as_of, or None (none qualifies)."""
     if ticker not in closes.columns:
         return None
     column = closes[ticker]
-    finite = column[np.isfinite(column.to_numpy(dtype="float64"))].sort_index()
-    if finite.empty:
+    values = column.to_numpy(dtype="float64")
+    on_or_before = np.asarray(column.index.date <= as_of)
+    usable = column[np.isfinite(values) & (values > 0) & on_or_before].sort_index()
+    if usable.empty:
         return None
-    return float(finite.iloc[-1]), finite.index[-1].date()
+    return float(usable.iloc[-1]), usable.index[-1].date()

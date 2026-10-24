@@ -71,6 +71,64 @@ def test_one_error_names_every_bad_ticker_sorted() -> None:
     )
 
 
+def _series(*rows: tuple[str, float]) -> pd.DataFrame:
+    return pd.DataFrame(
+        {"AAA": [value for _, value in rows]}, index=pd.to_datetime([d for d, _ in rows])
+    )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([("2026-10-01", 50.0)], id="only-future"),
+        pytest.param([("2026-10-01", 50.0), ("2026-10-02", 51.0)], id="only-futures"),
+        pytest.param([("2026-09-30", 0.0)], id="zero"),
+        pytest.param([("2026-09-30", -5.0)], id="negative"),
+        pytest.param([("2026-09-30", 0.0), ("2026-10-01", 50.0)], id="zero-and-future"),
+    ],
+)
+def test_no_usable_close_is_missing(rows: list[tuple[str, float]]) -> None:
+    with pytest.raises(ValueError, match=re.escape("AAA (no finite close)")):
+        order_prices(_series(*rows), ["AAA"], as_of=AS_OF)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        pytest.param(
+            [("2026-09-29", 10.0), ("2026-10-01", 99.0)],
+            (10.0, date(2026, 9, 29)),
+            id="future-close-ignored",
+        ),
+        pytest.param(
+            [("2026-09-29", 12.0), ("2026-09-30", 0.0)],
+            (12.0, date(2026, 9, 29)),
+            id="zero-last-uses-earlier",
+        ),
+        pytest.param(
+            [("2026-09-29", 12.0), ("2026-09-30", -1.0)],
+            (12.0, date(2026, 9, 29)),
+            id="negative-last-uses-earlier",
+        ),
+        pytest.param(
+            [("2026-09-30", 14.0), ("2026-10-01", 99.0)],
+            (14.0, date(2026, 9, 30)),
+            id="close-on-as-of-counts",
+        ),
+    ],
+)
+def test_last_usable_close_on_or_before_as_of(
+    rows: list[tuple[str, float]], expected: tuple[float, date]
+) -> None:
+    assert order_prices(_series(*rows), ["AAA"], as_of=AS_OF) == {"AAA": expected}
+
+
+def test_a_non_positive_last_close_does_not_hide_staleness() -> None:
+    rows = [("2026-09-22", 12.0), ("2026-09-30", 0.0)]
+    with pytest.raises(ValueError, match=re.escape("AAA (last close 2026-09-22)")):
+        order_prices(_series(*rows), ["AAA"], as_of=AS_OF)
+
+
 def test_an_empty_column_has_no_price() -> None:
     empty = pd.DataFrame({"AAA": pd.Series([], dtype="float64")}, index=pd.DatetimeIndex([]))
     with pytest.raises(ValueError, match=re.escape("AAA (no finite close)")):

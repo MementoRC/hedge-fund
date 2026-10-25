@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
+from datetime import date
 
 from hedge_fund.domain.research import NameResearch, ResearchResult, RunRecord
 from hedge_fund.domain.shortlist import Shortlist
+from hedge_fund.engine.dates import previous_weekday
 from hedge_fund.engine.research.conviction import DEFAULT_CONVICTION, ConvictionParams, conviction
 from hedge_fund.ports.research import Researcher
-
-_WEEKEND_DAYS_BACK = {0: 3, 5: 1, 6: 2}  # Monday, Saturday, Sunday -> previous Friday
 
 
 def research_shortlist(
@@ -38,9 +37,9 @@ def research_shortlist(
     _validate_count("k", k)
     _validate_count("max_workers", max_workers)
     as_of = shortlist.as_of
-    if not _previous_weekday(today) <= as_of <= today:
+    if not previous_weekday(today) <= as_of <= today:
         raise ValueError(
-            f"as_of {as_of} is not live: must be between {_previous_weekday(today)} and {today}"
+            f"as_of {as_of} is not live: must be between {previous_weekday(today)} and {today}"
         )
     if not shortlist.candidates:
         return ResearchResult(as_of=as_of, names=())
@@ -98,11 +97,6 @@ def _run_one(researcher: Researcher, ticker: str, as_of: date, run_index: int) -
             f"{record.run_index}, expected {ticker!r} {as_of} run {run_index}",
         )
     return record
-
-
-def _previous_weekday(day: date) -> date:
-    """Previous Friday for Saturday, Sunday and Monday, otherwise the day before."""
-    return day - timedelta(days=_WEEKEND_DAYS_BACK.get(day.weekday(), 1))
 
 
 def _validate_count(name: str, value: object) -> None:

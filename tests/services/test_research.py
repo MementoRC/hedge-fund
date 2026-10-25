@@ -9,7 +9,7 @@ import pytest
 from hedge_fund.domain.research import Rating, RunRecord, Verdict
 from hedge_fund.domain.shortlist import Candidate, Shortlist, Side
 from hedge_fund.engine.research.conviction import ConvictionParams
-from hedge_fund.services.research import _previous_weekday, research_shortlist
+from hedge_fund.services.research import research_shortlist
 from tests.fakes import ScriptedResearcher
 
 AS_OF = date(2026, 9, 30)  # Wednesday
@@ -22,23 +22,6 @@ def _candidate(ticker: str, side: Side = Side.LONG) -> Candidate:
 
 def _shortlist(*candidates: Candidate, as_of: date = AS_OF) -> Shortlist:
     return Shortlist(as_of=as_of, candidates=candidates, trimmed={})
-
-
-# --- _previous_weekday -----------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("today", "expected"),
-    [
-        (date(2026, 10, 6), date(2026, 10, 5)),  # Tuesday -> Monday
-        (date(2026, 10, 2), date(2026, 10, 1)),  # Friday -> Thursday
-        (date(2026, 10, 3), date(2026, 10, 2)),  # Saturday -> Friday
-        (date(2026, 10, 4), date(2026, 10, 2)),  # Sunday -> Friday
-        (date(2026, 10, 5), date(2026, 10, 2)),  # Monday -> Friday
-    ],
-)
-def test_previous_weekday(today: date, expected: date) -> None:
-    assert _previous_weekday(today) == expected
 
 
 # --- orchestration ---------------------------------------------------------

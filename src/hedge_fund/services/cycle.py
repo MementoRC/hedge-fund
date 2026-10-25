@@ -25,6 +25,7 @@ from hedge_fund.domain.risk import NavHistory, RiskVerdict
 from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.account import nav_history
+from hedge_fund.engine.dates import previous_weekday
 from hedge_fund.engine.execution import (
     MARKET_TZ,
     SESSION_END,
@@ -54,7 +55,7 @@ from hedge_fund.services.approval import request_approval
 from hedge_fund.services.execution import execute_plan
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from hedge_fund.services.portfolio import build_portfolio, fetch_benchmark
-from hedge_fund.services.research import _previous_weekday, research_shortlist
+from hedge_fund.services.research import research_shortlist
 from hedge_fund.services.risk import assess_portfolio
 from hedge_fund.services.snapshots import build_snapshot
 from hedge_fund.universe import Universe
@@ -400,6 +401,6 @@ def _order_prices(
 
 def _check_live(as_of: date, today: date) -> None:
     """``research_shortlist``'s rule, checked before any broker read."""
-    earliest = _previous_weekday(today)
+    earliest = previous_weekday(today)
     if not earliest <= as_of <= today:
         raise ValueError(f"as_of {as_of} is not live: must be between {earliest} and {today}")

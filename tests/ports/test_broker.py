@@ -6,7 +6,7 @@ import pytest
 
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Holding, Order, OrderAction
-from hedge_fund.ports.broker import Broker, BrokerError
+from hedge_fund.ports.broker import Broker, BrokerError, OrderDataError
 from tests.fakes import SCRIPTED_REJECTION, ScriptedBroker
 
 CID = "hf-2026-10-21-A-sell-5"
@@ -16,6 +16,10 @@ REQUEST = OrderRequest(order=ORDER, client_order_id=CID)
 
 def test_broker_error_is_an_exception() -> None:
     assert issubclass(BrokerError, Exception)
+
+
+def test_order_data_error_is_a_broker_error() -> None:
+    assert issubclass(OrderDataError, BrokerError)
 
 
 def test_scripted_broker_satisfies_the_port() -> None:

@@ -13,14 +13,16 @@ import math
 import os
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import requests
 
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus
 from hedge_fund.domain.orders import Holding, OrderAction
-from hedge_fund.ports.broker import BrokerError
+from hedge_fund.ports.broker import BrokerError, OrderDataError
 
 BASE_URL = "https://paper-api.alpaca.markets"
 KEY_ID_ENV = "APCA_API_KEY_ID"
@@ -43,6 +45,26 @@ _ORDER_SIDE = {
     OrderAction.SELL_SHORT: "sell",
 }
 _DEAD_STATUSES = frozenset({"canceled", "expired", "rejected"})
+_ZERO_FILL_STATES = {
+    "canceled": OrderState.CANCELED,
+    "expired": OrderState.EXPIRED,
+    "rejected": OrderState.REJECTED,
+}
+_PENDING_STATUSES = frozenset(
+    {
+        "new",
+        "accepted",
+        "pending_new",
+        "accepted_for_bidding",
+        "partially_filled",
+        "done_for_day",
+        "pending_cancel",
+        "pending_replace",
+        "calculated",
+        "stopped",
+        "suspended",
+    }
+)
 
 HttpCall = Callable[..., Any]
 
@@ -145,6 +167,38 @@ class AlpacaPaperBroker:
         if status == 422:
             return self._resolve_422(request, _reason(response))
         raise BrokerError(f"{what}: HTTP {status}")
+
+    def order_status(self, client_order_id: str) -> OrderStatus:
+        """The order with ``client_order_id``, read-only.
+
+        404 -> NOT_FOUND. On 200: ``filled`` -> FILLED; ``canceled`` / ``expired`` /
+        ``rejected`` -> PARTIAL_TERMINAL when shares filled, else CANCELED / EXPIRED /
+        REJECTED; the statuses in _PENDING_STATUSES -> PENDING; any other status (``replaced``,
+        ``held``, ...) -> UNRECOGNISED with the raw status in ``broker_state``. An unusable
+        200 body raises OrderDataError; any other HTTP status or a transport failure raises
+        BrokerError.
+        """
+        response = self._get_response(LOOKUP_PATH, {"client_order_id": client_order_id})
+        status = response.status_code
+        if status == 404:
+            return OrderStatus(
+                client_order_id=client_order_id,
+                state=OrderState.NOT_FOUND,
+                broker_order_id=None,
+                ticker=None,
+                side=None,
+                filled_shares=Decimal(0),
+                avg_price=None,
+                filled_at=None,
+                broker_state=None,
+            )
+        if status != 200:
+            raise BrokerError(f"GET {LOOKUP_PATH}: HTTP {status}")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise OrderDataError(f"GET {LOOKUP_PATH}: invalid JSON: {exc}") from exc
+        return _order_status(body, client_order_id)
 
     def _resolve_422(self, request: OrderRequest, reason: str) -> SubmitResult:
         """Alpaca does not document its duplicate-id response, so look the id up.
@@ -279,6 +333,102 @@ def _existing_order(body: Any, client_order_id: str, what: str) -> tuple[str, st
     if not isinstance(order_id, str) or not order_id or not isinstance(status, str):
         raise BrokerError(f"{what}: order {client_order_id!r} lacks an id or a status")
     return order_id, status
+
+
+def _order_status(body: Any, client_order_id: str) -> OrderStatus:
+    """The OrderStatus of a 200 lookup body; OrderDataError when it is unusable.
+
+    ``filled_at`` is set for FILLED (``filled_at``) and PARTIAL_TERMINAL (``filled_at``, else
+    ``updated_at``, which Alpaca may set alone on a canceled or expired partial), else None.
+    """
+    if not isinstance(body, dict) or body.get("client_order_id") != client_order_id:
+        raise OrderDataError(f"GET {LOOKUP_PATH}: response is not the order {client_order_id!r}")
+    what = f"GET {LOOKUP_PATH}: order {client_order_id!r}"
+    asset_class = body.get("asset_class")
+    if asset_class != "us_equity":
+        raise OrderDataError(f"{what}: asset_class {asset_class!r} is not us_equity")
+    raw = _text(body, "status", what)
+    filled = _filled_qty(body.get("filled_qty"), what)
+    state = _state(raw, filled)
+    return OrderStatus(
+        client_order_id=client_order_id,
+        state=state,
+        broker_order_id=_text(body, "id", what),
+        ticker=_text(body, "symbol", what),
+        side=_text(body, "side", what),
+        filled_shares=filled,
+        avg_price=_avg_price(body.get("filled_avg_price"), what),
+        filled_at=_filled_at(body, state, what),
+        broker_state=raw,
+    )
+
+
+def _text(body: dict[str, Any], key: str, what: str) -> str:
+    value = body.get(key)
+    if not isinstance(value, str) or not value:
+        raise OrderDataError(f"{what}: {key} is missing or not a string")
+    return value
+
+
+def _filled_qty(value: Any, what: str) -> Decimal:
+    if not isinstance(value, str):
+        raise OrderDataError(f"{what}: filled_qty is missing or not a string")
+    try:
+        qty = Decimal(value)
+    except InvalidOperation as exc:
+        raise OrderDataError(f"{what}: filled_qty {value!r} is not a number") from exc
+    if not qty.is_finite() or qty < 0:
+        raise OrderDataError(f"{what}: filled_qty {value!r} is not a finite count")
+    return qty
+
+
+def _avg_price(value: Any, what: str) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise OrderDataError(f"{what}: filled_avg_price is not a string")
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise OrderDataError(f"{what}: filled_avg_price {value!r} is not a number") from exc
+
+
+def _state(raw: str, filled: Decimal) -> OrderState:
+    if raw == "filled":
+        return OrderState.FILLED
+    if raw in _ZERO_FILL_STATES:
+        return OrderState.PARTIAL_TERMINAL if filled > 0 else _ZERO_FILL_STATES[raw]
+    if raw in _PENDING_STATUSES:
+        return OrderState.PENDING
+    return OrderState.UNRECOGNISED
+
+
+def _filled_at(body: dict[str, Any], state: OrderState, what: str) -> datetime | None:
+    keys: tuple[str, ...]
+    if state is OrderState.FILLED:
+        keys = ("filled_at",)
+    elif state is OrderState.PARTIAL_TERMINAL:
+        keys = ("filled_at", "updated_at")
+    else:
+        return None
+    for key in keys:
+        value = body.get(key)
+        if value is not None:
+            return _timestamp(value, key, what)
+    raise OrderDataError(f"{what}: {state.value} order has no {' or '.join(keys)}")
+
+
+def _timestamp(value: Any, key: str, what: str) -> datetime:
+    """An ISO 8601 instant with an offset (``Z`` and 9 fractional digits accepted), in UTC."""
+    if not isinstance(value, str):
+        raise OrderDataError(f"{what}: {key} is not a string")
+    try:
+        parsed = datetime.fromisoformat(value)  # 3.11+: "Z", digits beyond 6 truncated
+    except ValueError as exc:
+        raise OrderDataError(f"{what}: {key} {value!r} is not an ISO 8601 timestamp") from exc
+    if parsed.utcoffset() is None:
+        raise OrderDataError(f"{what}: {key} {value!r} has no offset")
+    return parsed.astimezone(UTC)
 
 
 def _reason(response: Any) -> str:

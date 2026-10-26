@@ -12,6 +12,15 @@ class BrokerError(Exception):
     """A transport, auth, status or payload failure while talking to the broker."""
 
 
+class OrderDataError(BrokerError):
+    """One order's 200 body is unusable: unparsable JSON, a missing or invalid field, another
+    order's ``client_order_id``, a non-equity asset, or a filled order with no timestamp.
+
+    Settle records it against that order and carries on; a plain BrokerError (transport,
+    auth, unexpected HTTP status) stops the run.
+    """
+
+
 class Broker(Protocol):
     """Paper-trading broker. Implementations live in adapters/broker/.
 

@@ -3,13 +3,21 @@
 import dataclasses
 import hashlib
 import json
+import math
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
 
-from hedge_fund.adapters.research.store import JsonResearchStore, load_research, save_research
+from hedge_fund.adapters.research.store import (
+    JsonResearchStore,
+    decode_candidate,
+    decode_name,
+    decode_run,
+    load_research,
+    save_research,
+)
 from hedge_fund.domain.research import (
     NameResearch,
     Rating,
@@ -259,3 +267,53 @@ def test_json_store_rejects_a_missing_created_at(tmp_path: Path) -> None:
     path.write_text(json.dumps(body), encoding="utf-8")
     with pytest.raises(ValueError, match=f"{re.escape(path.name)}: malformed created_at"):
         JsonResearchStore(tmp_path).load(AS_OF)
+
+
+# --- public decoders --------------------------------------------------------------------
+
+
+def test_decode_candidate() -> None:
+    item = {"ticker": "AAPL", "sector": "Tech", "side": "short", "depth": 2, "composite": -1}
+    assert decode_candidate(item) == Candidate("AAPL", "Tech", Side.SHORT, 2, -1.0)
+
+
+def test_decoders_keep_null_stats() -> None:
+    name = _result().names[1]
+    payload = json.loads(json.dumps(dataclasses.asdict(name), default=str))
+    assert decode_name(payload) == name
+
+
+def test_decoders_turn_non_finite_strings_back() -> None:
+    run = {
+        "ticker": "AAPL",
+        "as_of": "2026-09-30",
+        "run_index": 0,
+        "rating": None,
+        "decision": "",
+        "reports": {},
+        "seconds": "inf",
+        "error": "RuntimeError: x",
+    }
+    item = {
+        "candidate": {
+            "ticker": "AAPL",
+            "sector": "Tech",
+            "side": "long",
+            "depth": 1,
+            "composite": "-inf",
+        },
+        "runs": [run],
+        "valid": 0,
+        "mean": "nan",
+        "std": "inf",
+        "agreement": "nan",
+        "verdict": "insufficient",
+    }
+    name = decode_name(item)
+    assert name.candidate.composite == -math.inf
+    assert decode_run(run).seconds == math.inf
+    assert name.mean is not None
+    assert math.isnan(name.mean)
+    assert name.std == math.inf
+    assert name.agreement is not None
+    assert math.isnan(name.agreement)

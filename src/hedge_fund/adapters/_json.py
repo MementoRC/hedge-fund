@@ -30,3 +30,19 @@ def jsonable(value: Any) -> Any:
     if isinstance(value, list | tuple):
         return [jsonable(item) for item in value]
     return value
+
+
+_NON_FINITE = {"nan": math.nan, "inf": math.inf, "-inf": -math.inf}
+
+
+def decode_float(value: Any) -> float:
+    """Inverse of ``jsonable`` for one float field: a JSON number, or ``"nan"`` / ``"inf"`` /
+    ``"-inf"``. ValueError for any other string, TypeError for a non-number (bools included).
+    """
+    if isinstance(value, str):
+        if value not in _NON_FINITE:
+            raise ValueError(f"{value!r} is not a float")
+        return _NON_FINITE[value]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{value!r} is not a float")
+    return float(value)

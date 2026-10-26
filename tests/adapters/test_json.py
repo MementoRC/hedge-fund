@@ -9,7 +9,7 @@ from enum import Enum
 
 import pytest
 
-from hedge_fund.adapters._json import jsonable
+from hedge_fund.adapters._json import decode_float, jsonable
 from hedge_fund.domain.orders import OrderAction
 
 
@@ -61,3 +61,35 @@ def test_mappings_and_sequences_recurse() -> None:
 
 def test_a_dataclass_type_is_not_expanded() -> None:
     assert jsonable(_Inner) is _Inner
+
+
+@pytest.mark.parametrize(("value", "expected"), [(1.5, 1.5), (2, 2.0)])
+def test_decode_float_takes_json_numbers(value: float, expected: float) -> None:
+    decoded = decode_float(value)
+    assert decoded == expected
+    assert type(decoded) is float
+
+
+@pytest.mark.parametrize(("text", "expected"), [("inf", math.inf), ("-inf", -math.inf)])
+def test_decode_float_turns_infinities_back(text: str, expected: float) -> None:
+    assert decode_float(text) == expected
+
+
+def test_decode_float_turns_nan_back() -> None:
+    assert math.isnan(decode_float("nan"))
+
+
+def test_decode_float_refuses_other_strings() -> None:
+    with pytest.raises(ValueError, match="'1.5' is not a float"):
+        decode_float("1.5")
+
+
+@pytest.mark.parametrize("value", [True, None, [1.0]])
+def test_decode_float_refuses_non_numbers(value: object) -> None:
+    with pytest.raises(TypeError, match="is not a float"):
+        decode_float(value)
+
+
+def test_decode_float_inverts_jsonable() -> None:
+    for value in (0.25, math.inf, -math.inf):
+        assert decode_float(jsonable(value)) == value

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, date, datetime
 
 import pytest
 
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
+from hedge_fund.domain.ledger import ReportLoad
 from hedge_fund.ports.cycle import CycleReportStore
 from tests.fakes import InMemoryReportStore
 
@@ -47,3 +49,15 @@ def test_in_memory_store_fails_when_told_to_and_keeps_nothing() -> None:
     with pytest.raises(OSError, match="disk full"):
         fake.save(REPORT)
     assert fake.saved == []
+
+
+def test_in_memory_store_loads_its_reports_by_started_at() -> None:
+    later = dataclasses.replace(REPORT, started_at=datetime(2026, 9, 30, 23, 0, tzinfo=UTC))
+    fake = InMemoryReportStore([later])
+    store: CycleReportStore = fake
+    store.save(REPORT)
+    fake.unreadable = {"bad.json": "ValueError: x"}
+    assert store.load_all() == ReportLoad(
+        reports=(REPORT, later), unreadable={"bad.json": "ValueError: x"}
+    )
+    assert InMemoryReportStore().load_all() == ReportLoad(reports=(), unreadable={})

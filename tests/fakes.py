@@ -11,7 +11,7 @@ import pandas as pd
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
-from hedge_fund.domain.ledger import OrderState, OrderStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus, ReportLoad
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
 
@@ -286,14 +286,22 @@ class InMemoryResearchStore:
 class InMemoryReportStore:
     """CycleReportStore keeping reports in ``saved``, in save order.
 
-    ``save`` raises ``fail`` instead, keeping nothing, when it is set.
+    ``save`` raises ``fail`` instead, keeping nothing, when it is set. ``load_all`` returns
+    the saved reports sorted by ``started_at`` and ``unreadable`` (a plain attribute).
     """
 
-    def __init__(self, *, fail: Exception | None = None) -> None:
-        self.saved: list[CycleReport] = []
+    def __init__(
+        self, reports: Sequence[CycleReport] = (), *, fail: Exception | None = None
+    ) -> None:
+        self.saved = list(reports)
         self.fail = fail
+        self.unreadable: dict[str, str] = {}
 
     def save(self, report: CycleReport) -> None:
         if self.fail is not None:
             raise self.fail
         self.saved.append(report)
+
+    def load_all(self) -> ReportLoad:
+        reports = tuple(sorted(self.saved, key=lambda report: report.started_at))
+        return ReportLoad(reports=reports, unreadable=dict(self.unreadable))

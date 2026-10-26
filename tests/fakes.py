@@ -3,6 +3,7 @@
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
@@ -10,6 +11,7 @@ import pandas as pd
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
 
@@ -130,6 +132,21 @@ SCRIPTED_REJECTION = "scripted rejection"
 BROKER_STATUSES = frozenset({SubmitStatus.ACCEPTED, SubmitStatus.DUPLICATE, SubmitStatus.REJECTED})
 
 
+def not_found(client_order_id: str) -> OrderStatus:
+    """The NOT_FOUND status a broker reports for an id it has never seen."""
+    return OrderStatus(
+        client_order_id=client_order_id,
+        state=OrderState.NOT_FOUND,
+        broker_order_id=None,
+        ticker=None,
+        side=None,
+        filled_shares=Decimal(0),
+        avg_price=None,
+        filled_at=None,
+        broker_state=None,
+    )
+
+
 class ScriptedBroker:
     """Broker returning a scripted status (or raising) per client_order_id; records submits.
 
@@ -138,6 +155,8 @@ class ScriptedBroker:
     submitted id is appended to ``submitted``, including ids whose script raises.
     ``account()`` and ``positions()`` raise ``account_error`` / ``positions_error`` when
     set; like ``equity`` and ``holdings`` they are plain attributes a test may change.
+    ``order_status`` returns the status scripted in ``orders`` (or raises it), else
+    ``not_found(id)``; every looked-up id is appended to ``looked_up``.
     """
 
     def __init__(
@@ -148,6 +167,7 @@ class ScriptedBroker:
         holdings: tuple[Holding, ...] = (),
         account_error: Exception | None = None,
         positions_error: Exception | None = None,
+        orders: Mapping[str, OrderStatus | BaseException] | None = None,
     ) -> None:
         self.script = dict(script or {})
         for outcome in self.script.values():
@@ -161,6 +181,8 @@ class ScriptedBroker:
         self.account_error = account_error
         self.positions_error = positions_error
         self.submitted: list[str] = []
+        self.orders = dict(orders or {})
+        self.looked_up: list[str] = []
 
     def account(self) -> Account:
         if self.account_error is not None:
@@ -188,6 +210,15 @@ class ScriptedBroker:
             broker_order_id=f"b-{client_order_id}",
             reason=None,
         )
+
+    def order_status(self, client_order_id: str) -> OrderStatus:
+        self.looked_up.append(client_order_id)
+        outcome = self.orders.get(client_order_id)
+        if outcome is None:
+            return not_found(client_order_id)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 class ScriptedApprovalGate:

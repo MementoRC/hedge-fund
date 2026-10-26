@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus
 from hedge_fund.domain.orders import Holding, Order, OrderAction
 from hedge_fund.ports.broker import Broker, BrokerError, OrderDataError
-from tests.fakes import SCRIPTED_REJECTION, ScriptedBroker
+from tests.fakes import SCRIPTED_REJECTION, ScriptedBroker, not_found
 
 CID = "hf-2026-10-21-A-sell-5"
 ORDER = Order(ticker="A", action=OrderAction.SELL, shares=5, ref_price=10.0, notional=50.0)
@@ -76,3 +79,34 @@ def test_scripted_broker_raises_scripted_exceptions() -> None:
     with pytest.raises(BrokerError, match="down"):
         fake.submit(REQUEST)
     assert fake.submitted == [CID]
+
+
+FILLED = OrderStatus(
+    client_order_id=CID,
+    state=OrderState.FILLED,
+    broker_order_id="b-1",
+    ticker="A",
+    side="sell",
+    filled_shares=Decimal("5"),
+    avg_price=10.0,
+    filled_at=None,
+    broker_state="filled",
+)
+
+
+def test_scripted_order_status_returns_the_script_or_not_found() -> None:
+    fake = ScriptedBroker(orders={CID: FILLED})
+    broker: Broker = fake
+    assert broker.order_status(CID) is FILLED
+    assert broker.order_status("hf-other") == not_found("hf-other")
+    assert not_found("hf-other").state is OrderState.NOT_FOUND
+    assert not_found("hf-other").filled_shares == Decimal("0")
+    assert fake.looked_up == [CID, "hf-other"]
+    assert fake.submitted == []
+
+
+def test_scripted_order_status_raises_scripted_exceptions() -> None:
+    fake = ScriptedBroker(orders={CID: BrokerError("down")})
+    with pytest.raises(BrokerError, match="down"):
+        fake.order_status(CID)
+    assert fake.looked_up == [CID]

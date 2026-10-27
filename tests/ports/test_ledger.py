@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -82,6 +82,16 @@ def test_in_memory_settlement_store_satisfies_the_port() -> None:
     store: SettlementReportStore = fake
     store.save(REPORT)
     assert fake.saved == [REPORT]
+
+
+def test_in_memory_settlement_store_refuses_a_repeat_as_of_and_second() -> None:
+    fake = InMemorySettlementStore()
+    fake.save(REPORT)
+    with pytest.raises(FileExistsError, match="2026-10-01"):
+        fake.save(dataclasses.replace(REPORT, started_at=AT + timedelta(microseconds=5)))
+    later = dataclasses.replace(REPORT, started_at=AT + timedelta(seconds=1))
+    fake.save(later)
+    assert fake.saved == [REPORT, later]
 
 
 def test_in_memory_settlement_store_fails_when_told_to_and_keeps_nothing() -> None:

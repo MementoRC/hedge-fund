@@ -2,7 +2,7 @@
 
 import threading
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import UTC, date
 from decimal import Decimal
 from typing import Any
 
@@ -352,7 +352,12 @@ class StaticOpeningBalance:
 
 
 class InMemorySettlementStore:
-    """SettlementReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set."""
+    """SettlementReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set.
+
+    Like JsonSettlementReportStore, whose file is named ``<as_of>_<HHMMSS>.json`` (UTC),
+    ``save`` raises FileExistsError for a report whose ``as_of`` and ``started_at`` second
+    were already saved.
+    """
 
     def __init__(self, *, fail: Exception | None = None) -> None:
         self.saved: list[SettlementReport] = []
@@ -361,4 +366,12 @@ class InMemorySettlementStore:
     def save(self, report: SettlementReport) -> None:
         if self.fail is not None:
             raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for a settle started in this second exists")
         self.saved.append(report)
+
+    @staticmethod
+    def _name(report: SettlementReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.as_of.isoformat()}_{stamp}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -187,3 +188,8 @@ def test_submitted_order_is_frozen() -> None:
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         submitted.acknowledged = False  # type: ignore[misc]
+
+
+def test_the_old_ledger_package_stub_is_gone() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("hedge_fund.ledger")

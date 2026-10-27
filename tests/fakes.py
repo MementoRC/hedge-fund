@@ -11,7 +11,14 @@ import pandas as pd
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
-from hedge_fund.domain.ledger import OrderState, OrderStatus, ReportLoad
+from hedge_fund.domain.ledger import (
+    Fill,
+    OpeningEntry,
+    OrderState,
+    OrderStatus,
+    ReportLoad,
+    SettlementReport,
+)
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
 
@@ -305,3 +312,53 @@ class InMemoryReportStore:
     def load_all(self) -> ReportLoad:
         reports = tuple(sorted(self.saved, key=lambda report: report.started_at))
         return ReportLoad(reports=reports, unreadable=dict(self.unreadable))
+
+
+class InMemoryFillStore:
+    """FillStore keeping fills in ``saved``, in save order.
+
+    ``save`` raises FileExistsError for an id already saved, keeping the first; ``load_all``
+    raises ``load_error`` when it is set.
+    """
+
+    def __init__(self, fills: Sequence[Fill] = (), *, load_error: Exception | None = None) -> None:
+        self.saved = list(fills)
+        self.load_error = load_error
+
+    def save(self, fill: Fill) -> None:
+        if any(saved.client_order_id == fill.client_order_id for saved in self.saved):
+            raise FileExistsError(f"fill {fill.client_order_id!r} is already recorded")
+        self.saved.append(fill)
+
+    def load_all(self) -> tuple[Fill, ...]:
+        if self.load_error is not None:
+            raise self.load_error
+        return tuple(self.saved)
+
+
+class StaticOpeningBalance:
+    """OpeningBalance returning ``entries``, or raising ``error`` when it is set."""
+
+    def __init__(
+        self, entries: Sequence[OpeningEntry] = (), *, error: Exception | None = None
+    ) -> None:
+        self.entries = tuple(entries)
+        self.error = error
+
+    def load(self) -> tuple[OpeningEntry, ...]:
+        if self.error is not None:
+            raise self.error
+        return self.entries
+
+
+class InMemorySettlementStore:
+    """SettlementReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set."""
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[SettlementReport] = []
+        self.fail = fail
+
+    def save(self, report: SettlementReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        self.saved.append(report)

@@ -1,11 +1,13 @@
-"""Run-once CLI: ``hedge-fund cycle`` runs one paper-trading cycle (Layer 6d).
+"""Run-once CLI: ``hedge-fund cycle`` runs one paper-trading cycle (Layer 6d) and
+``hedge-fund settle`` records what it filled (Layer 7a).
 
-This is the only composition root: ``build_deps`` builds the real adapters and ``clock``
-is the only clock read. Tests replace both. Paper trading only.
+This is the only composition root: ``build_deps`` and ``build_settle_deps`` build the real
+adapters and ``clock`` is the only clock read. Tests replace them. Paper trading only.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -18,20 +20,34 @@ from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
+from hedge_fund.adapters.ledger import (
+    JsonFillStore,
+    JsonOpeningBalance,
+    JsonSettlementReportStore,
+)
+from hedge_fund.adapters.ledger.settlement_report import SETTLEMENTS_DIR
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import ResearchConfig, TradingAgentsResearcher
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
+from hedge_fund.domain.ledger import Fill, MarkedLot, SettlementReport, SettleOutcome
 from hedge_fund.domain.research import ResearchResult
 from hedge_fund.domain.risk import RiskVerdict
 from hedge_fund.engine.execution import MARKET_TZ
 from hedge_fund.ports.broker import BrokerError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.services.cycle import CycleDeps, ReportSaveError, SubmissionWindowError, run_cycle
+from hedge_fund.services.settle import SettleDeps, SettlementSaveError, run_settle
 from hedge_fund.universe import load_universe
 
 UNIVERSE = "sp500"
 _FAILED_LEGS = frozenset({SubmitStatus.ERROR, SubmitStatus.REJECTED})
+_SETTLE_EXIT: Mapping[SettleOutcome, int] = {
+    SettleOutcome.CLEAN: 0,
+    SettleOutcome.PENDING: 0,
+    SettleOutcome.BREAK: 2,
+    SettleOutcome.UNSETTLED: 1,
+}
 
 app = typer.Typer(add_completion=False)
 
@@ -64,6 +80,23 @@ def build_deps(root: Path) -> CycleDeps:
         snapshot_store=JsonSnapshotStore(root),
         gate=ConsoleApprovalGate(),
         report_store=JsonCycleReportStore(root),
+    )
+
+
+def build_settle_deps(root: Path) -> SettleDeps:
+    """The real adapters for ``settle``, with every file under ``root``.
+
+    The broker is built first, so missing Alpaca credentials (BrokerError) fail before
+    anything is read. Prices come from the cycle's cache (``root/cache/prices``).
+    """
+    broker = AlpacaPaperBroker()
+    return SettleDeps(
+        broker=broker,
+        prices=default_provider(root / "cache" / "prices", UNIVERSE),
+        cycle_reports=JsonCycleReportStore(root),
+        fills=JsonFillStore(root),
+        opening=JsonOpeningBalance(root),
+        report_store=JsonSettlementReportStore(root),
     )
 
 
@@ -110,6 +143,42 @@ def cycle(
         _fail(f"{type(exc).__name__}: {exc}; the partial report is under {runs}", exc)
     typer.echo(_summary(report, runs))
     raise typer.Exit(_exit_code(report))
+
+
+@app.command()
+def settle(
+    as_of: Annotated[
+        datetime | None,
+        typer.Option(
+            "--as-of", formats=["%Y-%m-%d"], help="Date of the marks. Default: today in New York."
+        ),
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Data root.")] = Path("data"),
+) -> None:
+    """Record final fills, rebuild and reconcile the lots, mark them, and save a report.
+
+    Exit 0 when clean or pending, 2 on a reconciliation break, 1 when an order is unsettled
+    or the run fails.
+    """
+    settlements = root / SETTLEMENTS_DIR
+    try:
+        deps = build_settle_deps(root)
+    except (BrokerError, ValueError) as exc:
+        _fail(f"cannot start settlement: {exc}", exc)
+    today = clock().astimezone(MARKET_TZ).date()
+    day = today if as_of is None else as_of.date()
+    try:
+        report = run_settle(deps, as_of=day, today=today, now=clock)
+    except SettlementSaveError as exc:
+        typer.echo(_settle_summary(exc.report, settlements))
+        typer.echo(f"error: the settlement report was not saved: {exc.__cause__!r}", err=True)
+        raise typer.Exit(max(_SETTLE_EXIT[exc.report.outcome], 1)) from exc
+    except KeyboardInterrupt as exc:
+        _fail(f"interrupted; the partial report is under {settlements}", exc)
+    except Exception as exc:
+        _fail(f"{type(exc).__name__}: {exc}; the partial report is under {settlements}", exc)
+    typer.echo(_settle_summary(report, settlements))
+    raise typer.Exit(_SETTLE_EXIT[report.outcome])
 
 
 def _fail(message: str, cause: BaseException) -> NoReturn:
@@ -160,3 +229,55 @@ def _verdict_line(verdict: RiskVerdict) -> str:
     if verdict.approved:
         return "approved"
     return f"vetoed ({len(verdict.violations)} violations)"
+
+
+def _settle_summary(report: SettlementReport, settlements: Path) -> str:
+    """Outcome, new fills, pending, unsettled, unreadable files, breaks, marks and totals."""
+    lines = [f"outcome: {report.outcome.value}", f"as_of: {report.as_of}"]
+    lines += _section("new fills", [_fill_line(fill) for fill in report.new_fills])
+    lines += _section(
+        "pending",
+        [f"{order.client_order_id} ({order.ticker}): {order.reason}" for order in report.pending],
+    )
+    lines += _section(
+        "unsettled",
+        [
+            f"{order.client_order_id} ({order.ticker or '?'}): {order.reason}"
+            for order in report.unsettled
+        ],
+    )
+    lines += _section(
+        "unreadable run files",
+        [f"{name}: {reason}" for name, reason in report.unreadable_reports.items()],
+    )
+    lines += _section(
+        "breaks",
+        [f"{b.ticker}: ledger {b.ledger_shares}, broker {b.broker_shares}" for b in report.breaks],
+    )
+    lines += _section("open lots", [_lot_line(marked) for marked in report.open_lots])
+    unmarked = sorted({lot.ticker for lot in report.unmarked})
+    lines.append(f"unmarked: {', '.join(unmarked) if unmarked else 'none'}")
+    lines.append(f"realised: {report.realised_total:,.2f}")
+    lines.append(f"unrealised: {report.unrealised_total:,.2f}")
+    lines.append(f"settlements: {settlements}")
+    return "\n".join(lines)
+
+
+def _section(title: str, rows: Sequence[str]) -> list[str]:
+    return [f"{title}: {len(rows)}", *(f"  {row}" for row in rows)]
+
+
+def _fill_line(fill: Fill) -> str:
+    price = "" if fill.avg_price is None else f" @ {fill.avg_price:,.2f}"
+    return (
+        f"{fill.client_order_id}: {fill.status.value} "
+        f"{fill.filled_shares}/{fill.requested_shares}{price}"
+    )
+
+
+def _lot_line(marked: MarkedLot) -> str:
+    lot = marked.lot
+    return (
+        f"{lot.ticker} {lot.shares:+d} @ {lot.entry_price:,.2f}, close {marked.price:,.2f} "
+        f"on {marked.close_date}: {marked.unrealised_pnl:+,.2f}"
+    )

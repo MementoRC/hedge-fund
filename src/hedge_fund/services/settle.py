@@ -16,8 +16,10 @@ from datetime import date, datetime, timedelta
 from hedge_fund.domain.ledger import (
     ClosedLot,
     Fill,
+    FillStatus,
     Lot,
     MarkedLot,
+    OrderState,
     PendingOrder,
     ReconciliationBreak,
     SettlementReport,
@@ -30,17 +32,19 @@ from hedge_fund.engine.dates import previous_weekday
 from hedge_fund.engine.ledger import (
     build_lots,
     canonical_symbol,
+    fill_deadline,
     mark,
     reconcile,
     submitted_orders,
     to_fill,
 )
-from hedge_fund.ports.broker import Broker
+from hedge_fund.ports.broker import Broker, OrderDataError
 from hedge_fund.ports.cycle import CycleReportStore
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.ledger import FillStore, OpeningBalance, SettlementReportStore
 
 MARK_DAYS = 14  # calendar days of closes fetched to mark the open lots
+ACKNOWLEDGED_NOT_FOUND = "acknowledged by broker but not found"
 
 
 class SettlementSaveError(Exception):
@@ -183,11 +187,67 @@ def _settle(deps: SettleDeps, run: _Settle, *, today: date, now: Callable[[], da
 def _look_up(
     deps: SettleDeps, run: _Settle, order: SubmittedOrder, now: Callable[[], datetime]
 ) -> None:
-    """Step 3 for one id: a final status becomes a fill, saved at once."""
+    """Step 3 for one id: record a final fill, or list the id as pending or unsettled.
+
+    An OrderDataError, an UNRECOGNISED status or a ``to_fill`` refusal makes the id
+    unsettled and the loop goes on; any other BrokerError propagates and stops the run.
+    """
     request = order.request
-    status = deps.broker.order_status(request.client_order_id)
-    fill = to_fill(status, request, cycle_as_of=order.cycle_as_of, recorded_at=now())
-    _record(deps, run, fill)
+    client_order_id, ticker = request.client_order_id, request.order.ticker
+    try:
+        status = deps.broker.order_status(client_order_id)
+    except OrderDataError as exc:
+        run.unsettled.append(UnsettledOrder(client_order_id, ticker, str(exc)))
+        return
+    if status.state is OrderState.PENDING:
+        run.pending.append(
+            PendingOrder(client_order_id, ticker, f"open at broker: {status.broker_state}")
+        )
+    elif status.state is OrderState.UNRECOGNISED:
+        reason = f"unrecognised broker status {status.broker_state!r}"
+        run.unsettled.append(UnsettledOrder(client_order_id, ticker, reason))
+    elif status.state is OrderState.NOT_FOUND:
+        _not_found(deps, run, order, now)
+    else:
+        try:
+            fill = to_fill(status, request, cycle_as_of=order.cycle_as_of, recorded_at=now())
+        except ValueError as exc:
+            run.unsettled.append(UnsettledOrder(client_order_id, ticker, str(exc)))
+            return
+        _record(deps, run, fill)
+
+
+def _not_found(
+    deps: SettleDeps, run: _Settle, order: SubmittedOrder, now: Callable[[], datetime]
+) -> None:
+    """An acknowledged id is unsettled (never NOT_SUBMITTED); an unacknowledged one is
+    pending until ``fill_deadline`` of its first cycle, then a zero-share NOT_SUBMITTED fill.
+    """
+    request = order.request
+    client_order_id, ticker = request.client_order_id, request.order.ticker
+    if order.acknowledged:
+        run.unsettled.append(UnsettledOrder(client_order_id, ticker, ACKNOWLEDGED_NOT_FOUND))
+        return
+    deadline = fill_deadline(order.started_at)
+    at = now()
+    if at < deadline:
+        reason = f"not found before {deadline.isoformat()}"
+        run.pending.append(PendingOrder(client_order_id, ticker, reason))
+        return
+    never = Fill(
+        client_order_id=client_order_id,
+        broker_order_id=None,
+        cycle_as_of=order.cycle_as_of,
+        ticker=ticker,
+        action=request.order.action,
+        requested_shares=request.order.shares,
+        filled_shares=0,
+        avg_price=None,
+        filled_at=None,
+        status=FillStatus.NOT_SUBMITTED,
+        recorded_at=at,
+    )
+    _record(deps, run, never)
 
 
 def _record(deps: SettleDeps, run: _Settle, fill: Fill) -> None:

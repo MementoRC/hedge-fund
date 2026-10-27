@@ -23,6 +23,7 @@ from hedge_fund.domain.ledger import (
     OpeningEntry,
     OrderState,
     OrderStatus,
+    PendingOrder,
     ReconciliationBreak,
     SettlementReport,
     SettleOutcome,
@@ -30,9 +31,14 @@ from hedge_fund.domain.ledger import (
 )
 from hedge_fund.domain.orders import Holding, Order, OrderAction, OrderPlan
 from hedge_fund.engine.ledger import NO_PLANNED_ORDER
-from hedge_fund.ports.broker import BrokerError
+from hedge_fund.ports.broker import BrokerError, OrderDataError
 from hedge_fund.ports.data import DataProviderError
-from hedge_fund.services.settle import SettleDeps, SettlementSaveError, run_settle
+from hedge_fund.services.settle import (
+    ACKNOWLEDGED_NOT_FOUND,
+    SettleDeps,
+    SettlementSaveError,
+    run_settle,
+)
 from tests.fakes import (
     FakeProvider,
     InMemoryFillStore,
@@ -466,3 +472,225 @@ def test_a_failed_run_whose_report_cannot_be_saved_raises_the_original_error() -
     with pytest.raises(BrokerError, match="down") as info:
         _settle(world)
     assert info.value.__notes__ == ["the settlement report could not be saved: OSError: disk full"]
+
+
+# --- the lookup loop ---------------------------------------------------------------------
+
+
+def _not_final(order: Order, state: OrderState, broker_state: str) -> OrderStatus:
+    return dataclasses.replace(
+        _filled(order),
+        state=state,
+        filled_shares=Decimal(0),
+        avg_price=None,
+        filled_at=None,
+        broker_state=broker_state,
+    )
+
+
+def test_an_open_order_is_pending_and_its_ticker_is_not_a_break() -> None:
+    world = World()  # HOLDINGS has BBB -5: the order filled after the lookup
+    world.script(SHORT_BBB, _not_final(SHORT_BBB, OrderState.PENDING, "accepted"))
+    report = _settle(world)
+    assert report.outcome is SettleOutcome.PENDING
+    assert report.pending == (PendingOrder(_cid(SHORT_BBB), "BBB", "open at broker: accepted"),)
+    assert report.breaks == ()
+    assert [fill.ticker for fill in report.new_fills] == ["AAA", "CCC"]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        pytest.param(
+            _not_final(SHORT_BBB, OrderState.UNRECOGNISED, "held"),
+            "unrecognised broker status 'held'",
+            id="unrecognised",
+        ),
+        pytest.param(
+            OrderDataError("GET /v2/orders:by_client_order_id: order 'x': side is missing"),
+            "GET /v2/orders:by_client_order_id: order 'x': side is missing",
+            id="order-data-error",
+        ),
+        pytest.param(
+            dataclasses.replace(_filled(SHORT_BBB), side="buy"),
+            "side 'buy' does not match sell_short",
+            id="to-fill-refusal",
+        ),
+    ],
+)
+def test_an_order_that_cannot_be_recorded_is_unsettled_and_the_loop_goes_on(
+    outcome: OrderStatus | Exception, reason: str
+) -> None:
+    world = World()
+    world.script(SHORT_BBB, outcome)
+    report = _settle(world)
+    assert report.outcome is SettleOutcome.UNSETTLED
+    assert report.unsettled == (UnsettledOrder(_cid(SHORT_BBB), "BBB", reason),)
+    assert world.broker.looked_up == sorted(ALL_FILLED)
+    assert [fill.client_order_id for fill in world.fills.saved] == [
+        _cid(BUY_AAA),
+        _cid(SELL_CCC),
+    ]
+    assert report.breaks == ()  # BBB -5 at the broker, no BBB lot: excluded, not a break
+
+
+def test_error_legs_are_looked_up() -> None:
+    world = World(
+        cycle_reports=InMemoryReportStore([_cycle((BUY_AAA, SubmitStatus.ERROR))]),
+        opening=StaticOpeningBalance(),
+    )
+    world.broker.holdings = (Holding("AAA", 10),)
+    report = _settle(world)
+    assert world.broker.looked_up == [_cid(BUY_AAA)]
+    assert report.new_fills == (_fill(BUY_AAA),)
+    assert report.outcome is SettleOutcome.CLEAN
+
+
+def _unacknowledged_world(status: SubmitStatus = SubmitStatus.ERROR) -> World:
+    """One BUY 10 AAA leg the broker cannot find; no positions, no opening."""
+    return World(
+        broker=ScriptedBroker(),
+        cycle_reports=InMemoryReportStore([_cycle((BUY_AAA, status))]),
+        opening=StaticOpeningBalance(),
+    )
+
+
+def test_an_unacknowledged_order_not_found_before_the_deadline_is_pending() -> None:
+    world = _unacknowledged_world()
+    report = _settle(world, now=DEADLINE - timedelta(seconds=1))
+    assert report.outcome is SettleOutcome.PENDING
+    assert report.pending == (
+        PendingOrder(_cid(BUY_AAA), "AAA", "not found before 2026-10-01T20:00:00+00:00"),
+    )
+    assert world.fills.saved == []
+
+
+@pytest.mark.parametrize(
+    "now",
+    [
+        pytest.param(DEADLINE, id="at-the-deadline"),
+        pytest.param(DEADLINE + timedelta(hours=3), id="after"),
+    ],
+)
+def test_an_unacknowledged_order_not_found_after_the_deadline_is_not_submitted(
+    now: datetime,
+) -> None:
+    world = _unacknowledged_world()
+    report = _settle(world, now=now)
+    never = Fill(
+        client_order_id=_cid(BUY_AAA),
+        broker_order_id=None,
+        cycle_as_of=CYCLE_DAY,
+        ticker="AAA",
+        action=OrderAction.BUY,
+        requested_shares=10,
+        filled_shares=0,
+        avg_price=None,
+        filled_at=None,
+        status=FillStatus.NOT_SUBMITTED,
+        recorded_at=now,
+    )
+    assert report.new_fills == (never,)
+    assert world.fills.saved == [never]
+    assert report.outcome is SettleOutcome.CLEAN
+
+
+@pytest.mark.parametrize(
+    "now",
+    [pytest.param(MORNING, id="before-deadline"), pytest.param(DEADLINE, id="after-deadline")],
+)
+def test_an_acknowledged_order_not_found_is_unsettled_and_never_recorded(now: datetime) -> None:
+    world = _unacknowledged_world(SubmitStatus.ACCEPTED)
+    report = _settle(world, now=now)
+    assert report.outcome is SettleOutcome.UNSETTLED
+    assert report.unsettled == (UnsettledOrder(_cid(BUY_AAA), "AAA", ACKNOWLEDGED_NOT_FOUND),)
+    assert ACKNOWLEDGED_NOT_FOUND == "acknowledged by broker but not found"
+    assert world.fills.saved == []
+
+
+# --- precedence and totals ---------------------------------------------------------------
+
+BROKEN_AAA = (Holding("AAA", 12), Holding("BBB", -5))
+
+
+@pytest.mark.parametrize(
+    ("bbb", "outcome"),
+    [
+        pytest.param(OrderState.UNRECOGNISED, SettleOutcome.UNSETTLED, id="unsettled-over-break"),
+        pytest.param(OrderState.PENDING, SettleOutcome.BREAK, id="break-over-pending"),
+    ],
+)
+def test_outcome_precedence_and_every_list_is_reported(
+    bbb: OrderState, outcome: SettleOutcome
+) -> None:
+    world = World(broker=ScriptedBroker(orders=ALL_FILLED, holdings=BROKEN_AAA))
+    world.script(SHORT_BBB, _not_final(SHORT_BBB, bbb, "held"))
+    report = _settle(world)
+    assert report.outcome is outcome
+    assert report.breaks == (ReconciliationBreak("AAA", 10, 12),)
+    assert len(report.pending) + len(report.unsettled) == 1
+
+
+def test_an_error_outranks_unsettled_and_keeps_the_lists() -> None:
+    world = World(
+        broker=ScriptedBroker(
+            orders=ALL_FILLED, holdings=HOLDINGS, positions_error=BrokerError("down")
+        )
+    )
+    world.script(SHORT_BBB, _not_final(SHORT_BBB, OrderState.UNRECOGNISED, "held"))
+    with pytest.raises(BrokerError):
+        _settle(world)
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (SettleOutcome.ERROR, "positions")
+    assert [order.ticker for order in report.unsettled] == ["BBB"]
+    assert len(report.new_fills) == 2
+
+
+def test_totals_leave_out_broken_pending_unsettled_and_unmarked_tickers() -> None:
+    names = ("G", "K", "M", "P", "U")  # good, break, unmarked, pending, unsettled
+    earlier = datetime(2026, 9, 15, 13, 30, tzinfo=UTC)
+    recorded = [
+        Fill(
+            client_order_id=f"hf-2026-09-14-{name}-sell-5",
+            broker_order_id=f"b-{name}",
+            cycle_as_of=date(2026, 9, 14),
+            ticker=name,
+            action=OrderAction.SELL,
+            requested_shares=5,
+            filled_shares=5,
+            avg_price=12.0,  # each realises (12 - 10) * 5 = 10.00
+            filled_at=earlier,
+            status=FillStatus.FILLED,
+            recorded_at=earlier,
+        )
+        for name in names
+    ]
+    buy_p = Order(ticker="P", action=OrderAction.BUY, shares=1, ref_price=10.0, notional=10.0)
+    buy_u = dataclasses.replace(buy_p, ticker="U")
+    world = World(
+        broker=ScriptedBroker(
+            orders={
+                _cid(buy_p): _not_final(buy_p, OrderState.PENDING, "new"),
+                _cid(buy_u): _not_final(buy_u, OrderState.UNRECOGNISED, "held"),
+            },
+            holdings=tuple(Holding(name, 7 if name == "K" else 5) for name in names),
+        ),
+        prices=FakeProvider(
+            pd.DataFrame(
+                {name: [11.0] for name in ("G", "K", "P", "U")}, index=pd.to_datetime([AS_OF])
+            ),
+            {},
+        ),
+        cycle_reports=InMemoryReportStore(
+            [_cycle((buy_p, SubmitStatus.ACCEPTED), (buy_u, SubmitStatus.ACCEPTED))]
+        ),
+        fills=InMemoryFillStore(recorded),
+        opening=StaticOpeningBalance([OpeningEntry(name, 10, 10.0, OPENED) for name in names]),
+    )
+    report = _settle(world)
+    assert report.outcome is SettleOutcome.UNSETTLED
+    assert [closed.ticker for closed in report.closed_lots] == list(names)
+    assert [marked.lot.ticker for marked in report.open_lots] == ["G", "K", "P", "U"]
+    assert [lot.ticker for lot in report.unmarked] == ["M"]
+    assert report.breaks == (ReconciliationBreak("K", 5, 7),)
+    assert (report.realised_total, report.unrealised_total) == (10.0, 5.0)  # G only

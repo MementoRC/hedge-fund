@@ -11,6 +11,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+from hedge_fund.adapters._json import decode_float
 from hedge_fund.adapters.data._atomic import atomic_write
 from hedge_fund.domain.research import NameResearch, Rating, ResearchResult, RunRecord, Verdict
 from hedge_fund.domain.shortlist import Candidate, Side
@@ -87,7 +88,7 @@ def load_research(path: Path) -> ResearchResult:
     try:
         return ResearchResult(
             as_of=date.fromisoformat(file_as_of),
-            names=tuple(_name(item) for item in payload["names"]),
+            names=tuple(decode_name(item) for item in payload["names"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"{path.name}: malformed research file") from exc
@@ -131,26 +132,32 @@ def _digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def _name(item: Mapping[str, Any]) -> NameResearch:
-    candidate = item["candidate"]
+def decode_candidate(item: Mapping[str, Any]) -> Candidate:
+    """A Candidate from its JSON object; KeyError, TypeError or ValueError if malformed."""
+    return Candidate(
+        ticker=item["ticker"],
+        sector=item["sector"],
+        side=Side(item["side"]),
+        depth=item["depth"],
+        composite=decode_float(item["composite"]),
+    )
+
+
+def decode_name(item: Mapping[str, Any]) -> NameResearch:
+    """A NameResearch from its JSON object (floats through ``decode_float``)."""
     return NameResearch(
-        candidate=Candidate(
-            ticker=candidate["ticker"],
-            sector=candidate["sector"],
-            side=Side(candidate["side"]),
-            depth=candidate["depth"],
-            composite=candidate["composite"],
-        ),
-        runs=tuple(_run(run) for run in item["runs"]),
+        candidate=decode_candidate(item["candidate"]),
+        runs=tuple(decode_run(run) for run in item["runs"]),
         valid=item["valid"],
-        mean=item["mean"],
-        std=item["std"],
-        agreement=item["agreement"],
+        mean=_optional_float(item["mean"]),
+        std=_optional_float(item["std"]),
+        agreement=_optional_float(item["agreement"]),
         verdict=Verdict(item["verdict"]),
     )
 
 
-def _run(item: Mapping[str, Any]) -> RunRecord:
+def decode_run(item: Mapping[str, Any]) -> RunRecord:
+    """A RunRecord from its JSON object (floats through ``decode_float``)."""
     rating = item["rating"]
     return RunRecord(
         ticker=item["ticker"],
@@ -159,6 +166,10 @@ def _run(item: Mapping[str, Any]) -> RunRecord:
         rating=None if rating is None else Rating(rating),
         decision=item["decision"],
         reports=dict(item["reports"]),
-        seconds=item["seconds"],
+        seconds=decode_float(item["seconds"]),
         error=item["error"],
     )
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else decode_float(value)

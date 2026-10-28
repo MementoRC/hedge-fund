@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 import inspect
 import time
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -12,8 +14,9 @@ import requests
 
 from hedge_fund.adapters.broker.alpaca import BASE_URL, AlpacaPaperBroker
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus
 from hedge_fund.domain.orders import Holding, Order, OrderAction
-from hedge_fund.ports.broker import Broker, BrokerError
+from hedge_fund.ports.broker import Broker, BrokerError, OrderDataError
 
 KEY_ID = "test-key-id"
 SECRET = "test-secret"  # noqa: S105  # nosec B105 (fake test key)
@@ -598,6 +601,215 @@ def test_lookup_is_throttled_after_the_post() -> None:
     post = FakePost(FakeResponse(422, NOT_UNIQUE))
     _broker(get, post, fake_time).submit(REQUEST)
     assert fake_time.sleeps == [pytest.approx(0.3)]
+
+
+# --- order_status -----------------------------------------------------------------------
+
+SCID = "hf-2026-09-30-AAA-buy-10"
+OPEN = datetime(2026, 10, 1, 13, 30, tzinfo=UTC)
+PENDING_STATUSES = [
+    "new",
+    "accepted",
+    "pending_new",
+    "accepted_for_bidding",
+    "partially_filled",
+    "done_for_day",
+    "pending_cancel",
+    "pending_replace",
+    "calculated",
+    "stopped",
+    "suspended",
+]
+
+
+def _order(**overrides: Any) -> dict[str, Any]:
+    return {
+        "id": "ord-1",
+        "client_order_id": SCID,
+        "status": "filled",
+        "symbol": "AAA",
+        "side": "buy",
+        "asset_class": "us_equity",
+        "qty": "10",
+        "filled_qty": "10",
+        "filled_avg_price": "101.25",
+        "filled_at": "2026-10-01T13:30:00Z",
+        "updated_at": "2026-10-01T13:30:01Z",
+        **overrides,
+    }
+
+
+def _order_without(key: str) -> dict[str, Any]:
+    body = _order()
+    del body[key]
+    return body
+
+
+def _status(payload: Any, status_code: int = 200) -> OrderStatus:
+    return _broker(FakeGet(FakeResponse(status_code, payload))).order_status(SCID)
+
+
+def test_order_status_looks_the_id_up_and_parses_a_filled_order() -> None:
+    get, post = FakeGet(FakeResponse(200, _order())), FakePost()
+    assert _broker(get, post).order_status(SCID) == OrderStatus(
+        client_order_id=SCID,
+        state=OrderState.FILLED,
+        broker_order_id="ord-1",
+        ticker="AAA",
+        side="buy",
+        filled_shares=Decimal("10"),
+        avg_price=101.25,
+        filled_at=OPEN,
+        broker_state="filled",
+    )
+    assert get.calls == [
+        (LOOKUP_URL, {"headers": HEADERS, "params": {"client_order_id": SCID}, "timeout": 30})
+    ]
+    assert post.calls == []
+
+
+def test_404_is_not_found() -> None:
+    assert _status({"message": "order not found"}, 404) == OrderStatus(
+        client_order_id=SCID,
+        state=OrderState.NOT_FOUND,
+        broker_order_id=None,
+        ticker=None,
+        side=None,
+        filled_shares=Decimal("0"),
+        avg_price=None,
+        filled_at=None,
+        broker_state=None,
+    )
+
+
+@pytest.mark.parametrize("raw", ["canceled", "expired", "rejected"])
+def test_a_dead_order_with_shares_is_partial_terminal(raw: str) -> None:
+    status = _status(_order(status=raw, filled_qty="4"))
+    assert (status.state, status.filled_shares, status.broker_state) == (
+        OrderState.PARTIAL_TERMINAL,
+        Decimal("4"),
+        raw,
+    )
+    assert status.filled_at == OPEN
+
+
+@pytest.mark.parametrize(
+    ("raw", "state"),
+    [
+        ("canceled", OrderState.CANCELED),
+        ("expired", OrderState.EXPIRED),
+        ("rejected", OrderState.REJECTED),
+    ],
+)
+def test_a_dead_order_without_shares_keeps_its_state(raw: str, state: OrderState) -> None:
+    status = _status(_order(status=raw, filled_qty="0", filled_avg_price=None, filled_at=None))
+    assert (status.state, status.filled_shares, status.avg_price, status.filled_at) == (
+        state,
+        Decimal("0"),
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("raw", PENDING_STATUSES)
+def test_open_statuses_are_pending(raw: str) -> None:
+    status = _status(_order(status=raw, filled_qty="0", filled_avg_price=None, filled_at=None))
+    assert (status.state, status.broker_state, status.filled_at) == (OrderState.PENDING, raw, None)
+
+
+@pytest.mark.parametrize("raw", ["replaced", "held", "something_new"])
+def test_other_statuses_are_unrecognised_with_the_raw_status(raw: str) -> None:
+    status = _status(_order(status=raw))
+    assert (status.state, status.broker_state) == (OrderState.UNRECOGNISED, raw)
+
+
+def test_quantities_are_decimals_and_a_null_price_is_none() -> None:
+    status = _status(_order(status="new", filled_qty="2.5", filled_avg_price=None))
+    assert status.filled_shares == Decimal("2.5")
+    assert status.avg_price is None
+
+
+@pytest.mark.parametrize(
+    ("filled_at", "expected"),
+    [
+        pytest.param("2026-10-01T13:30:00Z", OPEN, id="z-suffix"),
+        pytest.param("2026-10-01T09:30:00-04:00", OPEN, id="offset"),
+        pytest.param(
+            "2026-10-01T13:30:00.123456789Z",
+            datetime(2026, 10, 1, 13, 30, 0, 123456, tzinfo=UTC),
+            id="nine-fractional-digits",
+        ),
+    ],
+)
+def test_filled_at_is_parsed_to_utc(filled_at: str, expected: datetime) -> None:
+    status = _status(_order(filled_at=filled_at))
+    assert status.filled_at == expected
+    assert status.filled_at is not None
+    assert status.filled_at.tzinfo is UTC
+
+
+def test_a_partial_terminal_order_falls_back_to_updated_at() -> None:
+    status = _status(
+        _order(status="expired", filled_qty="4", filled_at=None, updated_at="2026-10-01T20:00:05Z")
+    )
+    assert status.filled_at == datetime(2026, 10, 1, 20, 0, 5, tzinfo=UTC)
+
+
+def test_a_partial_terminal_order_without_any_timestamp_raises() -> None:
+    body = _order(status="canceled", filled_qty="4", filled_at=None, updated_at=None)
+    with pytest.raises(
+        OrderDataError, match="partial-terminal order has no filled_at or updated_at"
+    ):
+        _status(body)
+
+
+def test_a_filled_order_without_filled_at_raises() -> None:
+    with pytest.raises(OrderDataError, match="filled order has no filled_at"):
+        _status(_order(filled_at=None))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(ValueError("not json"), id="invalid-json"),
+        pytest.param([_order()], id="not-an-object"),
+        pytest.param(_order(client_order_id="hf-other"), id="mismatched-client-order-id"),
+        pytest.param(_order(asset_class="crypto"), id="non-equity"),
+        pytest.param(_order_without("asset_class"), id="missing-asset-class"),
+        pytest.param(_order_without("side"), id="missing-side"),
+        pytest.param(_order(side=""), id="empty-side"),
+        pytest.param(_order_without("id"), id="missing-id"),
+        pytest.param(_order_without("status"), id="missing-status"),
+        pytest.param(_order_without("symbol"), id="missing-symbol"),
+        pytest.param(_order_without("filled_qty"), id="missing-filled-qty"),
+        pytest.param(_order(filled_qty=10), id="numeric-filled-qty"),
+        pytest.param(_order(filled_qty="abc"), id="unparsable-filled-qty"),
+        pytest.param(_order(filled_qty="nan"), id="nan-filled-qty"),
+        pytest.param(_order(filled_qty="-1"), id="negative-filled-qty"),
+        pytest.param(_order(filled_avg_price="abc"), id="unparsable-price"),
+        pytest.param(_order(filled_avg_price=101.25), id="numeric-price"),
+        pytest.param(_order(filled_at="yesterday"), id="unparsable-filled-at"),
+        pytest.param(_order(filled_at="2026-10-01T13:30:00"), id="naive-filled-at"),
+        pytest.param(_order(filled_at=5), id="numeric-filled-at"),
+    ],
+)
+def test_an_unusable_body_raises_order_data_error(payload: Any) -> None:
+    with pytest.raises(OrderDataError, match="GET /v2/orders:by_client_order_id"):
+        _status(payload)
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403, 422])
+def test_other_http_codes_raise_plain_broker_error(status_code: int) -> None:
+    with pytest.raises(BrokerError, match=f"HTTP {status_code}") as info:
+        _status({"message": "nope"}, status_code)
+    assert type(info.value) is BrokerError
+
+
+def test_a_transport_failure_raises_plain_broker_error() -> None:
+    get = FakeGet(*[requests.Timeout("slow")] * 4)
+    with pytest.raises(BrokerError, match="gave up after 3 retries") as info:
+        _broker(get).order_status(SCID)
+    assert type(info.value) is BrokerError
 
 
 def test_package_exports() -> None:

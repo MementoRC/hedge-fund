@@ -1,15 +1,25 @@
-"""Broker port: account equity, signed holdings and order submission."""
+"""Broker port: account equity, signed holdings, order submission and order lookup."""
 
 from __future__ import annotations
 
 from typing import Protocol
 
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult
+from hedge_fund.domain.ledger import OrderStatus
 from hedge_fund.domain.orders import Holding
 
 
 class BrokerError(Exception):
     """A transport, auth, status or payload failure while talking to the broker."""
+
+
+class OrderDataError(BrokerError):
+    """One order's 200 body is unusable: unparsable JSON, a missing or invalid field, another
+    order's ``client_order_id``, a non-equity asset, or a filled order with no timestamp.
+
+    Settle records it against that order and carries on; a plain BrokerError (transport,
+    auth, unexpected HTTP status) stops the run.
+    """
 
 
 class Broker(Protocol):
@@ -34,4 +44,12 @@ class Broker(Protocol):
         Returns a result whose status is ACCEPTED, DUPLICATE (an order with this
         client_order_id already exists) or REJECTED. On BrokerError the outcome is unknown;
         re-submitting the same request is safe.
+        """
+
+    def order_status(self, client_order_id: str) -> OrderStatus:
+        """The order placed with ``client_order_id``; read-only.
+
+        NOT_FOUND when the broker has no such order. Raises OrderDataError when this one
+        order's body is unusable, BrokerError on a transport, auth or unexpected-status
+        failure.
         """

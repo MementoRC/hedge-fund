@@ -11,11 +11,13 @@ from typing import Any
 
 import pytest
 
+from hedge_fund.adapters._json import jsonable
 from hedge_fund.adapters.cycle.json_report import JsonCycleReportStore
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.ledger import ReportLoad
 from hedge_fund.domain.orders import Holding, Order, OrderAction, OrderPlan
 from hedge_fund.domain.portfolio import Position, TargetPortfolio
 from hedge_fund.domain.research import NameResearch, Rating, ResearchResult, RunRecord, Verdict
@@ -333,3 +335,63 @@ def test_package_exports() -> None:
 
     assert cycle.__all__ == ["JsonCycleReportStore"]
     assert cycle.JsonCycleReportStore is JsonCycleReportStore
+
+
+# --- load_all ---------------------------------------------------------------------------
+
+
+def test_load_all_reads_back_what_save_wrote(tmp_path: Path) -> None:
+    store: CycleReportStore = JsonCycleReportStore(tmp_path)
+    store.save(REPORT)
+    load = store.load_all()
+    [loaded] = load.reports
+    assert jsonable(loaded) == jsonable(REPORT)  # REPORT holds NaN: compare the JSON form
+    assert load.unreadable == {}
+
+
+def test_load_all_sorts_by_started_at(tmp_path: Path) -> None:
+    store = JsonCycleReportStore(tmp_path)
+    later = dataclasses.replace(
+        REPORT, verdict=None, started_at=datetime(2026, 9, 30, 23, 0, tzinfo=UTC)
+    )
+    earlier = dataclasses.replace(  # file 2026-10-01_210000.json sorts after the later run's
+        later, as_of=date(2026, 10, 1), started_at=datetime(2026, 9, 30, 21, 0, tzinfo=UTC)
+    )
+    store.save(later)
+    store.save(earlier)
+    assert [r.started_at for r in store.load_all().reports] == [
+        datetime(2026, 9, 30, 21, 0, tzinfo=UTC),
+        datetime(2026, 9, 30, 23, 0, tzinfo=UTC),
+    ]
+
+
+def test_load_all_without_a_runs_directory_is_empty(tmp_path: Path) -> None:
+    assert JsonCycleReportStore(tmp_path).load_all() == ReportLoad(reports=(), unreadable={})
+
+
+def test_an_undecodable_run_file_is_listed_and_skipped(tmp_path: Path) -> None:
+    store = JsonCycleReportStore(tmp_path)
+    good = dataclasses.replace(REPORT, verdict=None)
+    store.save(good)
+    runs = tmp_path / "runs"
+    (runs / "garbage.json").write_text("not json", encoding="utf-8")
+    (runs / "2026-09-29_220000.json").write_text('{"as_of": "2026-09-29"}', encoding="utf-8")
+    (runs / ".2026-09-29_230000.json.x1y2.tmp").write_text("partial", encoding="utf-8")
+    load = store.load_all()
+    assert load.reports == (good,)
+    assert load.unreadable == {
+        "2026-09-29_220000.json": "KeyError: 'started_at'",
+        "garbage.json": "JSONDecodeError: Expecting value: line 1 column 1 (char 0)",
+    }
+
+
+def test_a_run_file_with_a_wrong_container_type_is_listed_not_raised(tmp_path: Path) -> None:
+    store = JsonCycleReportStore(tmp_path)
+    store.save(dataclasses.replace(REPORT, verdict=None))
+    [saved] = (tmp_path / "runs").glob("*.json")
+    body = json.loads(saved.read_text(encoding="utf-8"))
+    body["order_prices"] = []  # a list where a mapping belongs: AttributeError, not TypeError
+    saved.write_text(json.dumps(body), encoding="utf-8")
+    load = store.load_all()
+    assert load.reports == ()
+    assert load.unreadable[saved.name].startswith("AttributeError: ")

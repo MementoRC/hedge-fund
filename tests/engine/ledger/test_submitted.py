@@ -201,6 +201,7 @@ def test_package_exports() -> None:
         "fill_deadline",
         "mark",
         "reconcile",
+        "signed_quantity",
         "submitted_orders",
         "to_fill",
     ]

@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
+from hedge_fund.domain.attribution import AttributionReport
 from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.ledger import (
@@ -375,3 +376,29 @@ class InMemorySettlementStore:
     def _name(report: SettlementReport) -> str:
         stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
         return f"{report.as_of.isoformat()}_{stamp}"
+
+
+class InMemoryAttributionStore:
+    """AttributionReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set.
+
+    Like JsonAttributionReportStore, whose file is named ``<start>_<end>_<HHMMSS>.json``
+    (UTC), ``save`` raises FileExistsError for a report whose window and ``started_at``
+    second were already saved.
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[AttributionReport] = []
+        self.fail = fail
+
+    def save(self, report: AttributionReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for this window and second exists")
+        self.saved.append(report)
+
+    @staticmethod
+    def _name(report: AttributionReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.start}_{report.end}_{stamp}"

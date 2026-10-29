@@ -4,7 +4,9 @@ point-in-time.
 
 Read-only: the broker is only asked for its positions. Run after ``settle``: a fill settle
 has not recorded yet shows as a break. Every stage runs over injected ports; the CLI
-(``hedge_fund.cli``) is the only composition root.
+(``hedge_fund.cli``) is the only composition root. Whatever happens one AttributionReport is
+saved: a run that raises (an Exception or an interrupt) saves a FAILED report naming the
+stage, then re-raises.
 """
 
 from __future__ import annotations
@@ -48,6 +50,17 @@ from hedge_fund.ports.ledger import FillStore, OpeningBalance
 from hedge_fund.services.portfolio import BENCHMARK
 from hedge_fund.services.snapshots import calendar_window
 from hedge_fund.universe import Universe
+
+
+class AttributionSaveError(Exception):
+    """The attribution finished but its report could not be saved; carries ``report``.
+
+    ``__cause__`` is the store's exception.
+    """
+
+    def __init__(self, report: AttributionReport) -> None:
+        super().__init__(f"the {report.outcome.value} attribution report could not be saved")
+        self.report = report
 
 
 @dataclass(frozen=True)
@@ -129,12 +142,28 @@ def run_attribute(
 
     ``start`` defaults to the first opening or fill date (New York), ``end`` to the last
     SPY close up to today in New York (``now`` is read once, for ``started_at``); an empty
-    ledger gives the one-day window ``[end, end]``.
+    ledger gives the one-day window ``[end, end]``. Any exception (KeyboardInterrupt
+    included) saves a FAILED report with ``failed_stage`` and ``error`` and is re-raised;
+    if that save fails too, the failure is added to it with ``add_note``. A completed run
+    whose report cannot be saved raises AttributionSaveError carrying the report.
     """
     run = _Attribute(started_at=now(), start=start, end=end)
-    _run(deps, run)
+    try:
+        _run(deps, run)
+    except BaseException as error:
+        try:
+            deps.report_store.save(run.report(error))
+        except Exception as save_error:
+            error.add_note(
+                "the attribution report could not be saved: "
+                f"{type(save_error).__name__}: {save_error}"
+            )
+        raise
     report = run.report(None)
-    deps.report_store.save(report)
+    try:
+        deps.report_store.save(report)
+    except Exception as save_error:
+        raise AttributionSaveError(report) from save_error
     return report
 
 

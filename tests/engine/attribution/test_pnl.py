@@ -130,5 +130,26 @@ def test_a_regressed_holding_splits_into_market_sector_and_residual() -> None:
     assert bbb == _row(TUE, "BBB", prior=-4, residual=4.0)  # not in the model, no sector
 
 
+def test_a_regressed_short_flips_market_and_sector_and_reconciles_with_a_fill() -> None:
+    fills = (Trade("AAA", TUE, 2, 101.0),)
+    rows, _ = attribute_day(TUE, {"AAA": -10}, fills, CLOSES, MODEL, {"AAA": "Tech"})
+    (aaa,) = rows
+    # h = -10, P_{t-1} = 100, beta 1.5, f_mkt 0.01, f_sector 0.004; holding -10 * (102 - 100)
+    assert aaa.market == pytest.approx(-10 * 100.0 * 1.5 * 0.01, abs=1e-9)
+    assert aaa.sector_pnl == pytest.approx(-10 * 100.0 * 0.004, abs=1e-9)
+    assert aaa.residual == pytest.approx(-20.0 - aaa.market - aaa.sector_pnl, abs=1e-9)
+    assert (aaa.prior_shares, aaa.regressed) == (-10, True)
+    assert aaa.trading == pytest.approx(2 * (102.0 - 101.0), abs=1e-9)
+    total = aaa.market + aaa.sector_pnl + aaa.residual + aaa.trading
+    assert total == pytest.approx(-10 * (102.0 - 100.0) + 2 * (102.0 - 101.0), abs=1e-9)
+
+
+def test_a_regressed_name_without_a_sector_is_labelled_unknown() -> None:
+    rows, _ = attribute_day(TUE, {"AAA": 10}, (), CLOSES, MODEL, {"AAA": None})
+    (aaa,) = rows
+    assert (aaa.sector, aaa.regressed) == ("Unknown", True)
+    assert (aaa.market, aaa.sector_pnl, aaa.residual) == pytest.approx((15.0, 4.0, 1.0))
+
+
 def test_zero_holdings_are_ignored() -> None:
     assert attribute_day(TUE, {"AAA": 0}, (), CLOSES, MODEL, {}) == ((), {})

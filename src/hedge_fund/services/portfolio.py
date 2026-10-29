@@ -35,7 +35,7 @@ from hedge_fund.engine.portfolio.risk_model import (
     validate_risk_params,
 )
 from hedge_fund.ports.data import DataProvider
-from hedge_fund.services.snapshots import _calendar_window
+from hedge_fund.services.snapshots import calendar_window
 
 BENCHMARK = "SPY"
 
@@ -49,7 +49,7 @@ def fetch_benchmark(
     first return). Raises ValueError when no close is left; the provider returns an all-NaN
     column for an unknown ticker rather than an empty frame.
     """
-    frame = provider.closes([ticker], as_of - _calendar_window(lookback_days + 1), as_of)
+    frame = provider.closes([ticker], as_of - calendar_window(lookback_days + 1), as_of)
     closes = naive_dates(frame[ticker].dropna())
     closes = closes.loc[closes.index <= pd.Timestamp(as_of)]
     if closes.empty:

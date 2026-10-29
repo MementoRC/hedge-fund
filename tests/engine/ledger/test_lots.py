@@ -9,7 +9,7 @@ import pytest
 
 from hedge_fund.domain.ledger import ClosedLot, Fill, FillStatus, Lot, OpeningEntry
 from hedge_fund.domain.orders import OrderAction
-from hedge_fund.engine.ledger.lots import OPENING_SOURCE, build_lots
+from hedge_fund.engine.ledger.lots import OPENING_SOURCE, build_lots, signed_quantity
 
 BUY, SELL = OrderAction.BUY, OrderAction.SELL
 SHORT, COVER = OrderAction.SELL_SHORT, OrderAction.BUY_TO_COVER
@@ -214,3 +214,27 @@ def test_inputs_are_not_mutated() -> None:
     first = build_lots(opening, fills)
     assert (opening, fills) == before
     assert build_lots(opening, fills) == first
+
+
+# --- signed_quantity -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [(BUY, 10), (COVER, 10), (SELL, -10), (SHORT, -10)],
+    ids=["buy", "buy_to_cover", "sell", "sell_short"],
+)
+def test_signed_quantity_signs_by_action(action: OrderAction, expected: int) -> None:
+    assert signed_quantity(_fill("x1", "AAA", action, 10, 100.0)) == expected
+
+
+@pytest.mark.parametrize("status", [FillStatus.CANCELED, FillStatus.NOT_SUBMITTED])
+def test_signed_quantity_of_a_zero_fill_is_zero(status: FillStatus) -> None:
+    assert signed_quantity(_zero("c1", status)) == 0  # no avg_price or filled_at: still 0
+
+
+@pytest.mark.parametrize("missing", ["avg_price", "filled_at"])
+def test_signed_quantity_refuses_a_counted_fill_without_price_or_time(missing: str) -> None:
+    broken = dataclasses.replace(_fill("b1", "AAA", BUY, 10, 100.0), **{missing: None})
+    with pytest.raises(ValueError, match="'b1' has 10 shares but no avg_price or filled_at"):
+        signed_quantity(broken)

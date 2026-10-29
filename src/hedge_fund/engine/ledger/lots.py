@@ -9,6 +9,7 @@ import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
+from typing import cast
 
 from hedge_fund.domain.ledger import ClosedLot, Fill, Lot, OpeningEntry
 from hedge_fund.domain.orders import OrderAction
@@ -63,18 +64,30 @@ def build_lots(
     return tuple(lot for ticker in sorted(book) for lot in book[ticker]), tuple(closed)
 
 
+def signed_quantity(fill: Fill) -> int:
+    """The signed share delta of ``fill``: ``+filled_shares`` for BUY / BUY_TO_COVER,
+    ``-filled_shares`` for SELL / SELL_SHORT, and 0 for a fill with ``filled_shares <= 0``.
+
+    Raises ValueError for a fill with shares but no ``avg_price`` or ``filled_at``.
+    """
+    if fill.filled_shares <= 0:
+        return 0
+    if fill.avg_price is None or fill.filled_at is None:
+        raise ValueError(
+            f"fill {fill.client_order_id!r} has {fill.filled_shares} shares but no "
+            "avg_price or filled_at"
+        )
+    return fill.filled_shares if fill.action in _BUYS else -fill.filled_shares
+
+
 def _trades(fills: Sequence[Fill]) -> list[_Trade]:
     trades: list[_Trade] = []
     for fill in fills:
-        if fill.filled_shares <= 0:
-            continue
-        if fill.avg_price is None or fill.filled_at is None:
-            raise ValueError(
-                f"fill {fill.client_order_id!r} has {fill.filled_shares} shares but no "
-                "avg_price or filled_at"
-            )
-        sign = 1 if fill.action in _BUYS else -1
-        trades.append(_Trade(fill, fill.avg_price, fill.filled_at, sign * fill.filled_shares))
+        delta = signed_quantity(fill)
+        if delta:
+            # signed_quantity refused a counted fill without avg_price or filled_at
+            price, at = cast(float, fill.avg_price), cast(datetime, fill.filled_at)
+            trades.append(_Trade(fill, price, at, delta))
     return sorted(
         trades,
         key=lambda trade: (

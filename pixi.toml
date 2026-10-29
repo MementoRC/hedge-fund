@@ -39,6 +39,7 @@ install-tradingagents = "python -m pip install --no-deps --no-build-isolation -e
 setup-dev = { depends-on = ["install-editable", "install-tradingagents"] }
 cycle = "hedge-fund cycle"
 settle = "hedge-fund settle"
+attribute = "hedge-fund attribute"
 
 [feature.ci.dependencies]
 ruff = ">=0.8.4"

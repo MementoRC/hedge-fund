@@ -1,8 +1,10 @@
-"""Run-once CLI: ``hedge-fund cycle`` runs one paper-trading cycle (Layer 6d) and
-``hedge-fund settle`` records what it filled (Layer 7a).
+"""Run-once CLI: ``hedge-fund cycle`` runs one paper-trading cycle (Layer 6d),
+``hedge-fund settle`` records what it filled (Layer 7a) and ``hedge-fund attribute`` splits
+the book's P&L (Layer 7b).
 
-This is the only composition root: ``build_deps`` and ``build_settle_deps`` build the real
-adapters and ``clock`` is the only clock read. Tests replace them. Paper trading only.
+This is the only composition root: ``build_deps``, ``build_settle_deps`` and
+``build_attribute_deps`` build the real adapters and ``clock`` is the only clock read.
+Tests replace them. Paper trading only.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ import typer
 
 from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.adapters.approval import ConsoleApprovalGate
+from hedge_fund.adapters.attribution import JsonAttributionReportStore
+from hedge_fund.adapters.attribution.json_report import ATTRIBUTIONS_DIR
 from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
@@ -28,6 +32,12 @@ from hedge_fund.adapters.ledger import (
 from hedge_fund.adapters.ledger.settlement_report import SETTLEMENTS_DIR
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import ResearchConfig, TradingAgentsResearcher
+from hedge_fund.domain.attribution import (
+    DIVIDEND_NOTE,
+    AttributeOutcome,
+    AttributionReport,
+    AttributionTotals,
+)
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import Fill, MarkedLot, SettlementReport, SettleOutcome
@@ -36,7 +46,14 @@ from hedge_fund.domain.risk import RiskVerdict
 from hedge_fund.engine.execution import MARKET_TZ
 from hedge_fund.ports.broker import BrokerError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
-from hedge_fund.services.cycle import CycleDeps, ReportSaveError, SubmissionWindowError, run_cycle
+from hedge_fund.services.attribute import AttributeDeps, AttributionSaveError, run_attribute
+from hedge_fund.services.cycle import (
+    CycleDeps,
+    CycleParams,
+    ReportSaveError,
+    SubmissionWindowError,
+    run_cycle,
+)
 from hedge_fund.services.settle import SettleDeps, SettlementSaveError, run_settle
 from hedge_fund.universe import load_universe
 
@@ -47,6 +64,10 @@ _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
     SettleOutcome.PENDING: 0,
     SettleOutcome.BREAK: 2,
     SettleOutcome.UNSETTLED: 1,
+}
+_ATTRIBUTE_EXIT: Mapping[AttributeOutcome, int] = {
+    AttributeOutcome.CLEAN: 0,
+    AttributeOutcome.BREAK: 2,
 }
 
 app = typer.Typer(add_completion=False)
@@ -97,6 +118,25 @@ def build_settle_deps(root: Path) -> SettleDeps:
         fills=JsonFillStore(root),
         opening=JsonOpeningBalance(root),
         report_store=JsonSettlementReportStore(root),
+    )
+
+
+def build_attribute_deps(root: Path) -> AttributeDeps:
+    """The real adapters for ``attribute``, with every file under ``root``.
+
+    The broker is built first, so missing Alpaca credentials (BrokerError) fail before
+    anything is read. Prices come from the cycle's cache (``root/cache/prices``); the
+    universe and the risk params are the cycle's.
+    """
+    broker = AlpacaPaperBroker()
+    return AttributeDeps(
+        broker=broker,
+        prices=default_provider(root / "cache" / "prices", UNIVERSE),
+        universe=load_universe(UNIVERSE),
+        risk=CycleParams().risk,
+        fills=JsonFillStore(root),
+        opening=JsonOpeningBalance(root),
+        report_store=JsonAttributionReportStore(root),
     )
 
 
@@ -179,6 +219,48 @@ def settle(
         _fail(f"{type(exc).__name__}: {exc}; the partial report is under {settlements}", exc)
     typer.echo(_settle_summary(report, settlements))
     raise typer.Exit(_SETTLE_EXIT[report.outcome])
+
+
+@app.command()
+def attribute(
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            "--start",
+            formats=["%Y-%m-%d"],
+            help="First day. Default: the first opening or fill date.",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option("--end", formats=["%Y-%m-%d"], help="Last day. Default: the last SPY close."),
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Data root.")] = Path("data"),
+) -> None:
+    """Split the book's daily P&L into market, sector, residual and trading; run it after settle.
+
+    A fill settle has not recorded yet shows as a break. Exit 0 when clean, 2 on a
+    reconciliation break, 1 when the run fails.
+    """
+    attributions = root / ATTRIBUTIONS_DIR
+    try:
+        deps = build_attribute_deps(root)
+    except (BrokerError, ValueError) as exc:
+        _fail(f"cannot start attribution: {exc}", exc)
+    first = None if start is None else start.date()
+    last = None if end is None else end.date()
+    try:
+        report = run_attribute(deps, start=first, end=last, now=clock)
+    except AttributionSaveError as exc:
+        typer.echo(_attribute_summary(exc.report, attributions))
+        typer.echo(f"error: the attribution report was not saved: {exc.__cause__!r}", err=True)
+        raise typer.Exit(max(_ATTRIBUTE_EXIT[exc.report.outcome], 1)) from exc
+    except KeyboardInterrupt as exc:
+        _fail(f"interrupted; the partial report is under {attributions}", exc)
+    except Exception as exc:
+        _fail(f"{type(exc).__name__}: {exc}; the partial report is under {attributions}", exc)
+    typer.echo(_attribute_summary(report, attributions))
+    raise typer.Exit(_ATTRIBUTE_EXIT[report.outcome])
 
 
 def _fail(message: str, cause: BaseException) -> NoReturn:
@@ -280,4 +362,41 @@ def _lot_line(marked: MarkedLot) -> str:
     return (
         f"{lot.ticker} {lot.shares:+d} @ {lot.entry_price:,.2f}, close {marked.price:,.2f} "
         f"on {marked.close_date}: {marked.unrealised_pnl:+,.2f}"
+    )
+
+
+def _attribute_summary(report: AttributionReport, attributions: Path) -> str:
+    """Outcome, window, totals by component and by sector, breaks, exclusions, the
+    dividend note and the reports directory."""
+    lines = [
+        f"outcome: {report.outcome.value}",
+        f"window: {report.start} to {report.end}",
+        f"total: {_totals_line(report.total)}",
+    ]
+    lines += _section(
+        "sectors", [f"{sector}: {_totals_line(t)}" for sector, t in report.by_sector.items()]
+    )
+    lines += _section(
+        "breaks",
+        [f"{b.ticker}: ledger {b.ledger_shares}, broker {b.broker_shares}" for b in report.breaks],
+    )
+    lines += _section("excluded", [f"{t}: {why}" for t, why in report.excluded.items()])
+    lines += _section(
+        "no beta",
+        [
+            f"{t}: {', '.join(day.isoformat() for day in days)}"
+            for t, days in report.no_beta.items()
+        ],
+    )
+    lines += _section("unregressed days", [day.isoformat() for day in report.unregressed_days])
+    lines.append(f"note: {DIVIDEND_NOTE}")
+    lines.append(f"attributions: {attributions}")
+    return "\n".join(lines)
+
+
+def _totals_line(totals: AttributionTotals) -> str:
+    return (
+        f"market {totals.market:+,.2f}, sector {totals.sector:+,.2f}, "
+        f"residual {totals.residual:+,.2f}, trading {totals.trading:+,.2f}, "
+        f"total {totals.total:+,.2f}"
     )

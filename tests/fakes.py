@@ -22,6 +22,7 @@ from hedge_fund.domain.ledger import (
 )
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
+from hedge_fund.domain.verification import VerificationReport
 
 
 class FakeProvider:
@@ -404,5 +405,31 @@ class InMemoryAttributionStore:
 
     @staticmethod
     def _name(report: AttributionReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.start}_{report.end}_{stamp}"
+
+
+class InMemoryVerificationStore:
+    """VerificationReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set.
+
+    Like JsonVerificationReportStore, whose file is named ``<start>_<end>_<HHMMSS>.json``
+    (UTC), ``save`` raises FileExistsError for a report whose window and ``started_at``
+    second were already saved.
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[VerificationReport] = []
+        self.fail = fail
+
+    def save(self, report: VerificationReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for this window and second exists")
+        self.saved.append(report)
+
+    @staticmethod
+    def _name(report: VerificationReport) -> str:
         stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
         return f"{report.start}_{report.end}_{stamp}"

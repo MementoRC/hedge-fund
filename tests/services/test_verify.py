@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, NoReturn
@@ -202,6 +202,25 @@ def test_a_name_without_a_price_is_a_gap_and_the_outcome_says_so() -> None:
     assert rows["ZZZ", 63].status is ObservationStatus.PENDING  # pending wins over no price
     assert world.data.closes_calls == [((*CANONICAL, "ZZZ", "SPY"), date(2026, 8, 22), END)]
     assert world.reports.saved == [report]
+
+
+class DroppingProvider(FakeProvider):
+    """A provider that drops a requested ticker's column instead of returning it all-NaN."""
+
+    def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        return super().closes(tickers, start, end).drop(columns=["BBB"])
+
+
+def test_a_dropped_column_is_a_gap_like_an_all_nan_one() -> None:
+    world = World(data=DroppingProvider(FRAME, {}))
+    report = _verify(world)
+    assert report.outcome is VerifyOutcome.GAPS
+    rows = _by_key(report)
+    assert (rows["BBB", 5].status, rows["BBB", 5].reason) == (
+        ObservationStatus.EXCLUDED,
+        ExclusionReason.NO_PRICE,
+    )
+    assert rows["AAA", 5].status is ObservationStatus.SCORED
 
 
 def test_today_is_the_new_york_date() -> None:

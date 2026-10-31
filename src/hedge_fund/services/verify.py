@@ -191,7 +191,9 @@ def _fetch(deps: VerifyDeps, run: _Verify, results: Sequence[ResearchResult]) ->
         {canonical_symbol(name.candidate.ticker) for result in results for name in result.names}
     )
     first = min(result.as_of for result in results)
-    frame = deps.data.closes(list(dict.fromkeys([*names, BENCHMARK])), first - _BASE_PAD, run.today)
+    tickers = list(dict.fromkeys([*names, BENCHMARK]))
+    # a column the provider dropped reads as all-NaN, a gap like any other
+    frame = deps.data.closes(tickers, first - _BASE_PAD, run.today).reindex(columns=tickers)
     calendar = trading_days(frame[BENCHMARK], date.min, run.today)
     if not calendar:
         raise ValueError(f"no {BENCHMARK} closes up to {run.today}")

@@ -275,7 +275,8 @@ class InMemoryResearchStore:
     """ResearchStore keeping results in ``saved``, in save order; ``save`` appends.
 
     ``load`` returns the last saved result for the date (None if there is none) and
-    records the date in ``loaded``.
+    records the date in ``loaded``. ``dates`` returns the sorted unique ``as_of`` of the saved
+    results (it does not record in ``loaded``).
     """
 
     def __init__(self, results: Sequence[ResearchResult] = ()) -> None:
@@ -289,6 +290,9 @@ class InMemoryResearchStore:
         self.loaded.append(as_of)
         matches = [result for result in self.saved if result.as_of == as_of]
         return matches[-1] if matches else None
+
+    def dates(self) -> tuple[date, ...]:
+        return tuple(sorted({result.as_of for result in self.saved}))
 
 
 class InMemoryReportStore:

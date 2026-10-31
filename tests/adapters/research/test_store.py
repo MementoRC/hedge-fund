@@ -317,3 +317,52 @@ def test_decoders_turn_non_finite_strings_back() -> None:
     assert name.std == math.inf
     assert name.agreement is not None
     assert math.isnan(name.agreement)
+
+
+# --- dates ---------------------------------------------------------------------------------
+
+
+def test_json_store_dates_are_sorted_and_unique(tmp_path: Path) -> None:
+    for as_of, seconds in [
+        (date(2026, 9, 30), 1.0),
+        (date(2026, 9, 1), 1.0),
+        (date(2026, 9, 30), 2.0),  # a second result for the same day: another file
+    ]:
+        save_research(dataclasses.replace(_result(seconds=seconds), as_of=as_of), tmp_path)
+    assert len(list((tmp_path / "research").iterdir())) == 3
+    store: ResearchStore = JsonResearchStore(tmp_path)
+    assert store.dates() == (date(2026, 9, 1), date(2026, 9, 30))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "notes.txt",
+        "2026-09-30.json",
+        "2026-09-30_abc.json",
+        "2026-09-30_0123456789AB.json",
+        "2026-13-45_0123456789ab.json",
+        "x2026-09-30_0123456789ab.json",
+        "2026-09-30_0123456789ab.json.tmp",
+    ],
+)
+def test_json_store_dates_ignore_names_that_do_not_match(tmp_path: Path, name: str) -> None:
+    save_research(dataclasses.replace(_result(), as_of=date(2026, 9, 29)), tmp_path)
+    (tmp_path / "research" / name).write_text("{}", encoding="utf-8")
+    assert JsonResearchStore(tmp_path).dates() == (date(2026, 9, 29),)
+
+
+@pytest.mark.parametrize("setup", ["missing-dir", "empty-dir"])
+def test_json_store_dates_are_empty_without_files(tmp_path: Path, setup: str) -> None:
+    if setup == "empty-dir":
+        (tmp_path / "research").mkdir()
+    assert JsonResearchStore(tmp_path).dates() == ()
+
+
+def test_json_store_dates_do_not_read_the_files(tmp_path: Path) -> None:
+    (tmp_path / "research").mkdir()
+    (tmp_path / "research" / "2026-09-30_0123456789ab.json").write_text("not json")
+    store = JsonResearchStore(tmp_path)
+    assert store.dates() == (date(2026, 9, 30),)
+    with pytest.raises(ValueError, match="malformed research file"):
+        store.load(date(2026, 9, 30))

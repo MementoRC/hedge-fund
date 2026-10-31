@@ -1,13 +1,18 @@
 """Deterministic price and fundamentals fixtures for engine tests."""
 
+import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS, FundamentalsSnapshot
+from hedge_fund.domain.research import Verdict
+from hedge_fund.domain.shortlist import Side
 from hedge_fund.domain.snapshot import PriceSnapshot
+from hedge_fund.domain.verification import Observation, ObservationStatus
 from hedge_fund.engine.fundamentals.metrics import METRICS, SHARES_DEI_TAG
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts
 
@@ -169,3 +174,29 @@ def make_facts(tickers: Sequence[str]) -> pd.DataFrame:
             (t, shares, None, "2026-07-25", 50.0, "2026-08-01", "10-Q", f"{t}-q226"),
         ]
     return coerce_facts(pd.DataFrame(rows, columns=list(FACT_COLUMNS)))
+
+
+def make_observation(**changes: Any) -> Observation:
+    """A SCORED long CONFIRM observation at the 5-day horizon; ``changes`` replace fields."""
+    base = Observation(
+        as_of=date(2026, 9, 1),
+        ticker="AAA",
+        sector="Tech",
+        side=Side.LONG,
+        verdict=Verdict.CONFIRM,
+        mean=1.0,
+        std=0.0,
+        agreement=1.0,
+        valid=3,
+        horizon=5,
+        base_date=date(2026, 9, 1),
+        end_date=date(2026, 9, 8),
+        name_return=0.06,
+        spy_return=0.01,
+        aligned_excess=0.05,
+        hit=True,
+        executed=False,
+        status=ObservationStatus.SCORED,
+        reason=None,
+    )
+    return dataclasses.replace(base, **changes)

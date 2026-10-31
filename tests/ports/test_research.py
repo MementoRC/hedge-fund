@@ -44,3 +44,20 @@ def test_in_memory_research_store_satisfies_the_port() -> None:
 
 def test_in_memory_research_store_starts_empty() -> None:
     assert InMemoryResearchStore().load(AS_OF) is None
+
+
+def test_in_memory_research_store_dates_are_sorted_and_unique() -> None:
+    fake = InMemoryResearchStore(
+        [
+            ResearchResult(as_of=AS_OF, names=()),
+            ResearchResult(as_of=date(2026, 9, 29), names=()),
+            ResearchResult(as_of=AS_OF, names=()),
+        ]
+    )
+    store: ResearchStore = fake
+    assert store.dates() == (date(2026, 9, 29), AS_OF)
+    assert fake.loaded == []
+
+
+def test_in_memory_research_store_has_no_dates_when_empty() -> None:
+    assert InMemoryResearchStore().dates() == ()

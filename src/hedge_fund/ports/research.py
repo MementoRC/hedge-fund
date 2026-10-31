@@ -30,3 +30,9 @@ class ResearchStore(Protocol):
 
         Raises ValueError when a stored file for ``as_of`` is malformed.
         """
+
+    def dates(self) -> tuple[date, ...]:
+        """The dates of the stored results, sorted and without duplicates; ``()`` when none.
+
+        Never raises for a malformed stored file: that surfaces in ``load``.
+        """

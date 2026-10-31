@@ -1,9 +1,11 @@
 """Run-once CLI: ``hedge-fund cycle`` runs one paper-trading cycle (Layer 6d),
 ``hedge-fund settle`` records what it filled (Layer 7a) and ``hedge-fund attribute`` splits
-the book's P&L (Layer 7b).
+the book's P&L (Layer 7b) and ``hedge-fund verify`` scores the stored research ratings
+against what followed (Layer 7d).
 
-This is the only composition root: ``build_deps``, ``build_settle_deps`` and
-``build_attribute_deps`` build the real adapters and ``clock`` is the only clock read.
+This is the only composition root: ``build_deps``, ``build_settle_deps``,
+``build_attribute_deps`` and ``build_verify_deps`` build the real adapters and ``clock`` is
+the only clock read.
 Tests replace them. Paper trading only.
 """
 
@@ -32,6 +34,8 @@ from hedge_fund.adapters.ledger import (
 from hedge_fund.adapters.ledger.settlement_report import SETTLEMENTS_DIR
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import ResearchConfig, TradingAgentsResearcher
+from hedge_fund.adapters.verification import JsonVerificationReportStore
+from hedge_fund.adapters.verification.json_report import VERIFICATIONS_DIR
 from hedge_fund.domain.attribution import (
     DIVIDEND_NOTE,
     AttributeOutcome,
@@ -43,6 +47,12 @@ from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import Fill, MarkedLot, SettlementReport, SettleOutcome
 from hedge_fund.domain.research import ResearchResult
 from hedge_fund.domain.risk import RiskVerdict
+from hedge_fund.domain.verification import (
+    Bucket,
+    HorizonSummary,
+    VerificationReport,
+    VerifyOutcome,
+)
 from hedge_fund.engine.execution import MARKET_TZ
 from hedge_fund.ports.broker import BrokerError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
@@ -55,6 +65,7 @@ from hedge_fund.services.cycle import (
     run_cycle,
 )
 from hedge_fund.services.settle import SettleDeps, SettlementSaveError, run_settle
+from hedge_fund.services.verify import VerificationSaveError, VerifyDeps, run_verify
 from hedge_fund.universe import load_universe
 
 UNIVERSE = "sp500"
@@ -68,6 +79,11 @@ _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
 _ATTRIBUTE_EXIT: Mapping[AttributeOutcome, int] = {
     AttributeOutcome.CLEAN: 0,
     AttributeOutcome.BREAK: 2,
+}
+_VERIFY_EXIT: Mapping[VerifyOutcome, int] = {
+    VerifyOutcome.CLEAN: 0,
+    VerifyOutcome.GAPS: 2,
+    VerifyOutcome.FAILED: 1,
 }
 
 app = typer.Typer(add_completion=False)
@@ -137,6 +153,20 @@ def build_attribute_deps(root: Path) -> AttributeDeps:
         fills=JsonFillStore(root),
         opening=JsonOpeningBalance(root),
         report_store=JsonAttributionReportStore(root),
+    )
+
+
+def build_verify_deps(root: Path) -> VerifyDeps:
+    """The real adapters for ``verify``, with every file under ``root``.
+
+    No broker: verification reads stored research, recorded fills and prices only. Prices
+    come from the cycle's cache (``root/cache/prices``).
+    """
+    return VerifyDeps(
+        research=JsonResearchStore(root),
+        fills=JsonFillStore(root),
+        data=default_provider(root / "cache" / "prices", UNIVERSE),
+        reports=JsonVerificationReportStore(root),
     )
 
 
@@ -261,6 +291,48 @@ def attribute(
         _fail(f"{type(exc).__name__}: {exc}; the partial report is under {attributions}", exc)
     typer.echo(_attribute_summary(report, attributions))
     raise typer.Exit(_ATTRIBUTE_EXIT[report.outcome])
+
+
+@app.command()
+def verify(
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            "--start", formats=["%Y-%m-%d"], help="First research date. Default: the earliest."
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option(
+            "--end", formats=["%Y-%m-%d"], help="Last research date. Default: today in New York."
+        ),
+    ] = None,
+    root: Annotated[Path, typer.Option("--root", help="Data root.")] = Path("data"),
+) -> None:
+    """Score stored research ratings against the excess return over SPY after 5, 21 and 63 days.
+
+    Independent of settle; run it any time. Exit 0 when clean, 2 when a name had no price, 1
+    when the run fails.
+    """
+    verifications = root / VERIFICATIONS_DIR
+    try:
+        deps = build_verify_deps(root)
+    except ValueError as exc:
+        _fail(f"cannot start verification: {exc}", exc)
+    first = None if start is None else start.date()
+    last = None if end is None else end.date()
+    try:
+        report = run_verify(deps, start=first, end=last, now=clock)
+    except VerificationSaveError as exc:
+        typer.echo(_verify_summary(exc.report, verifications))
+        typer.echo(f"error: the verification report was not saved: {exc.__cause__!r}", err=True)
+        raise typer.Exit(max(_VERIFY_EXIT[exc.report.outcome], 1)) from exc
+    except KeyboardInterrupt as exc:
+        _fail(f"interrupted; the partial report is under {verifications}", exc)
+    except Exception as exc:
+        _fail(f"{type(exc).__name__}: {exc}; the partial report is under {verifications}", exc)
+    typer.echo(_verify_summary(report, verifications))
+    raise typer.Exit(_VERIFY_EXIT[report.outcome])
 
 
 def _fail(message: str, cause: BaseException) -> NoReturn:
@@ -400,3 +472,44 @@ def _totals_line(totals: AttributionTotals) -> str:
         f"residual {totals.residual:+,.2f}, trading {totals.trading:+,.2f}, "
         f"total {totals.total:+,.2f}"
     )
+
+
+def _verify_summary(report: VerificationReport, verifications: Path) -> str:
+    """Outcome, window, per horizon the counts, hit rate, mean excess and IC, the verdict
+    buckets and the executed bucket; the reports directory. By-score and by-sector buckets
+    are only in the JSON."""
+    lines = [f"outcome: {report.outcome.value}", f"window: {report.start} to {report.end}"]
+    for summary in report.summaries:
+        lines += _horizon_lines(summary)
+    lines.append(f"verifications: {verifications}")
+    return "\n".join(lines)
+
+
+def _horizon_lines(summary: HorizonSummary) -> list[str]:
+    overall = summary.overall
+    verdicts = "; ".join(
+        f"{key} {_bucket_text(bucket)}" for key, bucket in summary.by_verdict.items()
+    )
+    return [
+        f"{summary.horizon}d: scored {summary.scored}, pending {summary.pending}, "
+        f"excluded {summary.excluded}; hit rate {_percent(overall.hit_rate)}, "
+        f"mean excess {_excess(overall.mean_excess)}, ic {_ic(summary.ic)}",
+        f"  verdicts: {verdicts or 'none'}",
+        f"  executed: {_bucket_text(summary.executed)}",
+    ]
+
+
+def _bucket_text(bucket: Bucket) -> str:
+    return f"n={bucket.n} hit {_percent(bucket.hit_rate)} excess {_excess(bucket.mean_excess)}"
+
+
+def _percent(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.1%}"
+
+
+def _excess(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:+.2%}"
+
+
+def _ic(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:+.2f}"

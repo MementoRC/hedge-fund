@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from enum import Enum
@@ -17,6 +18,7 @@ from hedge_fund.domain.research import NameResearch, Rating, ResearchResult, Run
 from hedge_fund.domain.shortlist import Candidate, Side
 
 RESEARCH_DIR = "research"
+_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})_[0-9a-f]{12}\.json")
 
 
 class JsonResearchStore:
@@ -42,6 +44,16 @@ class JsonResearchStore:
             if newest is None or (created_at, path.name) > newest[:2]:
                 newest = (created_at, path.name, result)
         return None if newest is None else newest[2]
+
+    def dates(self) -> tuple[date, ...]:
+        """The sorted, de-duplicated dates of the ``research/<as_of>_<sha12>.json`` files.
+
+        Only file names are read; directories, names that do not match, or whose date is not
+        a calendar date, are ignored. ``()`` when the directory does not exist.
+        """
+        paths = (self._root / RESEARCH_DIR).glob("*.json")
+        found = {_name_date(path.name) for path in paths if path.is_file()}
+        return tuple(sorted(day for day in found if day is not None))
 
 
 def save_research(result: ResearchResult, root: Path) -> Path:
@@ -107,6 +119,17 @@ def _created_at(path: Path) -> datetime:
             f"{path.name}: malformed created_at {created_at.isoformat()!r} (no offset)"
         )
     return created_at
+
+
+def _name_date(name: str) -> date | None:
+    """The date of a ``<as_of>_<sha12>.json`` file name, None when it is not one."""
+    match = _FILE_NAME.fullmatch(name)
+    if match is None:
+        return None
+    try:
+        return date.fromisoformat(match[1])
+    except ValueError:
+        return None
 
 
 def _payload(result: ResearchResult) -> dict[str, Any]:

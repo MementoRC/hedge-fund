@@ -48,10 +48,11 @@ class JsonResearchStore:
     def dates(self) -> tuple[date, ...]:
         """The sorted, de-duplicated dates of the ``research/<as_of>_<sha12>.json`` files.
 
-        Only file names are read; names that do not match, or whose date is not a calendar
-        date, are ignored. ``()`` when the directory does not exist.
+        Only file names are read; directories, names that do not match, or whose date is not
+        a calendar date, are ignored. ``()`` when the directory does not exist.
         """
-        found = {_name_date(path.name) for path in (self._root / RESEARCH_DIR).glob("*.json")}
+        paths = (self._root / RESEARCH_DIR).glob("*.json")
+        found = {_name_date(path.name) for path in paths if path.is_file()}
         return tuple(sorted(day for day in found if day is not None))
 
 

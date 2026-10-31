@@ -352,6 +352,12 @@ def test_json_store_dates_ignore_names_that_do_not_match(tmp_path: Path, name: s
     assert JsonResearchStore(tmp_path).dates() == (date(2026, 9, 29),)
 
 
+def test_json_store_dates_ignore_directories_named_like_a_file(tmp_path: Path) -> None:
+    save_research(dataclasses.replace(_result(), as_of=date(2026, 9, 29)), tmp_path)
+    (tmp_path / "research" / "2026-09-30_0123456789ab.json").mkdir()
+    assert JsonResearchStore(tmp_path).dates() == (date(2026, 9, 29),)
+
+
 @pytest.mark.parametrize("setup", ["missing-dir", "empty-dir"])
 def test_json_store_dates_are_empty_without_files(tmp_path: Path, setup: str) -> None:
     if setup == "empty-dir":

@@ -4,7 +4,8 @@ excess return over SPY that followed it, over 5, 21 and 63 trading days.
 Read-only and stateless: each run rescans the research dates in its window, the 7a fills
 (only to mark which observations were executed) and adjusted closes, and writes one report.
 Every stage runs over injected ports; the CLI (``hedge_fund.cli``) is the only composition
-root.
+root. Whatever happens one VerificationReport is saved: a run that raises (an Exception or an
+interrupt) saves a FAILED report naming the stage, then re-raises.
 """
 
 from __future__ import annotations
@@ -33,6 +34,18 @@ from hedge_fund.ports.ledger import FillStore
 from hedge_fund.ports.research import ResearchStore
 from hedge_fund.ports.verification import VerificationReportStore
 from hedge_fund.services.portfolio import BENCHMARK
+
+
+class VerificationSaveError(Exception):
+    """The verification finished but its report could not be saved; carries ``report``.
+
+    ``__cause__`` is the store's exception.
+    """
+
+    def __init__(self, report: VerificationReport) -> None:
+        super().__init__(f"the {report.outcome.value} verification report could not be saved")
+        self.report = report
+
 
 _BASE_PAD = timedelta(days=10)  # closes are fetched this far before the earliest research date
 
@@ -99,7 +112,11 @@ def run_verify(
 
     ``start`` defaults to the earliest research date, ``end`` to today in New York (``now``
     is read once, for ``started_at`` and today). With no research in the window no prices are
-    fetched and the report has no observations and one zeroed summary per horizon.
+    fetched and the report has no observations and one zeroed summary per horizon. Any
+    exception (KeyboardInterrupt included) saves a FAILED report with ``failed_stage`` and
+    ``error`` and is re-raised; if that save fails too, the failure is added to it with
+    ``add_note``. A completed run whose report cannot be saved raises VerificationSaveError
+    carrying the report.
     """
     started_at = now()
     run = _Verify(
@@ -108,9 +125,22 @@ def run_verify(
         start=start,
         end=end,
     )
-    _run(deps, run)
+    try:
+        _run(deps, run)
+    except BaseException as error:
+        try:
+            deps.reports.save(run.report(error))
+        except Exception as save_error:
+            error.add_note(
+                "the verification report could not be saved: "
+                f"{type(save_error).__name__}: {save_error}"
+            )
+        raise
     report = run.report(None)
-    deps.reports.save(report)
+    try:
+        deps.reports.save(report)
+    except Exception as save_error:
+        raise VerificationSaveError(report) from save_error
     return report
 
 

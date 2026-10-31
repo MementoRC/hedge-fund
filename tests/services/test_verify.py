@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import math
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 import pandas as pd
 import pytest
 
+import hedge_fund.services.verify as verify_service
 from hedge_fund.domain.ledger import Fill, FillStatus
 from hedge_fund.domain.orders import OrderAction
 from hedge_fund.domain.research import NameResearch, ResearchResult, Verdict
@@ -22,7 +25,8 @@ from hedge_fund.domain.verification import (
     VerificationReport,
     VerifyOutcome,
 )
-from hedge_fund.services.verify import VerifyDeps, run_verify
+from hedge_fund.ports.data import DataProviderError
+from hedge_fund.services.verify import VerificationSaveError, VerifyDeps, run_verify
 from tests.factories import make_closes
 from tests.fakes import (
     FakeProvider,
@@ -276,3 +280,207 @@ def test_nan_is_not_used_to_build_the_calendar() -> None:
     rows = _by_key(report)
     assert rows["AAA", 21].status is ObservationStatus.PENDING  # 09-30 is no longer a session
     assert rows["AAA", 5].status is ObservationStatus.SCORED
+
+
+# --- failures ----------------------------------------------------------------------------
+
+
+class Boom:
+    """A port whose every method raises ``error``."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def __getattr__(self, name: str) -> Callable[..., NoReturn]:
+        def fail(*args: Any, **kwargs: Any) -> NoReturn:
+            raise self.error
+
+        return fail
+
+
+class Unloadable(InMemoryResearchStore):
+    """Lists its dates but cannot load them (a store inconsistency)."""
+
+    missing: ResearchResult | None = None
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        return self.missing
+
+
+class Malformed(InMemoryResearchStore):
+    """Lists its dates; the file behind them is malformed."""
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        raise ValueError("2026-09-01_0123456789ab.json: malformed research file")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "window", "error_type", "message", "stage"),
+    [
+        pytest.param(
+            {"fills": InMemoryFillStore(load_error=ValueError("malformed fill"))},
+            {},
+            ValueError,
+            "malformed fill",
+            "load",
+            id="fills",
+        ),
+        pytest.param(
+            {"research": Boom(OSError("disk gone"))},
+            {},
+            OSError,
+            "disk gone",
+            "load",
+            id="research-dates",
+        ),
+        pytest.param(
+            {"research": Malformed([RESEARCH_SEP])},
+            {},
+            ValueError,
+            "2026-09-01_0123456789ab.json: malformed research file",
+            "load",
+            id="research-load",
+        ),
+        pytest.param(
+            {"research": Unloadable([RESEARCH_SEP])},
+            {},
+            ValueError,
+            "research for 2026-09-01 is listed but could not be loaded",
+            "load",
+            id="load-returns-none",
+        ),
+        pytest.param(
+            {},
+            {"start": END, "end": SEP},
+            ValueError,
+            "start 2026-09-30 is after end 2026-09-01",
+            "load",
+            id="start-after-end",
+        ),
+        pytest.param(
+            {"data": Boom(DataProviderError("vendor down"))},
+            {},
+            DataProviderError,
+            "vendor down",
+            "fetch",
+            id="closes",
+        ),
+        pytest.param(
+            {"data": FakeProvider(FRAME.drop(columns="SPY"), {})},
+            {},
+            ValueError,
+            "no SPY closes up to 2026-09-30",
+            "fetch",
+            id="no-spy",
+        ),
+        pytest.param(
+            {"data": FakeProvider(FRAME.assign(SPY=math.nan), {})},
+            {},
+            ValueError,
+            "no SPY closes up to 2026-09-30",
+            "fetch",
+            id="spy-all-nan",
+        ),
+        pytest.param(
+            {
+                "research": InMemoryResearchStore(
+                    [ResearchResult(as_of=date(2026, 5, 1), names=SEP_NAMES[:1])]
+                )
+            },
+            {},
+            ValueError,
+            "no trading day on or before 2026-05-01",
+            "observe",
+            id="research-before-the-closes",
+        ),
+    ],
+)
+def test_a_failing_stage_saves_a_failed_report_and_re_raises(
+    overrides: dict[str, Any],
+    window: dict[str, date],
+    error_type: type[Exception],
+    message: str,
+    stage: str,
+) -> None:
+    world = World(**overrides)
+    with pytest.raises(error_type, match=re.escape(message)):
+        _verify(world, **window)
+    [report] = world.reports.saved
+    assert report.outcome is VerifyOutcome.FAILED
+    assert (report.failed_stage, report.error) == (stage, f"{error_type.__name__}: {message}")
+    assert (report.observations, report.summaries) == ((), ())
+
+
+def test_a_failed_report_keeps_the_window_it_resolved() -> None:
+    world = World(data=Boom(DataProviderError("down")))
+    with pytest.raises(DataProviderError):
+        _verify(world)
+    [report] = world.reports.saved
+    assert (report.start, report.end) == (SEP, END)
+
+
+def test_a_failed_report_before_the_window_is_resolved_has_no_bounds() -> None:
+    world = World(research=Boom(OSError("disk gone")))
+    with pytest.raises(OSError, match="disk gone"):
+        _verify(world)
+    [report] = world.reports.saved
+    assert (report.start, report.end) == (None, END)  # end needs no store, start does
+
+
+def test_a_failing_observe_stage_saves_a_failed_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*args: Any, **kwargs: Any) -> NoReturn:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(verify_service, "observe", boom)
+    world = World()
+    with pytest.raises(RuntimeError, match="boom"):
+        _verify(world)
+    [report] = world.reports.saved
+    assert (report.outcome, report.failed_stage) == (VerifyOutcome.FAILED, "observe")
+    assert report.error == "RuntimeError: boom"
+
+
+def test_a_failing_summarise_stage_keeps_the_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*args: Any, **kwargs: Any) -> NoReturn:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(verify_service, "summarise", boom)
+    world = World()
+    with pytest.raises(RuntimeError, match="boom"):
+        _verify(world)
+    [report] = world.reports.saved
+    assert (report.outcome, report.failed_stage) == (VerifyOutcome.FAILED, "summarise")
+    assert len(report.observations) == 12
+    assert report.summaries == ()
+
+
+def test_an_interrupt_saves_a_failed_report_and_re_raises() -> None:
+    world = World(fills=Boom(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        _verify(world)
+    [report] = world.reports.saved
+    assert (report.outcome, report.failed_stage) == (VerifyOutcome.FAILED, "load")
+    assert report.error == "KeyboardInterrupt: "
+
+
+def test_a_completed_run_whose_report_cannot_be_saved_raises_verification_save_error() -> None:
+    world = World(reports=InMemoryVerificationStore(fail=OSError("disk full")))
+    with pytest.raises(VerificationSaveError, match="the clean verification report") as caught:
+        _verify(world)
+    assert caught.value.report.outcome is VerifyOutcome.CLEAN
+    assert len(caught.value.report.observations) == 12
+    assert isinstance(caught.value.__cause__, OSError)
+
+
+def test_a_failed_run_whose_report_cannot_be_saved_re_raises_with_a_note() -> None:
+    world = World(
+        fills=InMemoryFillStore(load_error=ValueError("malformed fill")),
+        reports=InMemoryVerificationStore(fail=OSError("disk full")),
+    )
+    with pytest.raises(ValueError, match="malformed fill") as caught:
+        _verify(world)
+    assert caught.value.__notes__ == [
+        "the verification report could not be saved: OSError: disk full"
+    ]

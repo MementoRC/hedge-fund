@@ -35,8 +35,10 @@ def test_live_single_run(tmp_path: Path) -> None:
         ),
         trimmed={},
     )
-    researcher = TradingAgentsResearcher(ResearchConfig(root=tmp_path / "research"))
-    out = research_shortlist(researcher, shortlist, k=1, max_workers=1, today=today)
+    config = ResearchConfig(root=tmp_path / "research")
+    out = research_shortlist(
+        TradingAgentsResearcher(config), shortlist, k=1, max_workers=1, today=today
+    )
     name = out.names[0]
     run = name.runs[0]
     assert run.error is None, run.error
@@ -50,3 +52,10 @@ def test_live_single_run(tmp_path: Path) -> None:
     }
     assert name.verdict is Verdict.INSUFFICIENT  # K=1 is below min_valid=2
     assert list((tmp_path / "research").iterdir()) == []  # scratch dir cleaned up
+    # 7c: the fork forwards our callback to both clients, so both models show up.
+    assert run.usage is not None
+    models = [row.model for row in run.usage]
+    for configured in (config.deep_model, config.quick_model):
+        assert any(model.startswith(configured) for model in models), models
+    assert all(row.calls >= 1 for row in run.usage)
+    assert all(row.input_tokens > 0 for row in run.usage)

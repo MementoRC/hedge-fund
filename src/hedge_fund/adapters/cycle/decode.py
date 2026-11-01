@@ -226,8 +226,14 @@ def _budget_plan(obj: Mapping[str, Any]) -> BudgetPlan:
         k=obj["k"],
         projected=decode_float(obj["projected"]),
         skipped=obj["skipped"],
-        reasons=tuple(obj["reasons"]),
+        reasons=_strings(obj["reasons"]),
     )
+
+
+def _strings(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"expected a list of strings, got {value!r}")
+    return tuple(value)
 
 
 def _spend(obj: Mapping[str, Any]) -> Spend:

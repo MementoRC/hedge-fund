@@ -194,9 +194,14 @@ def test_the_budget_and_spend_decode_to_their_types() -> None:
             id="budget-bad-source",
         ),
         pytest.param(
-            lambda body: body["budget"].update(reasons=7),
+            lambda body: body["budget"].update(reasons="not a list"),
             TypeError,
             id="budget-reasons-not-list",
+        ),
+        pytest.param(
+            lambda body: body["budget"].update(reasons=["ok", 7]),
+            TypeError,
+            id="budget-reasons-non-str-item",
         ),
     ],
 )

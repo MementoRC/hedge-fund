@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -420,6 +421,35 @@ def test_an_old_file_without_usage_still_verifies_and_loads(tmp_path: Path) -> N
     old.write_text(json.dumps(body), encoding="utf-8")
     assert old != path  # the new format's digest differs: only dedup notices
     assert load_research(old) == _result()
+
+
+def _break_row(usage: list[dict[str, object]]) -> object:
+    del usage[0]["cache_read_tokens"]
+    return usage
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param(_break_row, id="row-missing-a-key"),
+        pytest.param(lambda _usage: "lots", id="string"),
+        pytest.param(lambda _usage: {"model": "x"}, id="dict"),
+        pytest.param(lambda _usage: 7, id="int"),
+    ],
+)
+def test_a_malformed_usage_value_fails_the_load_as_a_malformed_file(
+    tmp_path: Path, bad: Callable[[list[dict[str, object]]], object]
+) -> None:
+    path = save_research(_with_usage(), tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))["result"]
+    run = payload["names"][0]["runs"][0]
+    run["usage"] = bad(run["usage"])
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    forged = path.with_name(f"2026-09-30_{digest}.json")
+    forged.write_text(json.dumps({"result": payload}), encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed research file"):
+        load_research(forged)
 
 
 def test_decode_usage() -> None:

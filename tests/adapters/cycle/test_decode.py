@@ -169,6 +169,7 @@ def test_the_budget_and_spend_decode_to_their_types() -> None:
     assert decoded.budget.reasons == ("k 3→2: 40×3×$0.80=$96.00 > $80.00",)
     assert decoded.spend is not None
     assert FINITE.spend is not None
+    assert decoded.spend.usage
     assert decoded.spend.usage == FINITE.spend.usage
 
 
@@ -183,6 +184,19 @@ def test_the_budget_and_spend_decode_to_their_types() -> None:
         pytest.param(lambda body: body.update(started_at=None), TypeError, id="null-instant"),
         pytest.param(
             lambda body: body["account"].update(equity="lots"), ValueError, id="bad-float"
+        ),
+        pytest.param(
+            lambda body: body["budget"].pop("estimate"), KeyError, id="budget-missing-estimate"
+        ),
+        pytest.param(
+            lambda body: body["budget"]["estimate"].update(source="bogus"),
+            ValueError,
+            id="budget-bad-source",
+        ),
+        pytest.param(
+            lambda body: body["budget"].update(reasons=7),
+            TypeError,
+            id="budget-reasons-not-list",
         ),
     ],
 )

@@ -10,6 +10,7 @@ import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.attribution import AttributionReport
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.ledger import (
@@ -105,17 +106,19 @@ def assert_closes_equal(actual: pd.DataFrame, expected: pd.DataFrame) -> None:
 class ScriptedResearcher:
     """Researcher returning a scripted Rating (or raising) per (ticker, run_index).
 
-    Unscripted runs return `default`. Safe to call from several threads; every call is
-    recorded in `calls`.
+    Unscripted runs return `default`. Every record carries `usage` (a plain attribute a test
+    may change). Safe to call from several threads; every call is recorded in `calls`.
     """
 
     def __init__(
         self,
         script: Mapping[tuple[str, int], Rating | BaseException] | None = None,
         default: Rating = Rating.HOLD,
+        usage: tuple[ModelUsage, ...] | None = None,
     ) -> None:
         self.script = dict(script or {})
         self.default = default
+        self.usage = usage
         self.calls: list[tuple[str, date, int]] = []
         self._lock = threading.Lock()
 
@@ -134,6 +137,7 @@ class ScriptedResearcher:
             reports={},
             seconds=0.5,
             error=None,
+            usage=self.usage,
         )
 
 

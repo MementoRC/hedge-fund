@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 
+from hedge_fund.domain.cost import PriceTable
 from hedge_fund.domain.research import Rating
 from hedge_fund.domain.shortlist import Side
 from hedge_fund.engine.factors.score import score
@@ -103,6 +104,7 @@ class World:
     gate: ScriptedApprovalGate = field(default_factory=lambda: ScriptedApprovalGate([True]))
     report_store: InMemoryReportStore = field(default_factory=InMemoryReportStore)
     universe: Universe = field(default_factory=universe)
+    price_table: PriceTable = field(default_factory=PriceTable)
     params: CycleParams = CycleParams(limits=LOOSE_LIMITS)
 
     @property
@@ -118,4 +120,5 @@ class World:
             gate=self.gate,
             report_store=self.report_store,
             params=self.params,
+            price_table=self.price_table,
         )

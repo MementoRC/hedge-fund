@@ -28,7 +28,7 @@ _RATE_KEYS = ("input", "output", "cache_write", "cache_read")
 def load_prices(path: Path) -> PriceTable:
     """The table at ``path``; an empty table without a fallback when the file is missing.
 
-    Raises ValueError, naming the file, for malformed TOML, an unknown top-level key, a
+    Raises ValueError, naming the file, for an unreadable file, malformed TOML, an unknown top-level key, a
     model table without exactly the four rates, or a rate or ``fallback_run_cost`` that is
     not a finite number >= 0.
     """
@@ -36,7 +36,11 @@ def load_prices(path: Path) -> PriceTable:
     if not path.exists():
         return PriceTable()
     try:
-        body = tomllib.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{path}: cannot read price file: {exc}") from exc
+    try:
+        body = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{path}: malformed price file: {exc}") from exc
     unknown = sorted(set(body) - _TOP_KEYS)

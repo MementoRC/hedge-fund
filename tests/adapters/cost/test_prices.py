@@ -67,6 +67,21 @@ def test_a_missing_file_is_an_empty_table(tmp_path: Path) -> None:
     assert load_prices(tmp_path / PRICES_FILE) == PriceTable()
 
 
+def test_a_directory_at_the_path_is_a_value_error(tmp_path: Path) -> None:
+    path = tmp_path / PRICES_FILE
+    path.mkdir()
+    with pytest.raises(ValueError, match="cannot read price file") as info:
+        load_prices(path)
+    assert str(info.value).startswith(f"{path}: ")
+
+
+def test_invalid_utf8_is_a_value_error(tmp_path: Path) -> None:
+    path = tmp_path / PRICES_FILE
+    path.write_bytes(b"fallback_run_cost = \xff\xfe\n")
+    with pytest.raises(ValueError, match="cannot read price file"):
+        load_prices(path)
+
+
 @pytest.mark.parametrize(
     ("text", "message"),
     [

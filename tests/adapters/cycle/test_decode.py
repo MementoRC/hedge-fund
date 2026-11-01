@@ -15,6 +15,7 @@ from hedge_fund.adapters._json import jsonable
 from hedge_fund.adapters.cycle.decode import decode_report
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalStatus
+from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, Spend
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import (
     ExecutionReport,
@@ -50,6 +51,8 @@ EMPTY = dataclasses.replace(
     failed_stage=None,
     error=None,
     planned_client_order_ids=(),
+    budget=None,
+    spend=None,
 )
 
 
@@ -103,6 +106,8 @@ def _report_with(x: float) -> CycleReport:
             (SubmitResult(OrderRequest(order, "hf-x"), SubmitStatus.ERROR, None, "boom"),),
             True,
         ),
+        budget=BudgetPlan(x, Estimate(x, EstimateSource.HISTORY, 1), 1, 3, 1, 2, x, False, ()),
+        spend=Spend(x, 1, 0, (), None),
     )
 
 
@@ -141,12 +146,30 @@ def test_non_finite_strings_decode_back_for_every_float_field(x: float) -> None:
     decoded = decode_report(_through_json(original))
     expected = list(_floats(original))
     found = list(_floats(decoded))
-    assert len(expected) == 30  # every float-typed field of the report types, once each
+    assert len(expected) == 34  # every float-typed field of the report types, once each
     assert len(found) == len(expected)
     if math.isnan(x):
         assert all(math.isnan(value) for value in found)
     else:
         assert found == expected
+
+
+def test_a_report_written_before_budgets_loads_with_none() -> None:
+    body = _through_json(FINITE)
+    del body["budget"], body["spend"]
+    decoded = decode_report(body)
+    assert (decoded.budget, decoded.spend) == (None, None)
+    assert decoded == dataclasses.replace(FINITE, budget=None, spend=None)
+
+
+def test_the_budget_and_spend_decode_to_their_types() -> None:
+    decoded = decode_report(_through_json(FINITE))
+    assert decoded.budget is not None
+    assert decoded.budget.estimate.source is EstimateSource.HISTORY
+    assert decoded.budget.reasons == ("k 3→2: 40×3×$0.80=$96.00 > $80.00",)
+    assert decoded.spend is not None
+    assert FINITE.spend is not None
+    assert decoded.spend.usage == FINITE.spend.usage
 
 
 @pytest.mark.parametrize(

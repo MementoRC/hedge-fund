@@ -3,6 +3,7 @@
 Every float-typed field goes through ``decode_float``, so the ``"nan"`` / ``"inf"`` /
 ``"-inf"`` strings ``jsonable`` writes come back as floats. Research names reuse the
 research store's decoders. A malformed body raises KeyError, TypeError or ValueError.
+``budget`` and ``spend`` are absent from reports written before 7c: they decode as None.
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ from datetime import date, datetime
 from typing import Any, TypeVar
 
 from hedge_fund.adapters._json import decode_float
-from hedge_fund.adapters.research.store import decode_candidate, decode_name
+from hedge_fund.adapters.research.store import decode_candidate, decode_name, decode_usage
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
+from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, Spend
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Holding, Order, OrderAction, OrderPlan
@@ -49,6 +51,8 @@ def decode_report(obj: Mapping[str, Any]) -> CycleReport:
         execution=_optional(obj["execution"], _execution),
         execution_interrupted=obj["execution_interrupted"],
         planned_client_order_ids=tuple(obj["planned_client_order_ids"]),
+        budget=_optional(obj.get("budget"), _budget_plan),
+        spend=_optional(obj.get("spend"), _spend),
     )
 
 
@@ -201,4 +205,36 @@ def _execution(obj: Mapping[str, Any]) -> ExecutionReport:
             for item in obj["results"]
         ),
         opening_halted=obj["opening_halted"],
+    )
+
+
+def _estimate(obj: Mapping[str, Any]) -> Estimate:
+    return Estimate(
+        cost=decode_float(obj["cost"]),
+        source=EstimateSource(obj["source"]),
+        n_samples=obj["n_samples"],
+    )
+
+
+def _budget_plan(obj: Mapping[str, Any]) -> BudgetPlan:
+    return BudgetPlan(
+        budget=decode_float(obj["budget"]),
+        estimate=_estimate(obj["estimate"]),
+        requested_n=obj["requested_n"],
+        requested_k=obj["requested_k"],
+        n=obj["n"],
+        k=obj["k"],
+        projected=decode_float(obj["projected"]),
+        skipped=obj["skipped"],
+        reasons=tuple(obj["reasons"]),
+    )
+
+
+def _spend(obj: Mapping[str, Any]) -> Spend:
+    return Spend(
+        total=decode_float(obj["total"]),
+        runs=obj["runs"],
+        unknown_runs=obj["unknown_runs"],
+        usage=tuple(decode_usage(item) for item in obj["usage"]),
+        over_budget=obj["over_budget"],
     )

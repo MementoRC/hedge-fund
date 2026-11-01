@@ -35,8 +35,10 @@ REPORT = CycleReport(
 
 def test_options_defaults() -> None:
     assert CycleOptions() == CycleOptions(
-        dry_run=False, fresh_research=False, k=3, max_workers=4, any_time=False
+        dry_run=False, fresh_research=False, k=3, max_workers=4, any_time=False, budget=None
     )
+    assert REPORT.budget is None
+    assert REPORT.spend is None
 
 
 def test_outcome_values() -> None:
@@ -79,6 +81,8 @@ def test_report_field_order() -> None:
         "execution",
         "execution_interrupted",
         "planned_client_order_ids",
+        "budget",
+        "spend",
     ]
 
 

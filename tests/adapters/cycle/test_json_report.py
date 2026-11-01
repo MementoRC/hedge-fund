@@ -15,7 +15,7 @@ from hedge_fund.adapters._json import jsonable
 from hedge_fund.adapters.cycle.json_report import JsonCycleReportStore
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
-from hedge_fund.domain.cost import ModelUsage
+from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, ModelUsage, Spend
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.ledger import ReportLoad
@@ -152,6 +152,18 @@ REPORT = CycleReport(
     ),
     execution_interrupted=True,
     planned_client_order_ids=(CLIENT_ID,),
+    budget=BudgetPlan(
+        budget=80.0,
+        estimate=Estimate(cost=0.8, source=EstimateSource.HISTORY, n_samples=30),
+        requested_n=40,
+        requested_k=3,
+        n=40,
+        k=2,
+        projected=64.0,
+        skipped=False,
+        reasons=("k 3→2: 40×3×$0.80=$96.00 > $80.00",),
+    ),
+    spend=Spend(total=1.5, runs=1, unknown_runs=0, usage=(USAGE,), over_budget=False),
 )
 
 ORDER_JSON = {
@@ -286,6 +298,24 @@ EXPECTED: dict[str, Any] = {
     },
     "execution_interrupted": True,
     "planned_client_order_ids": [CLIENT_ID],
+    "budget": {
+        "budget": 80.0,
+        "estimate": {"cost": 0.8, "source": "history", "n_samples": 30},
+        "requested_n": 40,
+        "requested_k": 3,
+        "n": 40,
+        "k": 2,
+        "projected": 64.0,
+        "skipped": False,
+        "reasons": ["k 3→2: 40×3×$0.80=$96.00 > $80.00"],
+    },
+    "spend": {
+        "total": 1.5,
+        "runs": 1,
+        "unknown_runs": 0,
+        "usage": [USAGE_JSON],
+        "over_budget": False,
+    },
 }
 
 

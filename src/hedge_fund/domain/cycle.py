@@ -9,6 +9,7 @@ from enum import StrEnum
 
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision
+from hedge_fund.domain.cost import BudgetPlan, Spend
 from hedge_fund.domain.execution import ExecutionReport
 from hedge_fund.domain.orders import OrderPlan
 from hedge_fund.domain.portfolio import TargetPortfolio
@@ -19,13 +20,18 @@ from hedge_fund.domain.shortlist import Shortlist
 
 @dataclass(frozen=True)
 class CycleOptions:
-    """Per-run switches; ``any_time`` skips the submission-window check."""
+    """Per-run switches; ``any_time`` skips the submission-window check.
+
+    ``budget`` (USD) caps this cycle's planned research spend: K, then N, are cut before any
+    LLM call (7c). None researches the whole shortlist ``k`` times.
+    """
 
     dry_run: bool = False
     fresh_research: bool = False
     k: int = 3
     max_workers: int = 4
     any_time: bool = False
+    budget: float | None = None
 
 
 class CycleOutcome(StrEnum):
@@ -53,7 +59,9 @@ class CycleReport:
     (``"<ExceptionType>: <message>"``) are set only for ERROR and INTERRUPTED.
     ``order_prices`` maps ticker -> (price, close date). ``execution_interrupted`` is True
     when ``execute_plan`` raised; ``execution`` is then None and
-    ``planned_client_order_ids`` holds the plan's ids in submission order. Not validated.
+    ``planned_client_order_ids`` holds the plan's ids in submission order. ``budget`` is the
+    pre-research plan (None without a budget, or when stored research was reused); ``spend``
+    covers the research runs this cycle made (None until research finished). Not validated.
     """
 
     as_of: date
@@ -76,3 +84,5 @@ class CycleReport:
     execution: ExecutionReport | None
     execution_interrupted: bool
     planned_client_order_ids: tuple[str, ...]
+    budget: BudgetPlan | None = None
+    spend: Spend | None = None

@@ -7,7 +7,7 @@ ERROR / INTERRUPTED report naming the failed stage, then re-raises.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
@@ -15,6 +15,7 @@ import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
+from hedge_fund.domain.cost import BudgetPlan, PriceTable, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport
 from hedge_fund.domain.fundamentals import FundamentalsSnapshot
@@ -25,6 +26,8 @@ from hedge_fund.domain.risk import NavHistory, RiskVerdict
 from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.domain.snapshot import PriceSnapshot
 from hedge_fund.engine.account import nav_history
+from hedge_fund.engine.cost import check_budget, estimate, history_costs, spend
+from hedge_fund.engine.cost import plan as plan_budget
 from hedge_fund.engine.dates import previous_weekday
 from hedge_fund.engine.execution import (
     MARKET_TZ,
@@ -61,6 +64,8 @@ from hedge_fund.services.snapshots import build_snapshot
 from hedge_fund.universe import Universe
 
 HELD_PRICE_DAYS = 14  # calendar days of closes fetched for held names outside the snapshot
+HISTORY_RUNS = 30  # stored run costs the budget estimate is the median of (newest first)
+HISTORY_DATES = 60  # stored research dates read for them, at most (newest first)
 
 _NOT_APPROVED: Mapping[ApprovalStatus, CycleOutcome] = {
     ApprovalStatus.BLOCKED: CycleOutcome.BLOCKED,
@@ -101,7 +106,7 @@ class CycleParams:
 
 @dataclass(frozen=True)
 class CycleDeps:
-    """The ports one cycle runs over, and its params."""
+    """The ports one cycle runs over, its params, and the LLM price table (7c)."""
 
     universe: Universe
     prices: DataProvider
@@ -113,6 +118,7 @@ class CycleDeps:
     gate: ApprovalGate
     report_store: CycleReportStore
     params: CycleParams = CycleParams()
+    price_table: PriceTable = field(default_factory=PriceTable)
 
 
 @dataclass
@@ -137,6 +143,8 @@ class _Run:
     execution: ExecutionReport | None = None
     execution_interrupted: bool = False
     planned_client_order_ids: tuple[str, ...] = ()
+    budget: BudgetPlan | None = None
+    spend: Spend | None = None
 
     def report(self, outcome: CycleOutcome, error: BaseException | None) -> CycleReport:
         """The report so far; ``failed_stage`` and ``error`` only when ``error`` is set."""
@@ -161,6 +169,8 @@ class _Run:
             execution=self.execution,
             execution_interrupted=self.execution_interrupted,
             planned_client_order_ids=self.planned_client_order_ids,
+            budget=self.budget,
+            spend=self.spend,
         )
 
 
@@ -209,8 +219,14 @@ def _cycle(
     options: CycleOptions,
     now: Callable[[], datetime],
 ) -> CycleOutcome:
-    """Steps 0-12; the caller saves the report (step 13)."""
+    """Steps 0-12; the caller saves the report (step 13).
+
+    A budget that fits no name (7c) ends the cycle NOTHING_TO_DO after the shortlist: no
+    portfolio, no orders, no approval, no broker write.
+    """
     _check_live(run.as_of, today)
+    if options.budget is not None:
+        check_budget(options.budget)
     run.stage = "account"
     current = read_snapshot(deps.broker, as_of=run.as_of, now=now)
     run.account = current
@@ -222,7 +238,10 @@ def _cycle(
     state = check_breakers(nav, params=deps.params.breakers)
     if state.daily_tripped or state.drawdown_tripped:
         return CycleOutcome.HALTED_PREFLIGHT
-    verdict, plan = _plan(deps, run, current, nav, today=today, options=options)
+    planned = _plan(deps, run, current, nav, today=today, options=options)
+    if planned is None:
+        return CycleOutcome.NOTHING_TO_DO
+    verdict, plan = planned
     if options.dry_run:
         return CycleOutcome.DRY_RUN
     return _approve_and_execute(deps, run, verdict, plan, options=options, now=now)
@@ -236,8 +255,11 @@ def _plan(
     *,
     today: date,
     options: CycleOptions,
-) -> tuple[RiskVerdict, OrderPlan]:
-    """Steps 4-10: data, shortlist, research, portfolio, risk, prices and orders."""
+) -> tuple[RiskVerdict, OrderPlan] | None:
+    """Steps 4-10: data, shortlist, research, portfolio, risk, prices and orders.
+
+    None when a budget skip (7c) stops the cycle after the shortlist.
+    """
     params = deps.params
     snapshot, fundamentals = _data(deps, run)
     run.stage = "shortlist"
@@ -245,6 +267,8 @@ def _plan(
     run.shortlist = candidates
     run.stage = "research"
     research = _research(deps, run, candidates, today=today, options=options)
+    if research is None:
+        return None
     run.research = research
     run.stage = "portfolio"
     benchmark = fetch_benchmark(deps.prices, run.as_of, lookback_days=params.risk.lookback)
@@ -346,34 +370,115 @@ def _data(deps: CycleDeps, run: _Run) -> tuple[PriceSnapshot, FundamentalsSnapsh
 
 def _research(
     deps: CycleDeps, run: _Run, candidates: Shortlist, *, today: date, options: CycleOptions
-) -> ResearchResult:
+) -> ResearchResult | None:
     """Step 6: reuse today's stored research if it matches (decision 2), else research the
     shortlist and save the result (a cache, so dry runs save too).
+
+    With ``options.budget`` the ``budget`` stage first cuts K, then N (7c). A plan that
+    leaves no name returns None (the cycle stops) and saves nothing, so a later cycle still
+    researches. ``run.spend`` covers the runs made here (none when reused or skipped).
     """
+    table = deps.price_table
+    min_k = None if options.budget is None else min(deps.params.conviction.min_valid, options.k)
     stored = None if options.fresh_research else deps.research_store.load(run.as_of)
-    if stored is not None and _reusable(stored, candidates, k=options.k):
+    if stored is not None and _reusable(stored, candidates, k=options.k, min_k=min_k):
         run.research_reused = True
+        run.spend = spend((), table, options.budget)
         return stored
+    k, planned = options.k, candidates
+    if options.budget is not None:
+        budget = _budget(deps, run, candidates, budget=options.budget, k=options.k, today=today)
+        if budget.skipped:
+            run.spend = spend((), table, options.budget)
+            return None
+        k = budget.k
+        planned = Shortlist(
+            as_of=candidates.as_of,
+            candidates=candidates.candidates[: budget.n],
+            trimmed=candidates.trimmed,
+        )
     result = research_shortlist(
         deps.researcher,
-        candidates,
-        k=options.k,
+        planned,
+        k=k,
         max_workers=options.max_workers,
         params=deps.params.conviction,
         today=today,
+    )
+    run.spend = spend(
+        (record for name in result.names for record in name.runs), table, options.budget
     )
     deps.research_store.save(result)
     return result
 
 
-def _reusable(stored: ResearchResult, candidates: Shortlist, *, k: int) -> bool:
-    """The shortlist's tickers in its order, ``k`` runs per name and no error run."""
+def _reusable(stored: ResearchResult, candidates: Shortlist, *, k: int, min_k: int | None) -> bool:
+    """No error run, and: without a budget (``min_k`` None) the shortlist's tickers in its
+    order with ``k`` runs per name; with one, a non-empty prefix of them with at least
+    ``min_k`` runs per name (what a budgeted cycle stores).
+    """
     names = stored.names
-    return (
-        [name.candidate.ticker for name in names] == [c.ticker for c in candidates.candidates]
-        and all(len(name.runs) == k for name in names)
-        and all(record.error is None for name in names for record in name.runs)
+    tickers = [name.candidate.ticker for name in names]
+    wanted = [c.ticker for c in candidates.candidates]
+    if min_k is None:
+        shaped = tickers == wanted and all(len(name.runs) == k for name in names)
+    else:
+        shaped = (
+            bool(tickers)
+            and tickers == wanted[: len(tickers)]
+            and all(len(name.runs) >= min_k for name in names)
+        )
+    return shaped and all(record.error is None for name in names for record in name.runs)
+
+
+def _budget(
+    deps: CycleDeps,
+    run: _Run,
+    candidates: Shortlist,
+    *,
+    budget: float,
+    k: int,
+    today: date,
+) -> BudgetPlan:
+    """The ``budget`` stage, before any LLM call: ``research_shortlist``'s live-date check,
+    the per-run estimate (median of the newest ``HISTORY_RUNS`` known run costs from the
+    stored research, else the table's fallback; BudgetError with neither) and the plan.
+    The stage is reset to ``research`` afterwards.
+    """
+    run.stage = "budget"
+    _check_live(candidates.as_of, today)
+    table = deps.price_table
+    history = history_costs(_history(deps.research_store, run.as_of), table, window=HISTORY_RUNS)
+    planned = plan_budget(
+        budget,
+        estimate(history, table.fallback_run_cost),
+        n=len(candidates.candidates),
+        k=k,
+        min_k=deps.params.conviction.min_valid,
     )
+    run.budget = planned
+    run.stage = "research"
+    return planned
+
+
+def _history(store: ResearchStore, as_of: date) -> Iterator[ResearchResult]:
+    """Stored results newest first, at most ``HISTORY_DATES`` dates, ``as_of`` itself skipped.
+
+    Lazy, so ``history_costs`` stops the loads once it has its costs. Best effort: a date
+    whose stored file is malformed (``load`` raises ValueError) is skipped.
+    """
+    days = [day for day in reversed(store.dates()) if day != as_of][:HISTORY_DATES]
+    for day in days:
+        result = _load_or_none(store, day)
+        if result is not None:
+            yield result
+
+
+def _load_or_none(store: ResearchStore, day: date) -> ResearchResult | None:
+    try:
+        return store.load(day)
+    except ValueError:
+        return None
 
 
 def _order_prices(

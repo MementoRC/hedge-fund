@@ -15,6 +15,7 @@ from hedge_fund.adapters._json import jsonable
 from hedge_fund.adapters.cycle.json_report import JsonCycleReportStore
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
+from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, ModelUsage, Spend
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.ledger import ReportLoad
@@ -30,6 +31,22 @@ EASTERN = timezone(timedelta(hours=-4))
 CANDIDATE = Candidate(ticker="AAPL", sector="Tech", side=Side.LONG, depth=1, composite=1.25)
 ORDER = Order(ticker="AAPL", action=OrderAction.BUY, shares=10, ref_price=100.5, notional=1005.0)
 CLIENT_ID = "hf-2026-09-30-AAPL-buy-10"
+USAGE = ModelUsage(
+    model="claude-opus-5-5",
+    calls=2,
+    input_tokens=1200,
+    output_tokens=300,
+    cache_write_tokens=100,
+    cache_read_tokens=400,
+)
+USAGE_JSON = {
+    "model": "claude-opus-5-5",
+    "calls": 2,
+    "input_tokens": 1200,
+    "output_tokens": 300,
+    "cache_write_tokens": 100,
+    "cache_read_tokens": 400,
+}
 
 # Every field populated (execution and execution_interrupted together only pin the shape).
 REPORT = CycleReport(
@@ -63,6 +80,7 @@ REPORT = CycleReport(
                         reports={"market_report": "m"},
                         seconds=1.5,
                         error=None,
+                        usage=(USAGE,),
                     ),
                 ),
                 valid=1,
@@ -134,6 +152,18 @@ REPORT = CycleReport(
     ),
     execution_interrupted=True,
     planned_client_order_ids=(CLIENT_ID,),
+    budget=BudgetPlan(
+        budget=80.0,
+        estimate=Estimate(cost=0.8, source=EstimateSource.HISTORY, n_samples=30),
+        requested_n=40,
+        requested_k=3,
+        n=40,
+        k=2,
+        projected=64.0,
+        skipped=False,
+        reasons=("k 3→2: 40×3×$0.80=$96.00 > $80.00",),
+    ),
+    spend=Spend(total=1.5, runs=1, unknown_runs=0, usage=(USAGE,), over_budget=False),
 )
 
 ORDER_JSON = {
@@ -185,6 +215,7 @@ EXPECTED: dict[str, Any] = {
                         "reports": {"market_report": "m"},
                         "seconds": 1.5,
                         "error": None,
+                        "usage": [USAGE_JSON],
                     }
                 ],
                 "valid": 1,
@@ -267,6 +298,24 @@ EXPECTED: dict[str, Any] = {
     },
     "execution_interrupted": True,
     "planned_client_order_ids": [CLIENT_ID],
+    "budget": {
+        "budget": 80.0,
+        "estimate": {"cost": 0.8, "source": "history", "n_samples": 30},
+        "requested_n": 40,
+        "requested_k": 3,
+        "n": 40,
+        "k": 2,
+        "projected": 64.0,
+        "skipped": False,
+        "reasons": ["k 3→2: 40×3×$0.80=$96.00 > $80.00"],
+    },
+    "spend": {
+        "total": 1.5,
+        "runs": 1,
+        "unknown_runs": 0,
+        "usage": [USAGE_JSON],
+        "over_budget": False,
+    },
 }
 
 

@@ -4,6 +4,7 @@ from datetime import date
 
 import pytest
 
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.research import Rating, ResearchResult
 from hedge_fund.ports.research import Researcher, ResearchStore
 from tests.fakes import InMemoryResearchStore, ScriptedResearcher
@@ -61,3 +62,9 @@ def test_in_memory_research_store_dates_are_sorted_and_unique() -> None:
 
 def test_in_memory_research_store_has_no_dates_when_empty() -> None:
     assert InMemoryResearchStore().dates() == ()
+
+
+def test_scripted_researcher_puts_its_usage_on_every_record() -> None:
+    usage = (ModelUsage("m", 1, 10, 5, 0, 0),)
+    assert ScriptedResearcher(usage=usage).run("A", AS_OF, 0).usage == usage
+    assert ScriptedResearcher().run("A", AS_OF, 0).usage is None

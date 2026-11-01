@@ -6,6 +6,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
+from hedge_fund.domain.cost import ModelUsage, ResearchRunError
 from hedge_fund.domain.research import NameResearch, ResearchResult, RunRecord
 from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.engine.dates import previous_weekday
@@ -32,7 +33,8 @@ def research_shortlist(
     propagates after cancelling queued runs (only in-flight runs are left to finish). Names
     follow the shortlist's candidate order. Runs are grouped by the candidate they were
     submitted for; a record whose ticker, as_of or run_index differs from the request
-    becomes an error record for the requested run.
+    becomes an error record for the requested run. An error record keeps the usage it was
+    billed for: a ResearchRunError's, or the mismatched record's.
     """
     _validate_count("k", k)
     _validate_count("max_workers", max_workers)
@@ -70,7 +72,13 @@ def research_shortlist(
     return ResearchResult(as_of=as_of, names=names)
 
 
-def _error_record(ticker: str, as_of: date, run_index: int, error: str) -> RunRecord:
+def _error_record(
+    ticker: str,
+    as_of: date,
+    run_index: int,
+    error: str,
+    usage: tuple[ModelUsage, ...] | None = None,
+) -> RunRecord:
     return RunRecord(
         ticker=ticker,
         as_of=as_of,
@@ -80,12 +88,15 @@ def _error_record(ticker: str, as_of: date, run_index: int, error: str) -> RunRe
         reports={},
         seconds=0.0,
         error=error,
+        usage=usage,
     )
 
 
 def _run_one(researcher: Researcher, ticker: str, as_of: date, run_index: int) -> RunRecord:
     try:
         record = researcher.run(ticker, as_of, run_index)
+    except ResearchRunError as exc:  # its message is already the cause's "<Type>: <message>"
+        return _error_record(ticker, as_of, run_index, str(exc), exc.usage)
     except Exception as exc:
         return _error_record(ticker, as_of, run_index, f"{type(exc).__name__}: {exc}")
     if (record.ticker, record.as_of, record.run_index) != (ticker, as_of, run_index):
@@ -95,6 +106,7 @@ def _run_one(researcher: Researcher, ticker: str, as_of: date, run_index: int) -
             run_index,
             f"ValueError: researcher returned {record.ticker!r} {record.as_of} run "
             f"{record.run_index}, expected {ticker!r} {as_of} run {run_index}",
+            record.usage,
         )
     return record
 

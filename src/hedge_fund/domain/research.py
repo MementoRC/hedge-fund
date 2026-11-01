@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.shortlist import Candidate
 
 
@@ -46,7 +47,12 @@ class Verdict(StrEnum):
 
 @dataclass(frozen=True)
 class RunRecord:
-    """One research run; a failed run has ``rating=None`` and an ``error``."""
+    """One research run; a failed run has ``rating=None`` and an ``error``.
+
+    ``usage`` is the run's LLM usage per model, sorted by model; None when it was not
+    captured (files written before 7c, fakes, a failed counter). An errored run keeps the
+    usage it was billed for.
+    """
 
     ticker: str
     as_of: date
@@ -56,6 +62,7 @@ class RunRecord:
     reports: Mapping[str, str]
     seconds: float
     error: str | None
+    usage: tuple[ModelUsage, ...] | None = None
 
     @property
     def valid(self) -> bool:

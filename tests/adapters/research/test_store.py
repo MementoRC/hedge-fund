@@ -15,9 +15,11 @@ from hedge_fund.adapters.research.store import (
     decode_candidate,
     decode_name,
     decode_run,
+    decode_usage,
     load_research,
     save_research,
 )
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.research import (
     NameResearch,
     Rating,
@@ -29,6 +31,10 @@ from hedge_fund.domain.shortlist import Candidate, Side
 from hedge_fund.ports.research import ResearchStore
 
 AS_OF = date(2026, 9, 30)
+USAGE = (
+    ModelUsage("claude-opus-5-5", 2, 1200, 300, 100, 400),
+    ModelUsage("claude-sonnet-5", 5, 900, 80, 0, 600),
+)
 
 
 def _result(seconds: float = 1.25) -> ResearchResult:
@@ -372,3 +378,57 @@ def test_json_store_dates_do_not_read_the_files(tmp_path: Path) -> None:
     assert store.dates() == (date(2026, 9, 30),)
     with pytest.raises(ValueError, match="malformed research file"):
         store.load(date(2026, 9, 30))
+
+
+# --- usage ---------------------------------------------------------------------------------
+
+
+def _with_usage() -> ResearchResult:
+    """``_result()`` whose first run carries USAGE (the errored second run has none)."""
+    first = _result().names[0]
+    ok = dataclasses.replace(first.runs[0], usage=USAGE)
+    name = dataclasses.replace(first, runs=(ok, first.runs[1]))
+    return dataclasses.replace(_result(), names=(name, *_result().names[1:]))
+
+
+def test_usage_is_written_as_a_list_or_null_and_round_trips(tmp_path: Path) -> None:
+    result = _with_usage()
+    path = save_research(result, tmp_path)
+    runs = json.loads(path.read_text(encoding="utf-8"))["result"]["names"][0]["runs"]
+    assert runs[0]["usage"][0] == {
+        "model": "claude-opus-5-5",
+        "calls": 2,
+        "input_tokens": 1200,
+        "output_tokens": 300,
+        "cache_write_tokens": 100,
+        "cache_read_tokens": 400,
+    }
+    assert runs[1]["usage"] is None
+    assert load_research(path) == result
+
+
+def test_an_old_file_without_usage_still_verifies_and_loads(tmp_path: Path) -> None:
+    path = save_research(_result(), tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))["result"]
+    for name in payload["names"]:
+        for run in name["runs"]:
+            del run["usage"]
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    old = path.with_name(f"2026-09-30_{digest}.json")
+    body = {"created_at": "2026-09-30T22:00:00+00:00", "result": payload}
+    old.write_text(json.dumps(body), encoding="utf-8")
+    assert old != path  # the new format's digest differs: only dedup notices
+    assert load_research(old) == _result()
+
+
+def test_decode_usage() -> None:
+    item = {
+        "model": "claude-sonnet-5",
+        "calls": 5,
+        "input_tokens": 900,
+        "output_tokens": 80,
+        "cache_write_tokens": 0,
+        "cache_read_tokens": 600,
+    }
+    assert decode_usage(item) == USAGE[1]

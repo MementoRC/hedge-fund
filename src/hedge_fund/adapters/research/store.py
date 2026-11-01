@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from hedge_fund.adapters._json import decode_float
 from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.research import NameResearch, Rating, ResearchResult, RunRecord, Verdict
 from hedge_fund.domain.shortlist import Candidate, Side
 
@@ -180,8 +181,12 @@ def decode_name(item: Mapping[str, Any]) -> NameResearch:
 
 
 def decode_run(item: Mapping[str, Any]) -> RunRecord:
-    """A RunRecord from its JSON object (floats through ``decode_float``)."""
+    """A RunRecord from its JSON object (floats through ``decode_float``).
+
+    ``usage`` is absent from files written before 7c: they decode with ``usage=None``.
+    """
     rating = item["rating"]
+    usage = item.get("usage")
     return RunRecord(
         ticker=item["ticker"],
         as_of=date.fromisoformat(item["as_of"]),
@@ -191,6 +196,19 @@ def decode_run(item: Mapping[str, Any]) -> RunRecord:
         reports=dict(item["reports"]),
         seconds=decode_float(item["seconds"]),
         error=item["error"],
+        usage=None if usage is None else tuple(decode_usage(row) for row in usage),
+    )
+
+
+def decode_usage(item: Mapping[str, Any]) -> ModelUsage:
+    """A ModelUsage from its JSON object; KeyError or TypeError if malformed."""
+    return ModelUsage(
+        model=item["model"],
+        calls=item["calls"],
+        input_tokens=item["input_tokens"],
+        output_tokens=item["output_tokens"],
+        cache_write_tokens=item["cache_write_tokens"],
+        cache_read_tokens=item["cache_read_tokens"],
     )
 
 

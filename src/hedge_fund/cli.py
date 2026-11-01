@@ -365,7 +365,7 @@ def _exit_code(report: CycleReport) -> int:
 
 
 def _summary(report: CycleReport, runs: Path) -> str:
-    """Outcome, account, shortlist, research, budget plan, spend, verdict, plan and legs; the reports directory."""
+    """Outcome, account, shortlist, research, budget, spend, verdict, plan and legs; reports dir."""
     lines = [f"outcome: {report.outcome.value}", f"as_of: {report.as_of}"]
     if report.account is not None:
         holdings = len(report.account.holdings)

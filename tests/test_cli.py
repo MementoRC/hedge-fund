@@ -339,6 +339,19 @@ def test_a_budget_skip_ends_nothing_to_do_and_prints_why(
     assert world.gate.summaries == []
 
 
+@pytest.mark.parametrize(("value", "code"), [("nan", 1), ("-1", 1), ("abc", 2)])
+def test_a_bad_budget_fails_before_the_cycle_reads_the_broker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str, code: int
+) -> None:
+    world = World()
+    _use(monkeypatch, world)
+    result = _invoke("--dry-run", f"--budget={value}", "--root", str(tmp_path))
+    assert result.exit_code == code, result.output
+    if code == 1:  # check_budget fails at the inputs stage
+        assert "BudgetError" in result.stderr
+    assert world.broker.submitted == []
+
+
 def test_a_budget_without_an_estimate_exits_1_with_a_budget_stage_report(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

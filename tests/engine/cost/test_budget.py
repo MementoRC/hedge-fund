@@ -124,6 +124,27 @@ def test_a_budget_equal_to_the_product_fits() -> None:
     assert (out.n, out.k, out.reasons) == (1, 3, ())
 
 
+@pytest.mark.parametrize("cost", [-0.1, math.nan, math.inf])
+def test_a_negative_or_non_finite_estimate_is_a_budget_error(cost: float) -> None:
+    bad = Estimate(cost=cost, source=EstimateSource.HISTORY, n_samples=1)
+    with pytest.raises(BudgetError, match="estimate cost must be a finite number >= 0"):
+        _plan(100.0, cost=bad)
+
+
+def test_a_large_shortlist_is_cut_to_the_last_name_that_fits() -> None:
+    thirteen_mills = Estimate(cost=0.013, source=EstimateSource.HISTORY, n_samples=30)
+    out = plan(97.5, thirteen_mills, n=5000, k=3, min_k=2)
+    assert out.k == 2
+    assert out.n * out.k * 0.013 <= 97.5 * (1 + 1e-9)
+    assert (out.n + 1) * out.k * 0.013 > 97.5 * (1 + 1e-9)
+
+
+def test_a_budget_equal_to_a_cut_k_product_keeps_that_k() -> None:
+    dime = Estimate(cost=0.1, source=EstimateSource.HISTORY, n_samples=1)
+    out = plan(3 * 2 * 0.1, dime, n=3, k=4, min_k=1)
+    assert (out.n, out.k) == (3, 2)
+
+
 def test_largest_steps_down_from_the_floor_until_it_fits() -> None:
     assert _largest(5, 9.7, lambda value: value <= 3) == 3
     assert _largest(5, 2.9, lambda value: True) == 2

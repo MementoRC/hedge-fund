@@ -13,7 +13,8 @@ TOLERANCE = 1e-9  # relative slack: a budget equal to n × k × cost fits despit
 def plan(budget: float, estimate: Estimate, n: int, k: int, min_k: int) -> BudgetPlan:
     """Fit ``n`` names × ``k`` runs × ``estimate.cost`` into ``budget``, in this order.
 
-    (a) BudgetError unless ``budget`` is a finite number > 0. (b) ``n < 1``: skipped,
+    (a) BudgetError unless ``budget`` is a finite number > 0 and the estimate's cost a
+    finite number >= 0. (b) ``n < 1``: skipped,
     reason ``"empty shortlist"``. (c) A zero cost, or a plan that fits, is unchanged.
     (d) Otherwise K drops to the largest value in ``[min(min_k, k), k]`` that fits; if
     none fits, K is that floor and N drops to the largest value in ``[0, n]`` that fits
@@ -22,6 +23,8 @@ def plan(budget: float, estimate: Estimate, n: int, k: int, min_k: int) -> Budge
     """
     check_budget(budget)
     cost = estimate.cost
+    if not math.isfinite(cost) or cost < 0:
+        raise BudgetError(f"estimate cost must be a finite number >= 0, got {cost!r}")
     if n < 1:
         return _plan(budget, estimate, n, k, n=n, k_planned=k, reasons=("empty shortlist",))
     limit = budget * (1 + TOLERANCE)

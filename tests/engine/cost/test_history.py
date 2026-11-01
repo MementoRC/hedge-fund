@@ -78,6 +78,16 @@ def test_runs_that_cost_nothing_are_skipped() -> None:
     assert history_costs([ResearchResult(as_of=OLDER, names=(name,))], TABLE) == (1.0,)
 
 
+def test_runs_priced_by_an_unknown_model_drop_out_of_the_history() -> None:
+    other = RunRecord(
+        "AAA", NEWER, 1, Rating.BUY, "", {}, 1.0, None, (ModelUsage("other", 1, 5, 0, 0, 0),)
+    )
+    name = NameResearch(
+        CANDIDATE, (_run(0, 1.0, None), other), 0, None, None, None, Verdict.INSUFFICIENT
+    )
+    assert history_costs([ResearchResult(as_of=OLDER, names=(name,))], TABLE) == (1.0,)
+
+
 # --- estimate ----------------------------------------------------------------------------
 
 

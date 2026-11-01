@@ -33,8 +33,8 @@ def test_a_live_dry_run_writes_a_report_and_no_snapshot(
 ) -> None:
     real = cli.build_deps
 
-    def scripted(root: Path) -> CycleDeps:
-        return dataclasses.replace(real(root), researcher=ScriptedResearcher())
+    def scripted(root: Path, prices: Path) -> CycleDeps:
+        return dataclasses.replace(real(root, prices), researcher=ScriptedResearcher())
 
     monkeypatch.setattr(cli, "build_deps", scripted)
     result = CliRunner().invoke(cli.app, ["cycle", "--dry-run", "-k", "1", "--root", str(tmp_path)])

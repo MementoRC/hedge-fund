@@ -23,6 +23,7 @@ from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.attribution import JsonAttributionReportStore
 from hedge_fund.adapters.attribution.json_report import ATTRIBUTIONS_DIR
 from hedge_fund.adapters.broker import AlpacaPaperBroker
+from hedge_fund.adapters.cost import PRICES_FILE, load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
@@ -42,6 +43,7 @@ from hedge_fund.domain.attribution import (
     AttributionReport,
     AttributionTotals,
 )
+from hedge_fund.domain.cost import BudgetPlan, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import Fill, MarkedLot, SettlementReport, SettleOutcome
@@ -85,6 +87,7 @@ _VERIFY_EXIT: Mapping[VerifyOutcome, int] = {
     VerifyOutcome.GAPS: 2,
     VerifyOutcome.FAILED: 1,
 }
+_OVER_BUDGET: Mapping[bool | None, str] = {None: "n/a", True: "yes", False: "no"}
 
 app = typer.Typer(add_completion=False)
 
@@ -99,14 +102,16 @@ def clock() -> datetime:
     return datetime.now(UTC)
 
 
-def build_deps(root: Path) -> CycleDeps:
-    """The real adapters, with every file under ``root``.
+def build_deps(root: Path, prices: Path) -> CycleDeps:
+    """The real adapters, with every file under ``root``, and the LLM price table at ``prices``.
 
     The broker and the fundamentals provider are built first, so missing credentials
-    (BrokerError, FundamentalsProviderError) fail before anything is read.
+    (BrokerError, FundamentalsProviderError) fail before anything is read; a malformed price
+    table raises ValueError.
     """
     broker = AlpacaPaperBroker()
     fundamentals = default_fundamentals_provider(root / "cache" / "fundamentals", UNIVERSE)
+    price_table = load_prices(prices)
     return CycleDeps(
         universe=load_universe(UNIVERSE),
         prices=default_provider(root / "cache" / "prices", UNIVERSE),
@@ -117,6 +122,7 @@ def build_deps(root: Path) -> CycleDeps:
         snapshot_store=JsonSnapshotStore(root),
         gate=ConsoleApprovalGate(),
         report_store=JsonCycleReportStore(root),
+        price_table=price_table,
     )
 
 
@@ -188,16 +194,28 @@ def cycle(
         bool, typer.Option("--any-time", help="Skip the weekday 09:25-16:15 ET window check.")
     ] = False,
     k: Annotated[int, typer.Option("-k", "--k", min=1, help="Research runs per name.")] = 3,
+    budget: Annotated[
+        float | None,
+        typer.Option(
+            "--budget", help="LLM budget in USD for this cycle's research: cuts K, then N."
+        ),
+    ] = None,
+    prices: Annotated[
+        Path | None,
+        typer.Option("--prices", help="LLM price table (TOML). Default: <root>/prices.toml."),
+    ] = None,
     root: Annotated[Path, typer.Option("--root", help="Data root.")] = Path("data"),
 ) -> None:
     """Run one paper-trading cycle, from data to execution, and save its report."""
     runs = root / RUNS_DIR
     try:
-        deps = build_deps(root)
+        deps = build_deps(root, root / PRICES_FILE if prices is None else prices)
     except (BrokerError, FundamentalsProviderError, ValueError) as exc:
         _fail(f"cannot start the cycle: {exc}", exc)
     today = clock().astimezone(MARKET_TZ).date()
-    options = CycleOptions(dry_run=dry_run, fresh_research=fresh_research, k=k, any_time=any_time)
+    options = CycleOptions(
+        dry_run=dry_run, fresh_research=fresh_research, k=k, any_time=any_time, budget=budget
+    )
     day = today if as_of is None else as_of.date()
     try:
         report = run_cycle(deps, as_of=day, today=today, options=options, now=clock)
@@ -347,15 +365,14 @@ def _exit_code(report: CycleReport) -> int:
 
 
 def _summary(report: CycleReport, runs: Path) -> str:
-    """Outcome, account, shortlist, research, verdict, plan and legs; the reports directory."""
+    """Outcome, account, shortlist, research, budget plan, spend, verdict, plan and legs; the reports directory."""
     lines = [f"outcome: {report.outcome.value}", f"as_of: {report.as_of}"]
     if report.account is not None:
         holdings = len(report.account.holdings)
         lines.append(f"account: equity {report.account.equity:,.2f}, {holdings} holdings")
     if report.shortlist is not None:
         lines.append(f"shortlist: {len(report.shortlist.candidates)} candidates")
-    if report.research is not None:
-        lines.append(_research_line(report.research, reused=report.research_reused))
+    lines += _research_lines(report)
     if report.verdict is not None:
         lines.append(f"verdict: {_verdict_line(report.verdict)}")
     if report.plan is not None:
@@ -374,6 +391,37 @@ def _research_line(research: ResearchResult, *, reused: bool) -> str:
     suffix = " (reused)" if reused else ""
     return (
         f"research: {len(research.names)} names, {len(records)} runs, error runs: {errors}{suffix}"
+    )
+
+
+def _research_lines(report: CycleReport) -> list[str]:
+    """The research line, then the budget plan and the spend when the cycle has them."""
+    lines: list[str] = []
+    if report.research is not None:
+        lines.append(_research_line(report.research, reused=report.research_reused))
+    if report.budget is not None:
+        lines += _budget_lines(report.budget)
+    if report.spend is not None:
+        lines.append(_spend_line(report.spend))
+    return lines
+
+
+def _budget_lines(plan: BudgetPlan) -> list[str]:
+    estimate = plan.estimate
+    skipped = ", research skipped" if plan.skipped else ""
+    head = (
+        f"budget: ${plan.budget:,.2f}, estimate ${estimate.cost:,.2f}/run "
+        f"({estimate.source.value}, {estimate.n_samples} samples), "
+        f"N×K {plan.requested_n}×{plan.requested_k} → {plan.n}×{plan.k}, "
+        f"projected ${plan.projected:,.2f}{skipped}"
+    )
+    return [head, *(f"  {reason}" for reason in plan.reasons)]
+
+
+def _spend_line(spend: Spend) -> str:
+    return (
+        f"spend: ${spend.total:,.2f} over {spend.runs} runs, "
+        f"unknown cost: {spend.unknown_runs}, over budget: {_OVER_BUDGET[spend.over_budget]}"
     )
 
 

@@ -17,9 +17,11 @@ from hedge_fund import cli
 from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.broker import AlpacaPaperBroker
+from hedge_fund.adapters.cost import load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import TradingAgentsResearcher
+from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, PriceTable, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.orders import Order, OrderAction
@@ -58,12 +60,15 @@ BASE = CycleReport(
 
 
 def _use(monkeypatch: pytest.MonkeyPatch, world: World, now: datetime = NIGHT) -> list[Path]:
-    """Swap the adapter builder for ``world`` (reports as JSON under --root) and the clock."""
+    """Swap the adapter builder for ``world`` (reports as JSON under --root, the price table
+    from --prices) and the clock."""
     roots: list[Path] = []
 
-    def build(root: Path) -> CycleDeps:
+    def build(root: Path, prices: Path) -> CycleDeps:
         roots.append(root)
-        return dataclasses.replace(world.deps, report_store=JsonCycleReportStore(root))
+        return dataclasses.replace(
+            world.deps, report_store=JsonCycleReportStore(root), price_table=load_prices(prices)
+        )
 
     monkeypatch.setattr(cli, "build_deps", build)
     monkeypatch.setattr(cli, "clock", Clock(now))
@@ -101,7 +106,7 @@ def _canned(monkeypatch: pytest.MonkeyPatch, outcome: CycleReport | BaseExceptio
         return outcome
 
     monkeypatch.setattr(cli, "run_cycle", run_cycle)
-    monkeypatch.setattr(cli, "build_deps", lambda root: root)
+    monkeypatch.setattr(cli, "build_deps", lambda root, prices: (root, prices))
     monkeypatch.setattr(cli, "clock", Clock(NIGHT))
     return calls
 
@@ -115,20 +120,32 @@ def test_cycle_is_a_named_subcommand() -> None:
     assert "cycle" in result.output
     # CI (GITHUB_ACTIONS, FORCE_COLOR) makes Rich style the help; compare the plain text.
     help_text = click.unstyle(runner.invoke(cli.app, ["cycle", "--help"]).output)
-    for flag in ("--as-of", "--dry-run", "--fresh-research", "--any-time", "--k", "--root"):
+    for flag in (
+        "--as-of",
+        "--dry-run",
+        "--fresh-research",
+        "--any-time",
+        "--k",
+        "--budget",
+        "--prices",
+        "--root",
+    ):
         assert flag in help_text
 
 
 def test_flags_reach_run_cycle(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls = _canned(monkeypatch, BASE)
     args = ["--as-of", "2026-09-29", "--dry-run", "--fresh-research", "--any-time", "-k", "2"]
-    result = _invoke(*args, "--root", str(tmp_path))
+    budget = ["--budget", "12.5", "--prices", str(tmp_path / "p.toml")]
+    result = _invoke(*args, *budget, "--root", str(tmp_path))
     assert result.exit_code == 0, result.output
     [(deps, kwargs)] = calls
-    assert deps == tmp_path
+    assert deps == (tmp_path, tmp_path / "p.toml")
     assert kwargs["as_of"] == date(2026, 9, 29)
     assert kwargs["today"] == AS_OF  # 02:00 UTC on 10-01 is still 09-30 in New York
-    assert kwargs["options"] == CycleOptions(dry_run=True, fresh_research=True, k=2, any_time=True)
+    assert kwargs["options"] == CycleOptions(
+        dry_run=True, fresh_research=True, k=2, any_time=True, budget=12.5
+    )
     assert kwargs["now"] is cli.clock
 
 
@@ -136,7 +153,7 @@ def test_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _canned(monkeypatch, BASE)
     assert _invoke().exit_code == 0
     [(deps, kwargs)] = calls
-    assert deps == Path("data")
+    assert deps == (Path("data"), Path("data") / "prices.toml")
     assert (kwargs["as_of"], kwargs["today"]) == (AS_OF, AS_OF)
     assert kwargs["options"] == CycleOptions()
 
@@ -163,6 +180,8 @@ def test_a_dry_run_exits_0_and_writes_a_report(
     assert "account: equity 1,000,000.00, 0 holdings" in lines
     assert "shortlist: 6 candidates" in lines
     assert "research: 6 names, 18 runs, error runs: 0" in lines
+    assert "spend: $0.00 over 18 runs, unknown cost: 18, over budget: n/a" in lines
+    assert not any(line.startswith("budget:") for line in lines)
     assert "verdict: approved" in lines
     assert "orders: 6" in lines
     assert lines[-1] == f"reports: {tmp_path / 'runs'}"
@@ -283,6 +302,99 @@ def test_the_summary_names_the_verdict(
     assert line in _invoke().stdout.splitlines()
 
 
+def test_a_budget_prints_the_plan_and_the_spend(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "prices.toml").write_text("fallback_run_cost = 1.0\n", encoding="utf-8")
+    _use(monkeypatch, World())
+    result = _invoke("--dry-run", "--budget", "12", "--root", str(tmp_path))
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert "research: 6 names, 12 runs, error runs: 0" in lines
+    assert (
+        "budget: $12.00, estimate $1.00/run (fallback, 0 samples), N×K 6×3 → 6×2, projected $12.00"
+    ) in lines
+    assert "  k 3→2: 6×3×$1.00=$18.00 > $12.00" in lines
+    assert "spend: $0.00 over 12 runs, unknown cost: 12, over budget: no" in lines
+
+
+def test_a_budget_skip_ends_nothing_to_do_and_prints_why(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "prices.toml").write_text("fallback_run_cost = 1.0\n", encoding="utf-8")
+    world = World()
+    _use(monkeypatch, world)
+    result = _invoke("--budget", "1", "--root", str(tmp_path))
+    assert result.exit_code == 0, result.output  # NOTHING_TO_DO exits 0, as it always has
+    lines = result.stdout.splitlines()
+    assert lines[0] == "outcome: nothing-to-do"
+    assert (
+        "budget: $1.00, estimate $1.00/run (fallback, 0 samples), N×K 6×3 → 0×2, "
+        "projected $0.00, research skipped"
+    ) in lines
+    assert "  n 6→0: 6×2×$1.00=$12.00 > $1.00" in lines
+    assert "spend: $0.00 over 0 runs, unknown cost: 0, over budget: no" in lines
+    assert not any(line.startswith(("research:", "verdict:", "orders:")) for line in lines)
+    assert world.broker.submitted == []
+    assert world.gate.summaries == []
+
+
+def test_a_budget_without_an_estimate_exits_1_with_a_budget_stage_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _use(monkeypatch, World())
+    result = _invoke("--dry-run", "--budget", "5", "--root", str(tmp_path))
+    assert result.exit_code == 1
+    assert "BudgetError: no run cost history and no fallback_run_cost" in result.stderr
+    [path] = (tmp_path / "runs").iterdir()
+    assert json.loads(path.read_text(encoding="utf-8"))["failed_stage"] == "budget"
+
+
+@pytest.mark.parametrize(
+    ("budget", "spend", "lines"),
+    [
+        pytest.param(
+            BudgetPlan(
+                1.0,
+                Estimate(0.8, EstimateSource.HISTORY, 30),
+                40,
+                3,
+                0,
+                2,
+                0.0,
+                True,
+                ("k 3→2: 40×3×$0.80=$96.00 > $1.00", "n 40→0: 40×2×$0.80=$64.00 > $1.00"),
+            ),
+            Spend(0.0, 0, 0, (), False),
+            [
+                "budget: $1.00, estimate $0.80/run (history, 30 samples), N×K 40×3 → 0×2, "
+                "projected $0.00, research skipped",
+                "  k 3→2: 40×3×$0.80=$96.00 > $1.00",
+                "  n 40→0: 40×2×$0.80=$64.00 > $1.00",
+                "spend: $0.00 over 0 runs, unknown cost: 0, over budget: no",
+            ],
+            id="skipped",
+        ),
+        pytest.param(
+            None,
+            Spend(1234.5, 120, 3, (), True),
+            ["spend: $1,234.50 over 120 runs, unknown cost: 3, over budget: yes"],
+            id="over",
+        ),
+    ],
+)
+def test_the_summary_shows_the_plan_and_the_spend(
+    monkeypatch: pytest.MonkeyPatch,
+    budget: BudgetPlan | None,
+    spend: Spend,
+    lines: list[str],
+) -> None:
+    _canned(monkeypatch, dataclasses.replace(BASE, budget=budget, spend=spend))
+    output = _invoke().stdout.splitlines()
+    for line in lines:
+        assert line in output
+
+
 def test_the_clock_is_utc_now() -> None:
     before = datetime.now(UTC)
     now = cli.clock()
@@ -302,7 +414,8 @@ def credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.usefixtures("credentials")
 def test_build_deps_wires_the_real_adapters(tmp_path: Path) -> None:
-    deps = cli.build_deps(tmp_path)
+    deps = cli.build_deps(tmp_path, tmp_path / "prices.toml")
+    assert deps.price_table == PriceTable()
     assert deps.universe.name == "sp500"
     assert isinstance(deps.broker, AlpacaPaperBroker)
     assert isinstance(deps.researcher, TradingAgentsResearcher)
@@ -330,6 +443,21 @@ def test_missing_credentials_exit_1_before_any_read(
     result = _invoke("--root", str(tmp_path))
     assert result.exit_code == 1
     assert f"cannot start the cycle: {message}" in result.stderr
+    assert calls == []
+    assert not (tmp_path / "runs").exists()
+
+
+@pytest.mark.usefixtures("credentials")
+def test_a_malformed_price_table_exits_1_before_the_cycle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "prices.toml").write_text("not = [toml", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(cli, "run_cycle", lambda *args, **kwargs: calls.append(args))
+    result = _invoke("--root", str(tmp_path))
+    assert result.exit_code == 1
+    assert "cannot start the cycle: " in result.stderr
+    assert "malformed price file" in result.stderr
     assert calls == []
     assert not (tmp_path / "runs").exists()
 

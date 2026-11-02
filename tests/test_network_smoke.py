@@ -9,6 +9,7 @@ import pytest
 
 from hedge_fund.adapters.data.factory import default_provider
 from hedge_fund.adapters.data.yfinance_provider import YFinanceProvider
+from hedge_fund.domain.ledger import Split
 from hedge_fund.engine.factors.score import score
 from hedge_fund.services.snapshots import build_snapshot
 from hedge_fund.universe import load_universe
@@ -29,6 +30,9 @@ class _CountingVendor:
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
         self.closes_calls += 1
         return self._inner.closes(tickers, start, end)
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        return self._inner.splits(tickers, start, end)
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         return self._inner.sectors(tickers)

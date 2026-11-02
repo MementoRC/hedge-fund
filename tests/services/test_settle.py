@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, NoReturn
 
 import pandas as pd
@@ -27,6 +28,7 @@ from hedge_fund.domain.ledger import (
     ReconciliationBreak,
     SettlementReport,
     SettleOutcome,
+    Split,
     UnsettledOrder,
 )
 from hedge_fund.domain.orders import Holding, Order, OrderAction, OrderPlan
@@ -206,6 +208,24 @@ class Boom:
         return fail
 
 
+class _VendorDown(FakeProvider):
+    """A provider whose one ``method`` ("closes" or "splits") raises DataProviderError."""
+
+    def __init__(self, method: str) -> None:
+        super().__init__(CLOSES, {})
+        self.method = method
+
+    def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        if self.method == "closes":
+            raise DataProviderError("vendor down")
+        return super().closes(tickers, start, end)
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        if self.method == "splits":
+            raise DataProviderError("vendor down")
+        return super().splits(tickers, start, end)
+
+
 def _settle(
     world: World, *, as_of: date = AS_OF, today: date = AS_OF, now: datetime = MORNING
 ) -> SettlementReport:
@@ -355,6 +375,33 @@ def test_as_of_only_dates_the_marks() -> None:
     assert world.prices.closes_calls == [(("AAA", "BBB"), date(2026, 9, 16), CYCLE_DAY)]
 
 
+def test_a_split_before_as_of_restates_the_opening_so_the_broker_shares_reconcile() -> None:
+    split = Split("AAA", date(2026, 9, 15), Fraction(2))
+    world = World(
+        broker=ScriptedBroker(holdings=(Holding("AAA", 20),)),
+        prices=FakeProvider(CLOSES, {}, splits=[split]),
+        cycle_reports=InMemoryReportStore([]),
+        opening=StaticOpeningBalance([OpeningEntry("AAA", 10, 100.0, OPENED)]),
+    )
+    report = _settle(world)
+    assert report.outcome is SettleOutcome.CLEAN
+    assert report.breaks == ()
+    [marked] = report.open_lots
+    assert (marked.lot.shares, marked.lot.entry_price, marked.lot.source) == (20, 50.0, "opening")
+    assert marked.unrealised_pnl == pytest.approx(20 * (102.0 - 50.0))
+    assert world.prices.splits_calls == [(("AAA",), OPENED, AS_OF)]
+
+
+def test_without_any_record_no_splits_are_requested() -> None:
+    world = World(
+        broker=ScriptedBroker(),
+        cycle_reports=InMemoryReportStore([]),
+        opening=StaticOpeningBalance(),
+    )
+    _settle(world)
+    assert world.prices.splits_calls == []
+
+
 # --- failed runs -------------------------------------------------------------------------
 
 
@@ -411,12 +458,8 @@ def test_an_as_of_that_is_not_live_fails_before_any_read(as_of: date) -> None:
             BrokerError,
             id="positions",
         ),
-        pytest.param(
-            {"prices": Boom(DataProviderError("vendor down"))},
-            "marks",
-            DataProviderError,
-            id="marks",
-        ),
+        pytest.param({"prices": _VendorDown("splits")}, "splits", DataProviderError, id="splits"),
+        pytest.param({"prices": _VendorDown("closes")}, "marks", DataProviderError, id="marks"),
     ],
 )
 def test_a_failing_stage_raises_and_saves_an_error_report(

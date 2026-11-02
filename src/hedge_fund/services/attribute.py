@@ -48,6 +48,7 @@ from hedge_fund.ports.broker import Broker
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.ledger import FillStore, OpeningBalance
 from hedge_fund.services.portfolio import BENCHMARK
+from hedge_fund.services.restate import restate_for_splits
 from hedge_fund.services.snapshots import calendar_window
 from hedge_fund.universe import Universe
 
@@ -174,6 +175,9 @@ def _run(deps: AttributeDeps, run: _Attribute) -> None:
     opening = deps.opening.load()
     if run.start is None:
         run.start = _first_day(opening, fills)
+    run.stage = "splits"
+    last = run.end or run.started_at.astimezone(MARKET_TZ).date()
+    opening, fills = restate_for_splits(deps.prices, opening, fills, last)
     run.stage = "reconcile"
     lots, _ = build_lots(opening, fills)
     run.breaks = reconcile(lots, deps.broker.positions(), exclude=())

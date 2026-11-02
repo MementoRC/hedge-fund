@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from fractions import Fraction
 
-from hedge_fund.domain.ledger import Fill, FillStatus, Lot, ReconciliationBreak
+from hedge_fund.domain.ledger import (
+    Fill,
+    FillStatus,
+    Lot,
+    OpeningEntry,
+    ReconciliationBreak,
+    Split,
+)
 from hedge_fund.domain.orders import Holding, OrderAction
 from hedge_fund.engine.ledger.lots import build_lots
 from hedge_fund.engine.ledger.reconcile import reconcile
+from hedge_fund.engine.ledger.splits import apply_splits
 
 AT = datetime(2026, 10, 1, 13, 30, tzinfo=UTC)
 
@@ -18,6 +27,14 @@ def _lot(ticker: str, shares: int) -> Lot:
 
 def _held(ticker: str, shares: int) -> Holding:
     return Holding(ticker=ticker, shares=shares)
+
+
+def test_a_split_restated_ledger_matches_the_broker() -> None:
+    opening = (OpeningEntry(ticker="AAA", shares=10, price=100.0, on=date(2026, 9, 1)),)
+    splits = (Split(ticker="AAA", ex_date=date(2026, 10, 5), ratio=Fraction(2)),)
+    lots, _ = build_lots(*apply_splits(opening, (), splits))
+    assert lots[0].entry_price == 50.0
+    assert reconcile(lots, (_held("AAA", 20),), exclude=()) == ()
 
 
 def test_matching_totals_are_not_breaks() -> None:

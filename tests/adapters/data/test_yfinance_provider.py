@@ -2,12 +2,14 @@
 
 from collections.abc import Mapping
 from datetime import date, timedelta
+from fractions import Fraction
 from typing import Any
 
 import pandas as pd
 import pytest
 
 from hedge_fund.adapters.data.yfinance_provider import YAHOO_TO_GICS, YFinanceProvider
+from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProviderError
 from hedge_fund.universe import GICS_SECTORS
 from tests.factories import make_closes
@@ -134,6 +136,61 @@ def test_sectors_wraps_vendor_exception() -> None:
     with pytest.raises(DataProviderError) as info:
         YFinanceProvider(info_fetcher=failing).sectors(["AAA"])
     assert info.value.__cause__ is boom
+
+
+def _split_series(rows: dict[str, float]) -> pd.Series:
+    index = pd.DatetimeIndex(list(rows), tz="America/New_York")
+    return pd.Series(list(rows.values()), index=index, dtype="float64")
+
+
+def test_splits_converts_forward_and_reverse_ratios_inside_the_window() -> None:
+    series = {
+        "AAA": _split_series({"2026-08-31": 3.0, "2026-09-10": 2.0, "2026-09-30": 1.5}),
+        "BBB": _split_series({"2026-09-15": 0.1}),
+    }
+    provider = YFinanceProvider(splits_fetcher=series.__getitem__)
+    assert provider.splits(["AAA", "BBB"], date(2026, 8, 31), END) == (
+        Split("AAA", date(2026, 9, 10), Fraction(2)),
+        Split("BBB", date(2026, 9, 15), Fraction(1, 10)),
+        Split("AAA", date(2026, 9, 30), Fraction(3, 2)),
+    )
+
+
+def test_splits_window_is_open_at_start_and_closed_at_end() -> None:
+    series = _split_series({"2026-09-01": 2.0, "2026-09-30": 4.0})
+    provider = YFinanceProvider(splits_fetcher=lambda ticker: series)
+    assert provider.splits(["AAA"], START, END) == (Split("AAA", END, Fraction(4)),)
+
+
+def test_splits_limits_the_denominator_of_float_noise() -> None:
+    series = _split_series({"2026-09-10": 1 / 3})
+    provider = YFinanceProvider(splits_fetcher=lambda ticker: series)
+    assert provider.splits(["AAA"], START, END) == (
+        Split("AAA", date(2026, 9, 10), Fraction(1, 3)),
+    )
+
+
+def test_splits_tolerates_no_data_for_a_ticker() -> None:
+    provider = YFinanceProvider(splits_fetcher=lambda ticker: None)
+    assert provider.splits(["AAA"], START, END) == ()
+
+
+def test_splits_wraps_vendor_exception() -> None:
+    boom = RuntimeError("rate limited")
+
+    def failing(ticker: str) -> pd.Series:
+        raise boom
+
+    with pytest.raises(DataProviderError) as info:
+        YFinanceProvider(splits_fetcher=failing).splits(["AAA"], START, END)
+    assert info.value.__cause__ is boom
+
+
+def test_splits_wraps_an_unconvertible_ratio() -> None:
+    series = _split_series({"2026-09-10": float("nan")})
+    provider = YFinanceProvider(splits_fetcher=lambda ticker: series)
+    with pytest.raises(DataProviderError, match="AAA"):
+        provider.splits(["AAA"], START, END)
 
 
 def test_yahoo_to_gics_covers_every_gics_sector() -> None:

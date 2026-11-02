@@ -7,6 +7,7 @@ from datetime import date
 
 import pandas as pd
 
+from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.universe import Universe
 
@@ -20,6 +21,9 @@ class StaticSectorProvider:
 
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
         return self._inner.closes(tickers, start, end)
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        return self._inner.splits(tickers, start, end)
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         requested = list(tickers)

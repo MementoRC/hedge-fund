@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
+from fractions import Fraction
 
 from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import OrderRequest
@@ -111,6 +112,17 @@ class OpeningEntry:
     shares: int
     price: float
     on: date
+
+
+@dataclass(frozen=True)
+class Split:
+    """A stock split effective at the open of ``ex_date``: each share before it becomes
+    ``ratio`` shares (2 for 2-for-1, 1/10 for 1-for-10).
+    """
+
+    ticker: str
+    ex_date: date
+    ratio: Fraction
 
 
 @dataclass(frozen=True)

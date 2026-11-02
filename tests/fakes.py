@@ -20,6 +20,7 @@ from hedge_fund.domain.ledger import (
     OrderStatus,
     ReportLoad,
     SettlementReport,
+    Split,
 )
 from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
@@ -32,10 +33,17 @@ class FakeProvider:
     Tests may replace `frame` between calls to simulate vendor restatements.
     """
 
-    def __init__(self, frame: pd.DataFrame, sectors: Mapping[str, str | None]) -> None:
+    def __init__(
+        self,
+        frame: pd.DataFrame,
+        sectors: Mapping[str, str | None],
+        splits: Sequence[Split] = (),
+    ) -> None:
         self.frame = frame
         self.sector_map = dict(sectors)
+        self.split_list = tuple(splits)
         self.closes_calls: list[tuple[tuple[str, ...], date, date]] = []
+        self.splits_calls: list[tuple[tuple[str, ...], date, date]] = []
         self.sectors_calls: list[tuple[str, ...]] = []
 
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
@@ -43,6 +51,15 @@ class FakeProvider:
         self.closes_calls.append((requested, start, end))
         window = self.frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
         return window.reindex(columns=list(requested))
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        requested = tuple(tickers)
+        self.splits_calls.append((requested, start, end))
+        return tuple(
+            split
+            for split in self.split_list
+            if split.ticker in requested and start < split.ex_date <= end
+        )
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         requested = tuple(tickers)

@@ -42,6 +42,7 @@ from hedge_fund.ports.broker import Broker, OrderDataError
 from hedge_fund.ports.cycle import CycleReportStore
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.ledger import FillStore, OpeningBalance, SettlementReportStore
+from hedge_fund.services.restate import restate_for_splits
 
 MARK_DAYS = 14  # calendar days of closes fetched to mark the open lots
 ACKNOWLEDGED_NOT_FOUND = "acknowledged by broker but not found"
@@ -170,8 +171,12 @@ def _settle(deps: SettleDeps, run: _Settle, *, today: date, now: Callable[[], da
         _look_up(deps, run, orders[client_order_id], now)
     run.stage = "opening"
     opening = deps.opening.load()
+    run.stage = "splits"
+    opening, records = restate_for_splits(
+        deps.prices, opening, (*recorded, *run.new_fills), run.as_of
+    )
     run.stage = "lots"
-    lots, run.closed_lots = build_lots(opening, (*recorded, *run.new_fills))
+    lots, run.closed_lots = build_lots(opening, records)
     run.stage = "positions"
     run.positions = deps.broker.positions()
     excluded = _order_tickers(run)

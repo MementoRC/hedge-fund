@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,6 +12,7 @@ from hedge_fund.engine.execution.window import (
     SESSION_END,
     SESSION_START,
     in_session_window,
+    session_opened,
 )
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -74,6 +75,44 @@ def test_other_zones_are_converted_to_new_york(at: datetime, inside: bool) -> No
 def test_a_naive_datetime_raises() -> None:
     with pytest.raises(ValueError, match="must be timezone-aware"):
         in_session_window(datetime(2026, 9, 30, 10, 0))
+
+
+@pytest.mark.parametrize(
+    ("today", "now", "opened"),
+    [
+        pytest.param(date(2026, 9, 30), _ny(30, 9, 29, 59), False, id="summer-09:29:59"),
+        pytest.param(date(2026, 9, 30), _ny(30, 9, 30), True, id="summer-09:30:00"),
+        pytest.param(date(2026, 9, 30), _ny(30, 8, 0), False, id="summer-08:00"),
+        pytest.param(date(2026, 9, 30), _ny(30, 20, 0), True, id="summer-20:00"),
+        pytest.param(
+            date(2026, 12, 2),
+            datetime(2026, 12, 2, 14, 29, 59, tzinfo=UTC),
+            False,
+            id="winter-09:29:59",
+        ),
+        pytest.param(
+            date(2026, 12, 2), datetime(2026, 12, 2, 14, 30, tzinfo=UTC), True, id="winter-09:30:00"
+        ),
+        # Monday: the previous weekday is Friday, but the open that matters is Monday's.
+        pytest.param(date(2026, 9, 28), _ny(28, 9, 29, 59), False, id="monday-09:29:59"),
+        pytest.param(date(2026, 9, 28), _ny(28, 9, 30), True, id="monday-09:30:00"),
+        # 02:00 UTC on the 30th is 22:00 EDT on the 29th: still before the open of the 30th.
+        pytest.param(
+            date(2026, 9, 30), datetime(2026, 9, 30, 2, 0, tzinfo=UTC), False, id="utc-date-ahead"
+        ),
+        # 03:00 UTC on the 1st is 23:00 EDT on the 30th: after that day's open.
+        pytest.param(
+            date(2026, 9, 30), datetime(2026, 10, 1, 3, 0, tzinfo=UTC), True, id="utc-next-day"
+        ),
+    ],
+)
+def test_session_opened(today: date, now: datetime, opened: bool) -> None:
+    assert session_opened(today, now) is opened
+
+
+def test_session_opened_rejects_a_naive_now() -> None:
+    with pytest.raises(ValueError, match="must be timezone-aware"):
+        session_opened(date(2026, 9, 30), datetime(2026, 9, 30, 10, 0))
 
 
 def test_package_exports() -> None:

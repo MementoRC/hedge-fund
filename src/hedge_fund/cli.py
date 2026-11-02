@@ -180,7 +180,11 @@ def build_verify_deps(root: Path) -> VerifyDeps:
 def cycle(
     as_of: Annotated[
         datetime | None,
-        typer.Option("--as-of", formats=["%Y-%m-%d"], help="Default: today in New York."),
+        typer.Option(
+            "--as-of",
+            formats=["%Y-%m-%d"],
+            help="Default: today in New York. The previous weekday only before 09:30 New York.",
+        ),
     ] = None,
     dry_run: Annotated[
         bool,

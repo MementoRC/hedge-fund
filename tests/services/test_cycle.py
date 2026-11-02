@@ -16,6 +16,7 @@ from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalStatus
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus
 from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
 from hedge_fund.domain.research import ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
@@ -29,9 +30,14 @@ from hedge_fund.engine.risk.breakers import BreakerParams
 from hedge_fund.engine.risk.limits import DEFAULT_LIMITS, RiskLimits
 from hedge_fund.engine.shortlist.select import ShortlistParams
 from hedge_fund.ports.account import SnapshotStoreError
-from hedge_fund.ports.broker import BrokerError
+from hedge_fund.ports.broker import BrokerError, OrderDataError
 from hedge_fund.services import cycle
-from hedge_fund.services.cycle import ReportSaveError, SubmissionWindowError, run_cycle
+from hedge_fund.services.cycle import (
+    PendingOrdersError,
+    ReportSaveError,
+    SubmissionWindowError,
+    run_cycle,
+)
 from hedge_fund.services.portfolio import build_portfolio, fetch_benchmark
 from hedge_fund.services.risk import assess_portfolio
 from hedge_fund.services.snapshots import build_snapshot
@@ -56,6 +62,7 @@ from tests.fakes import (
     ScriptedApprovalGate,
     ScriptedBroker,
     ScriptedResearcher,
+    not_found,
 )
 
 EQUITY = 1_000_000.0
@@ -766,3 +773,193 @@ def test_a_failing_gate_is_an_approval_error() -> None:
     [report] = world.report_store.saved
     assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "approval")
     assert report.decision is None
+
+
+# --- orders an earlier cycle left open at the broker ---------------------------------------
+
+PRIOR_AS_OF = date(2026, 9, 29)  # Tuesday
+PRIOR_AT = datetime(2026, 9, 29, 22, 0, tzinfo=UTC)  # Tue 18:00 EDT: its deadline is Wed 16:00 ET
+MORNING = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)  # Wed 08:00 EDT: before the open and deadline
+
+
+def _status(client_order_id: str, state: OrderState) -> OrderStatus:
+    return dataclasses.replace(not_found(client_order_id), state=state)
+
+
+def _earlier_cycle(
+    world: World, *, as_of: date = PRIOR_AS_OF, at: datetime = PRIOR_AT
+) -> list[str]:
+    """Submit a full cycle for ``as_of`` at ``at`` (the broker still holds nothing), give the
+    world a fresh gate and return the submitted ids.
+    """
+    report = _run(world, as_of=as_of, today=AS_OF, now=Clock(at))
+    assert report.outcome is CycleOutcome.SUBMITTED
+    ids = list(world.broker.submitted)
+    world.broker.submitted.clear()
+    world.gate = ScriptedApprovalGate([True])
+    return ids
+
+
+def _open_at_broker(world: World, ids: list[str], state: OrderState = OrderState.PENDING) -> None:
+    world.broker.orders = {cid: _status(cid, state) for cid in ids}
+
+
+def _interrupted(world: World) -> None:
+    """Turn the stored report into an interrupted execution: its planned ids, no results."""
+    [report] = world.report_store.saved
+    world.report_store.saved[:] = [
+        dataclasses.replace(
+            report,
+            outcome=CycleOutcome.ERROR,
+            execution=None,
+            execution_interrupted=True,
+            planned_client_order_ids=tuple(_ids(report.plan)),
+        )
+    ]
+
+
+def _refused(world: World, *, now: datetime = MORNING) -> PendingOrdersError:
+    with pytest.raises(PendingOrdersError) as raised:
+        _run(world, now=Clock(now))
+    assert world.gate.summaries == []
+    assert world.broker.submitted == []
+    report = world.report_store.saved[-1]
+    assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "pending_orders")
+    assert report.decision is None
+    return raised.value
+
+
+def test_orders_still_queued_from_the_evening_cycle_block_the_morning_one() -> None:
+    world = World()
+    ids = _earlier_cycle(world)  # Tuesday evening: six opg orders queued, positions still flat
+    assert len(ids) == 6
+    assert world.broker.holdings == ()
+    _open_at_broker(world, ids)
+    message = str(_refused(world))
+    assert message.startswith("6 order(s) from an earlier cycle are still open at the broker: ")
+    assert message.endswith("; settle or wait for the open before running another cycle")
+    listed = sorted(ids)
+    assert message.index(f"{listed[0]} (as_of {PRIOR_AS_OF})") < message.index(listed[-1])
+    assert sorted(world.broker.looked_up) == listed
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        OrderState.FILLED,
+        OrderState.PARTIAL_TERMINAL,
+        OrderState.CANCELED,
+        OrderState.REJECTED,
+        OrderState.EXPIRED,
+        OrderState.NOT_FOUND,  # the leg was acknowledged: settle's concern, not an open order
+    ],
+)
+def test_earlier_orders_that_are_final_do_not_block(state: OrderState) -> None:
+    world = World()
+    ids = _earlier_cycle(world)
+    _open_at_broker(world, ids, state)
+    assert _run(world, now=Clock(MORNING)).outcome is CycleOutcome.SUBMITTED
+    assert sorted(world.broker.looked_up) == sorted(ids)
+
+
+def test_an_earlier_report_past_its_fill_deadline_is_not_looked_up() -> None:
+    world = World()
+    ids = _earlier_cycle(world)
+    _open_at_broker(world, ids)
+    assert _run(world, now=Clock(EVENING)).outcome is CycleOutcome.SUBMITTED  # Wed 18:00 EDT
+    assert world.broker.looked_up == []
+
+
+def test_an_earlier_dry_run_is_not_looked_up() -> None:
+    world = World()
+    ids = _earlier_cycle(world)
+    _open_at_broker(world, ids)
+    [report] = world.report_store.saved
+    world.report_store.saved[:] = [dataclasses.replace(report, dry_run=True)]
+    assert _run(world, now=Clock(MORNING)).outcome is CycleOutcome.SUBMITTED
+    assert world.broker.looked_up == []
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_a_rerun_of_the_same_as_of_keeps_the_duplicate_path(interrupted: bool) -> None:
+    world = World()
+    ids = _earlier_cycle(world, as_of=AS_OF, at=EVENING)
+    _open_at_broker(world, ids)  # pending at the broker, but they are the new plan's own ids
+    if interrupted:
+        _interrupted(world)
+    report = _run(world, now=Clock(EVENING + timedelta(minutes=5)))
+    assert report.outcome is CycleOutcome.SUBMITTED
+    assert world.broker.submitted == ids
+    assert world.broker.looked_up == []
+
+
+def test_only_ids_outside_the_new_plan_are_looked_up_and_listed() -> None:
+    world = World()
+    other = _earlier_cycle(world)
+    own = _earlier_cycle(world, as_of=AS_OF, at=MORNING)
+    assert not set(own) & set(other)
+    _open_at_broker(world, [*own, *other])
+    world.broker.looked_up.clear()  # the second earlier cycle looked the first one up
+    message = str(_refused(world, now=MORNING + timedelta(minutes=5)))
+    assert message.startswith("6 order(s) from an earlier cycle are still open")
+    assert sorted(world.broker.looked_up) == sorted(other)
+    assert not any(cid in message for cid in own)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(OrderState.UNRECOGNISED, id="unrecognised"),
+        pytest.param(OrderDataError("garbled body"), id="malformed-answer"),
+    ],
+)
+def test_an_answer_that_cannot_be_trusted_fails_closed(answer: OrderState | Exception) -> None:
+    world = World()
+    ids = _earlier_cycle(world)
+    _open_at_broker(world, ids, OrderState.FILLED)
+    first_id = sorted(ids)[0]
+    world.broker.orders[first_id] = (
+        answer if isinstance(answer, Exception) else _status(first_id, answer)
+    )
+    message = str(_refused(world))
+    assert message.startswith("1 order(s) from an earlier cycle are still open")
+    assert first_id in message
+
+
+def test_an_unacknowledged_unknown_order_blocks_until_its_fill_deadline() -> None:
+    world = World()
+    _earlier_cycle(world)  # the broker answers NOT_FOUND for every id
+    _interrupted(world)  # ... and the report never saw it acknowledged
+    assert str(_refused(world)).startswith("6 order(s) from an earlier cycle are still open")
+    assert _run(world, now=Clock(EVENING)).outcome is CycleOutcome.SUBMITTED  # Wed after 16:00 ET
+
+
+def test_a_dry_run_ignores_open_orders() -> None:
+    world = World()
+    ids = _earlier_cycle(world)
+    _open_at_broker(world, ids)
+    assert _run(world, options=DRY, now=Clock(MORNING)).outcome is CycleOutcome.DRY_RUN
+    assert world.broker.looked_up == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "outcome"),
+    [
+        pytest.param(
+            {"limits": DEFAULT_LIMITS}, CycleOutcome.BLOCKED, id="blocked-by-the-veto"
+        ),  # the seeded book breaks name_risk
+        pytest.param({"researcher": ScriptedResearcher()}, CycleOutcome.NOTHING_TO_DO, id="empty"),
+    ],
+)
+def test_a_plan_that_would_submit_nothing_is_not_checked(
+    changes: dict[str, Any], outcome: CycleOutcome
+) -> None:
+    world = World()
+    ids = _earlier_cycle(world)
+    _open_at_broker(world, ids)
+    if "limits" in changes:
+        world.params = _params(**changes)
+    else:
+        world.researcher = changes["researcher"]
+    assert _run(world, now=Clock(MORNING)).outcome is outcome
+    assert world.broker.looked_up == []

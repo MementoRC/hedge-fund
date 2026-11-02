@@ -62,6 +62,7 @@ from hedge_fund.services.attribute import AttributeDeps, AttributionSaveError, r
 from hedge_fund.services.cycle import (
     CycleDeps,
     CycleParams,
+    PendingOrdersError,
     ReportSaveError,
     SubmissionWindowError,
     run_cycle,
@@ -210,7 +211,11 @@ def cycle(
     ] = None,
     root: Annotated[Path, typer.Option("--root", help="Data root.")] = Path("data"),
 ) -> None:
-    """Run one paper-trading cycle, from data to execution, and save its report."""
+    """Run one paper-trading cycle, from data to execution, and save its report.
+
+    Refuses (exit 1) while orders from an earlier cycle are still open at the broker; run
+    `settle` or wait for the open first. A dry run does not check.
+    """
     runs = root / RUNS_DIR
     try:
         deps = build_deps(root, root / PRICES_FILE if prices is None else prices)
@@ -229,6 +234,8 @@ def cycle(
         raise typer.Exit(max(_exit_code(exc.report), 1)) from exc
     except SubmissionWindowError as exc:
         _fail(f"{exc}; --any-time overrides this check", exc)
+    except PendingOrdersError as exc:
+        _fail(str(exc), exc)
     except KeyboardInterrupt as exc:
         _fail(f"interrupted; the partial report is under {runs}", exc)
     except Exception as exc:

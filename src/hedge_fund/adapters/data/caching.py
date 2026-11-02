@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProvider
 
 _SAFE_TICKER = re.compile(r"[A-Za-z0-9^=_-][A-Za-z0-9.^=_-]*")
@@ -77,6 +78,10 @@ class CachingProvider:
                     self._write(ticker, fresh, fetch_start, covered_end)
                 served[ticker] = fresh
         return _assemble(requested, served, start, end)
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        """Always asked of `inner`: split lists are short and a new split must show at once."""
+        return self._inner.splits(tickers, start, end)
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         requested = list(tickers)

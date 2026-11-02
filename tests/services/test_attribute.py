@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
+from fractions import Fraction
 from typing import Any, NoReturn
 
+import pandas as pd
 import pytest
 
 import hedge_fund.services.attribute as attribute_service
 from hedge_fund.domain.attribution import NO_PNL, AttributeOutcome, AttributionReport
-from hedge_fund.domain.ledger import Fill, FillStatus, OpeningEntry, ReconciliationBreak
+from hedge_fund.domain.ledger import Fill, FillStatus, OpeningEntry, ReconciliationBreak, Split
 from hedge_fund.domain.orders import Holding, OrderAction
 from hedge_fund.engine.portfolio.risk_model import RiskParams
 from hedge_fund.ports.broker import BrokerError
@@ -225,6 +227,25 @@ def test_an_empty_ledger_gives_a_clean_one_day_report() -> None:
     assert world.report_store.saved == [report]
 
 
+def test_a_pre_split_fill_is_attributed_in_post_split_units() -> None:
+    sell = _fill("hf-s", "AAA", OrderAction.SELL, 4, datetime(2026, 9, 28, 13, 30, tzinfo=UTC))
+    world = World(
+        broker=ScriptedBroker(holdings=(Holding("AAA", 12),)),  # (10 - 4) * 2
+        prices=FakeProvider(FRAME, SECTORS, splits=[Split("AAA", TUE, Fraction(2))]),
+        fills=InMemoryFillStore([sell]),
+    )
+    report = _attribute(world)
+    assert (report.outcome, report.breaks) == (AttributeOutcome.CLEAN, ())
+    rows = {row.day: row for row in report.days if row.ticker == "AAA"}
+    assert [rows[day].prior_shares for day in (MON, TUE, WED)] == [20, 12, 12]
+    close = FRAME["AAA"]
+    monday = rows[MON]
+    holding = monday.market + monday.sector_pnl + monday.residual
+    assert holding == pytest.approx(20 * (close[pd.Timestamp(MON)] - close[pd.Timestamp(FRI)]))
+    assert monday.trading == pytest.approx(-8 * (close[pd.Timestamp(MON)] - 25.0))
+    assert world.prices.splits_calls == [(("AAA",), FRI, WED)]
+
+
 # --- failures ----------------------------------------------------------------------------
 
 
@@ -239,6 +260,24 @@ class Boom:
             raise self.error
 
         return fail
+
+
+class _VendorDown(FakeProvider):
+    """A provider whose one ``method`` ("closes" or "splits") raises DataProviderError."""
+
+    def __init__(self, method: str) -> None:
+        super().__init__(FRAME, SECTORS)
+        self.method = method
+
+    def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        if self.method == "closes":
+            raise DataProviderError("vendor down")
+        return super().closes(tickers, start, end)
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        if self.method == "splits":
+            raise DataProviderError("vendor down")
+        return super().splits(tickers, start, end)
 
 
 @pytest.mark.parametrize(
@@ -286,7 +325,15 @@ class Boom:
             id="positions",
         ),
         pytest.param(
-            {"prices": Boom(DataProviderError("vendor down"))},
+            {"prices": _VendorDown("splits")},
+            {},
+            DataProviderError,
+            "vendor down",
+            "splits",
+            id="splits",
+        ),
+        pytest.param(
+            {"prices": _VendorDown("closes")},
             {},
             DataProviderError,
             "vendor down",
@@ -360,7 +407,7 @@ def test_a_failing_aggregate_stage_keeps_the_rows(monkeypatch: pytest.MonkeyPatc
 def test_a_failed_report_keeps_what_was_reached() -> None:
     world = World(
         broker=ScriptedBroker(holdings=(Holding("AAA", 7), Holding("ZZZ", 5))),
-        prices=Boom(DataProviderError("down")),
+        prices=_VendorDown("closes"),
     )
     with pytest.raises(DataProviderError):
         _attribute(world)

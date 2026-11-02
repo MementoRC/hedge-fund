@@ -3,6 +3,7 @@
 import json
 from collections.abc import Sequence
 from datetime import date
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pandas as pd
 import pytest
 
 from hedge_fund.adapters.data.caching import CachingProvider
+from hedge_fund.domain.ledger import Split
 from tests.factories import make_closes
 from tests.fakes import FakeProvider, assert_closes_equal
 
@@ -43,6 +45,16 @@ def test_cold_fetch_writes_parquet_and_coverage(tmp_path: Path) -> None:
     assert fake.closes_calls == [(("AAA", "BBB"), JUN, SEP_END)]
     assert (tmp_path / "prices" / "AAA.parquet").is_file()
     assert _coverage(tmp_path, "AAA") == {"start": "2026-06-01", "end": "2026-09-30"}
+
+
+def test_splits_are_never_cached(tmp_path: Path) -> None:
+    split = Split("AAA", date(2026, 9, 15), Fraction(2))
+    fake = FakeProvider(make_closes(["AAA"]), {}, splits=[split])
+    cache = _cache(fake, tmp_path)
+    assert cache.splits(["AAA"], JUN, SEP_END) == (split,)
+    assert cache.splits(["AAA"], JUN, SEP_END) == (split,)
+    assert fake.splits_calls == [(("AAA",), JUN, SEP_END)] * 2
+    assert not (tmp_path / "prices").exists()
 
 
 def test_covered_request_makes_no_inner_call(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+from hedge_fund.adapters.data._clock import market_today
 from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProviderError
 
@@ -37,15 +38,15 @@ class YFinanceProvider:
 
     Vendor calls are injectable so tests never touch the network. yfinance reports
     per-ticker failures as empty data, which surfaces here as all-NaN columns.
-    Bars dated on or after the clock's today are dropped, even after the close, so a
-    session's unfinished bar is never returned.
+    Bars dated on or after the clock's today (New York's date by default) are dropped, even
+    after the close, so a session's unfinished bar is never returned.
     """
 
     def __init__(
         self,
         download: Download = yf.download,
         info_fetcher: InfoFetcher = lambda ticker: yf.Ticker(ticker).info,
-        clock: Callable[[], date] = date.today,
+        clock: Callable[[], date] = market_today,
         splits_fetcher: SplitsFetcher = lambda ticker: yf.Ticker(ticker).splits,
     ) -> None:
         self._download = download

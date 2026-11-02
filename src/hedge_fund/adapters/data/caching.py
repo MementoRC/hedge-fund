@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.adapters.data._clock import market_today
 from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProvider
 
@@ -45,7 +46,7 @@ class CachingProvider:
         self,
         inner: DataProvider,
         cache_dir: Path,
-        clock: Callable[[], date] = date.today,
+        clock: Callable[[], date] = market_today,
     ) -> None:
         self._inner = inner
         self._prices_dir = Path(cache_dir) / "prices"

@@ -28,7 +28,7 @@ from hedge_fund.domain.orders import Order, OrderAction
 from hedge_fund.domain.research import NameResearch, ResearchResult, RunRecord, Verdict
 from hedge_fund.domain.risk import BreakerState, RiskBreakdown, RiskVerdict, Violation
 from hedge_fund.domain.shortlist import Candidate, Side
-from hedge_fund.services.cycle import CycleDeps, ReportSaveError
+from hedge_fund.services.cycle import CycleDeps, PendingOrdersError, ReportSaveError
 from tests.cycle_world import AS_OF, EVENING, SESSION, Clock, World
 
 REPO = Path(__file__).resolve().parents[1]
@@ -232,6 +232,17 @@ def test_inside_the_window_exits_1_with_the_opg_message(
     assert "--any-time overrides this check" in result.stderr
     [path] = (tmp_path / "runs").iterdir()
     assert json.loads(path.read_text(encoding="utf-8"))["failed_stage"] == "submission_window"
+
+
+def test_open_orders_from_an_earlier_cycle_exit_1_with_the_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    message = "1 order(s) from an earlier cycle are still open at the broker: x (as_of 2026-09-29)"
+    _canned(monkeypatch, PendingOrdersError(message))
+    result = _invoke("--root", str(tmp_path))
+    assert result.exit_code == 1
+    assert message in result.stderr
+    assert "partial report" not in result.stderr
 
 
 def test_a_stale_as_of_exits_1(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from hedge_fund.domain.cost import BudgetPlan, PriceTable, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport
 from hedge_fund.domain.fundamentals import FundamentalsSnapshot
+from hedge_fund.domain.ledger import SubmittedOrder
 from hedge_fund.domain.orders import OrderPlan
 from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.research import ResearchResult
@@ -39,6 +40,9 @@ from hedge_fund.engine.execution import (
     session_opened,
 )
 from hedge_fund.engine.factors.score import score
+from hedge_fund.engine.ledger.deadline import fill_deadline
+from hedge_fund.engine.ledger.open_order import is_open
+from hedge_fund.engine.ledger.submitted import submitted_orders
 from hedge_fund.engine.orders import DEFAULT_ORDERS, OrderParams, generate_orders, order_prices
 from hedge_fund.engine.portfolio.alpha import DEFAULT_ALPHA, AlphaParams
 from hedge_fund.engine.portfolio.correlation import DEFAULT_CORRELATION, CorrelationParams
@@ -50,7 +54,7 @@ from hedge_fund.engine.risk.limits import DEFAULT_LIMITS, RiskLimits
 from hedge_fund.engine.shortlist.select import DEFAULT_SHORTLIST, ShortlistParams, shortlist
 from hedge_fund.ports.account import SnapshotStore
 from hedge_fund.ports.approval import ApprovalGate
-from hedge_fund.ports.broker import Broker
+from hedge_fund.ports.broker import Broker, OrderDataError
 from hedge_fund.ports.cycle import CycleReportStore
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.fundamentals import FundamentalsProvider
@@ -89,6 +93,10 @@ class ReportSaveError(Exception):
 
 class SubmissionWindowError(RuntimeError):
     """Outside dry-run, ``now()`` is inside the weekday session window (decision 7)."""
+
+
+class PendingOrdersError(RuntimeError):
+    """Outside dry-run, orders an earlier cycle submitted are still open at the broker."""
 
 
 @dataclass(frozen=True)
@@ -189,10 +197,14 @@ def run_cycle(
     ``as_of`` is ``today``, or the previous weekday while ``started_at`` is before the 09:30
     New York open on ``today``: after it the account's equity is no longer that day's close.
     ``today`` is the date ``research_shortlist`` checks ``as_of`` against; ``now`` is read
-    for ``started_at``, the account read and each submission-window check. A stage raising
-    an ``Exception`` (ERROR) or a ``KeyboardInterrupt`` (INTERRUPTED) saves a partial
-    report with ``failed_stage`` and ``error`` and re-raises the original exception; if
-    that save fails too, the failure is added to it with ``add_note``. A completed cycle
+    for ``started_at``, the account read and each submission-window check (and, once, for
+    the open-orders check when an earlier non-dry-run report exists). Outside dry-run, a
+    cycle whose plan would submit raises PendingOrdersError, before the approval, while an
+    earlier cycle's orders (other than this plan's own ids) are still open at the broker;
+    re-running the same ``as_of`` after an interrupted execution is still allowed. A stage
+    raising an ``Exception`` (ERROR) or a ``KeyboardInterrupt`` (INTERRUPTED) saves a
+    partial report with ``failed_stage`` and ``error`` and re-raises the original exception;
+    if that save fails too, the failure is added to it with ``add_note``. A completed cycle
     whose report cannot be saved raises ReportSaveError carrying the report.
     """
     run = _Run(as_of=as_of, started_at=now(), dry_run=options.dry_run)
@@ -226,7 +238,8 @@ def _cycle(
     """Steps 0-12; the caller saves the report (step 13).
 
     A budget that fits no name (7c) ends the cycle NOTHING_TO_DO after the shortlist: no
-    portfolio, no orders, no approval, no broker write.
+    portfolio, no orders, no approval, no broker write. A dry run ends before the approval
+    and the open-orders check (no ``order_status`` lookup).
     """
     _check_live(run.as_of, today)
     _check_not_a_moving_read(run.as_of, today, run.started_at)
@@ -319,8 +332,14 @@ def _approve_and_execute(
     options: CycleOptions,
     now: Callable[[], datetime],
 ) -> CycleOutcome:
-    """Steps 11-12: window check, approval, window re-check on APPROVED, then execution."""
+    """Steps 11-12: window check, open-orders check, approval, window re-check on APPROVED,
+    then execution.
+
+    The open-orders check runs only for a plan that would submit (not blocked, not empty).
+    """
     _check_window(run, options, now)
+    if plan.blocked is None and plan.orders:
+        _check_pending(deps, run, plan, now)
     run.stage = "approval"
     decision = request_approval(verdict, plan, deps.gate)
     run.decision = decision
@@ -349,6 +368,52 @@ def _check_window(run: _Run, options: CycleOptions, now: Callable[[], datetime])
             f"window {SESSION_START:%H:%M}-{SESSION_END:%H:%M} ET: opg orders must be "
             "submitted before 09:25 ET or after the close"
         )
+
+
+def _check_pending(
+    deps: CycleDeps, run: _Run, plan: OrderPlan, now: Callable[[], datetime]
+) -> None:
+    """Refuse while an earlier cycle's orders may still fill: opg orders queued for another
+    ``as_of`` are invisible to the account read, so this cycle would size against flat
+    holdings and double the book past what the risk veto approved.
+
+    Looks up, at the broker, the ids of earlier non-dry-run reports whose fill deadline is
+    still ahead, leaving out this plan's own ids (a re-run of the same ``as_of`` keeps the
+    broker's DUPLICATE path). ``now`` is read only when such reports exist.
+    """
+    run.stage = "pending_orders"
+    reports = [r for r in deps.report_store.load_all().reports if not r.dry_run]
+    if not reports:
+        return
+    at = now()
+    live = [report for report in reports if fill_deadline(report.started_at) > at]
+    orders, _ = submitted_orders(live)
+    own = set(_planned_ids(plan))
+    still_open = [
+        orders[cid] for cid in sorted(orders.keys() - own) if _is_open(deps.broker, orders[cid], at)
+    ]
+    if still_open:
+        listed = ", ".join(
+            f"{order.request.client_order_id} (as_of {order.cycle_as_of})" for order in still_open
+        )
+        raise PendingOrdersError(
+            f"{len(still_open)} order(s) from an earlier cycle are still open at the broker: "
+            f"{listed}; settle or wait for the open before running another cycle"
+        )
+
+
+def _is_open(broker: Broker, order: SubmittedOrder, now: datetime) -> bool:
+    """Settle's reading of the broker's answer; a malformed one counts as open."""
+    try:
+        status = broker.order_status(order.request.client_order_id)
+    except OrderDataError:
+        return True
+    return is_open(
+        status.state,
+        acknowledged=order.acknowledged,
+        deadline=fill_deadline(order.started_at),
+        now=now,
+    )
 
 
 def _planned_ids(plan: OrderPlan) -> tuple[str, ...]:

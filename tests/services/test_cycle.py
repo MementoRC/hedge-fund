@@ -131,6 +131,43 @@ def test_an_as_of_that_is_not_live_fails_before_any_broker_read(as_of: date) -> 
     _untouched(world)
 
 
+def test_a_previous_weekday_as_of_after_the_open_fails_before_any_broker_read() -> None:
+    # Audit G3: Wed closed at 100; a Thursday run after the open must not re-date its moving
+    # equity as Wednesday's, or nav_history would let it replace the 100 point.
+    stored = [
+        _read(date(2026, 9, 28), 95.0),
+        _read(date(2026, 9, 29), 95.0),
+        dataclasses.replace(
+            _read(AS_OF, 100.0), observed_at=datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
+        ),
+    ]
+    world = World(
+        broker=ScriptedBroker(account_error=AssertionError("broker was read")),
+        snapshot_store=InMemorySnapshotStore(stored),
+    )
+    after_open = datetime(2026, 10, 1, 13, 30, tzinfo=UTC)  # Thu 09:30:00 EDT
+    with pytest.raises(ValueError, match=rf"as_of {AS_OF} is not live: .*opened at 09:30"):
+        _run(world, now=Clock(after_open))
+    assert world.snapshot_store.saved == stored
+    _untouched(world)
+
+
+def test_a_previous_weekday_as_of_after_the_open_fails_in_a_dry_run_and_any_time() -> None:
+    after_open = datetime(2026, 10, 1, 20, 0, tzinfo=UTC)
+    for options in (DRY, CycleOptions(any_time=True)):
+        world = World(broker=ScriptedBroker(account_error=AssertionError("broker was read")))
+        with pytest.raises(ValueError, match="use as_of 2026-10-01"):
+            _run(world, options=options, now=Clock(after_open))
+
+
+def test_a_previous_weekday_as_of_before_the_open_still_works() -> None:
+    world = World(snapshot_store=_halting_store())
+    before_open = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)  # Thu 08:00 EDT
+    report = _run(world, now=Clock(before_open))
+    assert report.outcome is CycleOutcome.HALTED_PREFLIGHT
+    assert report.as_of == AS_OF
+
+
 @pytest.mark.parametrize(
     "as_of",
     [pytest.param(AS_OF, id="previous-weekday"), pytest.param(TODAY, id="today")],
@@ -669,7 +706,10 @@ def test_the_window_check_is_skipped_or_passes(
     now: datetime, options: CycleOptions, outcome: CycleOutcome
 ) -> None:
     world = World()
-    assert _run(world, options=options, now=Clock(now)).outcome is outcome
+    # AS_OF is only live before TODAY's open: on the weekend clock the cycle is dated the weekend.
+    as_of, today = (now.date(),) * 2 if now == WEEKEND else (AS_OF, TODAY)
+    report = _run(world, options=options, as_of=as_of, today=today, now=Clock(now))
+    assert report.outcome is outcome
 
 
 def test_failed_legs_still_end_submitted_with_the_failures_reported() -> None:

@@ -30,11 +30,13 @@ from hedge_fund.engine.cost import check_budget, estimate, history_costs, spend
 from hedge_fund.engine.cost import plan as plan_budget
 from hedge_fund.engine.dates import previous_weekday
 from hedge_fund.engine.execution import (
+    MARKET_OPEN,
     MARKET_TZ,
     SESSION_END,
     SESSION_START,
     in_session_window,
     prepare_submission,
+    session_opened,
 )
 from hedge_fund.engine.factors.score import score
 from hedge_fund.engine.orders import DEFAULT_ORDERS, OrderParams, generate_orders, order_prices
@@ -184,6 +186,8 @@ def run_cycle(
 ) -> CycleReport:
     """Run one cycle for ``as_of``, save its report and return it.
 
+    ``as_of`` is ``today``, or the previous weekday while ``started_at`` is before the 09:30
+    New York open on ``today``: after it the account's equity is no longer that day's close.
     ``today`` is the date ``research_shortlist`` checks ``as_of`` against; ``now`` is read
     for ``started_at``, the account read and each submission-window check. A stage raising
     an ``Exception`` (ERROR) or a ``KeyboardInterrupt`` (INTERRUPTED) saves a partial
@@ -225,6 +229,7 @@ def _cycle(
     portfolio, no orders, no approval, no broker write.
     """
     _check_live(run.as_of, today)
+    _check_not_a_moving_read(run.as_of, today, run.started_at)
     if options.budget is not None:
         check_budget(options.budget)
     run.stage = "account"
@@ -502,6 +507,15 @@ def _order_prices(
         fetched = provider.closes(missing, as_of - timedelta(days=HELD_PRICE_DAYS), as_of)
         closes = pd.concat([closes, fetched], axis=1)
     return order_prices(closes, needed, as_of=as_of)
+
+
+def _check_not_a_moving_read(as_of: date, today: date, started_at: datetime) -> None:
+    """The cycle dates the broker's equity with ``as_of``: after the open it is not a close."""
+    if as_of != today and session_opened(today, started_at):
+        raise ValueError(
+            f"as_of {as_of} is not live: it is the previous weekday, but today's session "
+            f"opened at {MARKET_OPEN:%H:%M} New York time; use as_of {today}"
+        )
 
 
 def _check_live(as_of: date, today: date) -> None:

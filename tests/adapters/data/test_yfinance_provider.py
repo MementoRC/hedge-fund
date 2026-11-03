@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from hedge_fund.adapters.data._clock import market_today
 from hedge_fund.adapters.data.yfinance_provider import YAHOO_TO_GICS, YFinanceProvider
 from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProviderError
@@ -196,6 +197,10 @@ def test_splits_wraps_an_unconvertible_ratio() -> None:
 def test_yahoo_to_gics_covers_every_gics_sector() -> None:
     assert len(YAHOO_TO_GICS) == 11
     assert set(YAHOO_TO_GICS.values()) == GICS_SECTORS
+
+
+def test_default_clock_is_the_new_york_date() -> None:
+    assert YFinanceProvider()._clock is market_today
 
 
 def test_default_construction_needs_no_network_for_empty_request() -> None:

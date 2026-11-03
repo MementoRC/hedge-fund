@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from hedge_fund.adapters.data._clock import market_today
 from hedge_fund.adapters.data.caching import CachingProvider
 from hedge_fund.domain.ledger import Split
 from tests.factories import make_closes
@@ -36,6 +37,10 @@ def _coverage(root: Path, ticker: str) -> Any:
 
 def _slice(frame: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
     return frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
+
+
+def test_default_clock_is_the_new_york_date(tmp_path: Path) -> None:
+    assert CachingProvider(_fake(), tmp_path)._clock is market_today
 
 
 def test_cold_fetch_writes_parquet_and_coverage(tmp_path: Path) -> None:

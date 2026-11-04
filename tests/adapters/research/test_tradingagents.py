@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from anthropic.types import CacheCreation, Usage
+from langchain_anthropic.chat_models import _create_usage_metadata
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, Generation, LLMResult
@@ -395,6 +397,40 @@ def test_the_counter_is_safe_under_concurrent_calls() -> None:
     for thread in threads:
         thread.join()
     assert counter.usage() == (ModelUsage("claude-sonnet-5", 400, 200_000, 20_000, 0, 0),)
+
+
+def _anthropic_call(five_m: int, one_h: int, *, breakdown: bool = True) -> LLMResult:
+    """A call whose usage_metadata comes from the real langchain_anthropic converter."""
+    usage = Usage(
+        input_tokens=100,
+        output_tokens=50,
+        cache_creation_input_tokens=five_m + one_h,
+        cache_read_input_tokens=300,
+        cache_creation=(
+            CacheCreation(ephemeral_5m_input_tokens=five_m, ephemeral_1h_input_tokens=one_h)
+            if breakdown
+            else None
+        ),
+    )
+    message = AIMessage(
+        content="ok",
+        usage_metadata=_create_usage_metadata(usage),
+        response_metadata={"model": "claude-opus-5-5"},
+    )
+    return LLMResult(generations=[[ChatGeneration(message=message)]])
+
+
+@pytest.mark.parametrize(
+    ("five_m", "one_h", "breakdown"),
+    [(1000, 0, True), (0, 1000, True), (600, 400, True), (1000, 0, False)],
+    ids=["5m-only", "1h-only", "both", "generic-key-only"],
+)
+def test_cache_writes_include_the_per_ttl_breakdown(
+    five_m: int, one_h: int, breakdown: bool
+) -> None:
+    assert _count(_anthropic_call(five_m, one_h, breakdown=breakdown)) == (
+        ModelUsage("claude-opus-5-5", 1, 1400, 50, 1000, 300),
+    )
 
 
 def test_a_counter_failure_marks_usage_unknown_without_raising() -> None:

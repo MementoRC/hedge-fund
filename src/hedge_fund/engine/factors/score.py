@@ -16,6 +16,7 @@ from hedge_fund.engine.factors.fundamental import (
     FUNDAMENTAL_FACTORS,
     FundamentalFactorSpec,
     FundamentalInputs,
+    derive_metrics,
 )
 from hedge_fund.engine.factors.normalize import sector_zscore, winsorize
 from hedge_fund.engine.factors.quality import DEFAULT_GATES, QualityGates, altman_z, piotroski
@@ -126,10 +127,11 @@ def _signs(
 def _fundamental_inputs(
     fundamentals: FundamentalsSnapshot, filled: pd.DataFrame
 ) -> FundamentalInputs:
-    """Fundamentals reindexed to the scorable tickers, plus the last forward-filled close."""
+    """Fundamentals reindexed to the scorable tickers, with derived metrics filled in, plus the
+    last forward-filled close."""
     return FundamentalInputs(
-        current=fundamentals.current.reindex(filled.columns),
-        prior=fundamentals.prior.reindex(filled.columns),
+        current=derive_metrics(fundamentals.current.reindex(filled.columns)),
+        prior=derive_metrics(fundamentals.prior.reindex(filled.columns)),
         close=filled.iloc[-1],
     )
 

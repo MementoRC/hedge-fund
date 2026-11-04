@@ -9,6 +9,7 @@ from hedge_fund.domain.fundamentals import METRIC_NAMES
 from hedge_fund.engine.factors.fundamental import (
     FUNDAMENTAL_FACTORS,
     FundamentalInputs,
+    derive_metrics,
     earnings_yield,
     gross_profitability,
     market_cap,
@@ -106,6 +107,76 @@ def test_size_of_nan_market_cap_is_nan_without_warning() -> None:
         warnings.simplefilter("error")
         result = size(inputs)
     _assert_series(result, [NAN, NAN, NAN])
+
+
+def _derived(values: dict[str, list[float]], column: str) -> list[float]:
+    return derive_metrics(_frame(values))[column].tolist()
+
+
+def test_derive_total_liabilities_from_balance_sheet_identity() -> None:
+    values = {
+        "liabilities_and_equity": [1000.0, 800.0, 600.0],
+        "stockholders_equity": [500.0, 300.0, 100.0],
+    }
+    assert _derived(values, "total_liabilities") == [500.0, 500.0, 500.0]
+
+
+def test_derive_total_liabilities_keeps_tagged_value() -> None:
+    values = {
+        "total_liabilities": [450.0, NAN, 450.0],
+        "liabilities_and_equity": [1000.0, 1000.0, 1000.0],
+        "stockholders_equity": [500.0, 500.0, 500.0],
+    }
+    assert _derived(values, "total_liabilities") == [450.0, 500.0, 450.0]
+
+
+def test_derive_total_liabilities_nan_input_stays_nan() -> None:
+    values = {
+        "liabilities_and_equity": [NAN, 1000.0, NAN],
+        "stockholders_equity": [500.0, NAN, NAN],
+    }
+    assert np.isnan(_derived(values, "total_liabilities")).all()
+
+
+def test_derive_gross_profit_from_revenue_less_cost() -> None:
+    values = {"revenue": [100.0, 80.0, 50.0], "cost_of_revenue": [60.0, 80.0, 70.0]}
+    assert _derived(values, "gross_profit") == [40.0, 0.0, -20.0]
+
+
+def test_derive_gross_profit_keeps_tagged_value() -> None:
+    values = {
+        "gross_profit": [45.0, NAN, 45.0],
+        "revenue": [100.0, 100.0, 100.0],
+        "cost_of_revenue": [60.0, 60.0, 60.0],
+    }
+    assert _derived(values, "gross_profit") == [45.0, 40.0, 45.0]
+
+
+def test_derive_gross_profit_nan_input_stays_nan() -> None:
+    values = {"revenue": [NAN, 100.0, NAN], "cost_of_revenue": [60.0, NAN, NAN]}
+    assert np.isnan(_derived(values, "gross_profit")).all()
+
+
+def test_derive_metrics_does_not_mutate_input() -> None:
+    frame = _frame({"revenue": [100.0] * 3, "cost_of_revenue": [60.0] * 3})
+    derive_metrics(frame)
+    assert frame["gross_profit"].isna().all()
+
+
+def test_gross_profitability_for_untagged_filer_uses_derived_gross_profit() -> None:
+    current = _frame(
+        {
+            "revenue": [100.0, NAN, 100.0],
+            "cost_of_revenue": [70.0, 70.0, 70.0],
+            "total_assets": [100.0, 100.0, 100.0],
+        }
+    )
+    inputs = FundamentalInputs(current=derive_metrics(current), prior=_frame(None), close=_close())
+    _assert_series(gross_profitability(inputs), [0.3, NAN, 0.3])
+
+
+def _close() -> pd.Series:
+    return pd.Series([10.0, 10.0, 10.0], index=TICKERS)
 
 
 def test_fundamental_factor_registry() -> None:

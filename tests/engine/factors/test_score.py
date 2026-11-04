@@ -367,7 +367,9 @@ def test_fundamentals_only_tickers_ignored() -> None:
 
 
 def test_nan_gross_profit_is_nonfinite_factor() -> None:
-    fundamentals = _with_current(make_fundamentals(TICKERS), {"A1": {"gross_profit": np.nan}})
+    fundamentals = _with_current(
+        make_fundamentals(TICKERS), {"A1": {"gross_profit": np.nan, "cost_of_revenue": np.nan}}
+    )
     result = score(_snapshot(make_closes(TICKERS)), fundamentals, quality_gates=None)
     assert result.excluded == {"A1": "nonfinite_factor"}
     assert "A1" not in {s.ticker for s in result.scores}
@@ -465,10 +467,48 @@ def test_nan_retained_earnings_is_nonfinite_quality() -> None:
     assert result.excluded == {"A1": "nonfinite_quality"}
 
 
+def _untag(frame: pd.DataFrame) -> pd.DataFrame:
+    """Rewrite ``frame`` as a filer tagging only the inputs of the derivable metrics."""
+    out = frame.copy()
+    out["liabilities_and_equity"] = out["total_liabilities"] + 500.0
+    out["stockholders_equity"] = 500.0
+    out["total_liabilities"] = np.nan
+    out["cost_of_revenue"] = out["revenue"] - out["gross_profit"]
+    out["gross_profit"] = np.nan
+    return out
+
+
+def test_untagged_filer_scores_like_tagged_filer() -> None:
+    tagged = make_passing_fundamentals(TICKERS)
+    untagged = FundamentalsSnapshot(
+        tagged.as_of, _untag(tagged.current), _untag(tagged.prior), tagged.periods
+    )
+    closes = make_closes(TICKERS)
+    expected = score(_snapshot(closes), tagged)
+    result = score(_snapshot(closes), untagged)
+    assert result.excluded == {}
+    assert [(s.ticker, s.piotroski) for s in result.scores] == [
+        (s.ticker, s.piotroski) for s in expected.scores
+    ]
+    assert {s.piotroski for s in result.scores} == {9}
+    for got, want in zip(result.scores, expected.scores, strict=True):
+        assert got.altman_z == pytest.approx(want.altman_z)
+        assert got.raw["gross_profitability"] == pytest.approx(want.raw["gross_profitability"])
+
+
+def test_untagged_liabilities_without_equity_is_nonfinite_quality() -> None:
+    fundamentals = _with_current(
+        make_passing_fundamentals(TICKERS),
+        {"A1": {"total_liabilities": np.nan, "stockholders_equity": np.nan}},
+    )
+    result = score(_snapshot(make_closes(TICKERS)), fundamentals)
+    assert result.excluded == {"A1": "nonfinite_quality"}
+
+
 def test_nonfinite_factor_beats_nonfinite_quality() -> None:
     fundamentals = _with_current(
         make_passing_fundamentals(TICKERS),
-        {"A1": {"gross_profit": np.nan, "retained_earnings": np.nan}},
+        {"A1": {"gross_profit": np.nan, "cost_of_revenue": np.nan, "retained_earnings": np.nan}},
     )
     result = score(_snapshot(make_closes(TICKERS)), fundamentals)
     assert result.excluded == {"A1": "nonfinite_factor"}

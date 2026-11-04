@@ -616,8 +616,11 @@ def test_risk_params_and_nav_reach_the_portfolio_and_the_risk_check() -> None:
 
 
 def _stored(world: World) -> ResearchResult:
-    """Run one dry cycle so the store holds today's research; forget the researcher calls."""
-    research = _run(world, options=DRY).research
+    """Run one dry cycle so the store holds today's research; forget the researcher calls.
+
+    It starts a minute before the later cycles: the report store refuses a repeat second.
+    """
+    research = _run(world, options=DRY, now=Clock(EVENING - timedelta(minutes=1))).research
     assert research is not None
     world.researcher.calls.clear()
     return research

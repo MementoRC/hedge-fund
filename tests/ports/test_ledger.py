@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
+from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.ledger import (
     Fill,
     FillStatus,
@@ -16,7 +17,12 @@ from hedge_fund.domain.ledger import (
 )
 from hedge_fund.domain.orders import OrderAction
 from hedge_fund.ports.ledger import FillStore, OpeningBalance, SettlementReportStore
-from tests.fakes import InMemoryFillStore, InMemorySettlementStore, StaticOpeningBalance
+from tests.fakes import (
+    InMemoryFillStore,
+    InMemoryReportStore,
+    InMemorySettlementStore,
+    StaticOpeningBalance,
+)
 
 AT = datetime(2026, 10, 1, 14, 0, tzinfo=UTC)
 FILL = Fill(
@@ -52,6 +58,31 @@ REPORT = SettlementReport(
 )
 
 
+def _cycle_report(started_at: datetime) -> CycleReport:
+    return CycleReport(
+        as_of=date(2026, 9, 30),
+        started_at=started_at,
+        dry_run=False,
+        outcome=CycleOutcome.HALTED_PREFLIGHT,
+        failed_stage=None,
+        error=None,
+        account=None,
+        price_unresolved={},
+        fundamentals_unresolved={},
+        shortlist=None,
+        research=None,
+        research_reused=False,
+        target=None,
+        verdict=None,
+        order_prices=None,
+        plan=None,
+        decision=None,
+        execution=None,
+        execution_interrupted=False,
+        planned_client_order_ids=(),
+    )
+
+
 def test_in_memory_fill_store_satisfies_the_port_and_writes_once() -> None:
     fake = InMemoryFillStore()
     store: FillStore = fake
@@ -66,6 +97,17 @@ def test_in_memory_fill_store_starts_from_given_fills_and_can_fail_to_load() -> 
     assert InMemoryFillStore([FILL]).load_all() == (FILL,)
     with pytest.raises(ValueError, match="malformed"):
         InMemoryFillStore(load_error=ValueError("malformed")).load_all()
+
+
+def test_in_memory_report_store_refuses_a_repeat_as_of_and_second_keeping_the_first() -> None:
+    fake = InMemoryReportStore()
+    first = _cycle_report(AT)
+    fake.save(first)
+    with pytest.raises(FileExistsError, match="2026-09-30_140000"):
+        fake.save(_cycle_report(AT + timedelta(microseconds=5)))
+    later = _cycle_report(AT + timedelta(seconds=1))
+    fake.save(later)
+    assert fake.saved == [first, later]
 
 
 def test_static_opening_balance_satisfies_the_port() -> None:

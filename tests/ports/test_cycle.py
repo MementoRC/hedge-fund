@@ -39,9 +39,10 @@ REPORT = CycleReport(
 def test_in_memory_store_satisfies_the_port() -> None:
     fake = InMemoryReportStore()
     store: CycleReportStore = fake
+    later = dataclasses.replace(REPORT, started_at=datetime(2026, 9, 30, 23, 0, tzinfo=UTC))
     store.save(REPORT)
-    store.save(REPORT)
-    assert fake.saved == [REPORT, REPORT]
+    store.save(later)
+    assert fake.saved == [REPORT, later]
 
 
 def test_in_memory_store_fails_when_told_to_and_keeps_nothing() -> None:

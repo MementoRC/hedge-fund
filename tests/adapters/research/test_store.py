@@ -462,3 +462,26 @@ def test_decode_usage() -> None:
         "cache_read_tokens": 600,
     }
     assert decode_usage(item) == USAGE[1]
+
+
+_USAGE_ITEM: dict[str, object] = {
+    "model": "claude-sonnet-5",
+    "calls": 5,
+    "input_tokens": 900,
+    "output_tokens": 80,
+    "cache_write_tokens": 0,
+    "cache_read_tokens": 600,
+}
+
+
+@pytest.mark.parametrize("field", [key for key in _USAGE_ITEM if key != "model"])
+@pytest.mark.parametrize("bad", ["1200", 1200.7, True], ids=["str", "float", "bool"])
+def test_decode_usage_rejects_a_count_that_is_not_an_int(field: str, bad: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        decode_usage({**_USAGE_ITEM, field: bad})
+
+
+@pytest.mark.parametrize("bad", [None, 5], ids=["none", "int"])
+def test_decode_usage_rejects_a_model_that_is_not_a_string(bad: object) -> None:
+    with pytest.raises(ValueError, match="model"):
+        decode_usage({**_USAGE_ITEM, "model": bad})

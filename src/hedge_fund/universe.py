@@ -67,7 +67,11 @@ def parse_universe(name: str, text: str) -> Universe:
     for row in reader:
         if any(row[column] is None for column in columns):
             raise ValueError(f"universe {name!r}: line {reader.line_num + 1} is missing a column")
+        if row.get(None):
+            raise ValueError(f"universe {name!r}: line {reader.line_num + 1} has an extra field")
         ticker = row["ticker"].strip()
+        if not ticker:
+            raise ValueError(f"universe {name!r}: line {reader.line_num + 1} has an empty ticker")
         sector = row["gics_sector"].strip()
         if ticker in sectors:
             raise ValueError(f"universe {name!r}: duplicate ticker {ticker}")

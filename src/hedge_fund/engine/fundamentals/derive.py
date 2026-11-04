@@ -11,17 +11,20 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
 
 from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS
+from hedge_fund.domain.ledger import Split
 from hedge_fund.engine.fundamentals.metrics import (
     CURATED_TAGS,
     METRICS,
     REPORT_FORMS,
     SHARES_DEI_TAG,
 )
+from hedge_fund.engine.ledger.splits import split_factor
 
 _VERSION_KEY = ["ticker", "tag", "start", "end"]
 
@@ -47,6 +50,16 @@ NO_FILINGS = "no_filings"
 NO_REFERENCE_PERIOD = "no_reference_period"
 STALE_FUNDAMENTALS = "stale_fundamentals"
 _SHARES_METRIC = "shares_outstanding"
+
+
+class CoverShares(NamedTuple):
+    """A dei cover-page share count and the cover date it was reported at (NaN, NaT if none)."""
+
+    value: float
+    on: pd.Timestamp | pd.NaTType
+
+
+_NO_COVER = CoverShares(math.nan, pd.NaT)
 
 
 @dataclass(frozen=True)
@@ -190,7 +203,7 @@ def stock_value(facts: pd.DataFrame, end: pd.Timestamp) -> float:
     return math.nan if hit is None else float(hit["value"])
 
 
-def current_shares(visible: pd.DataFrame) -> float:
+def current_shares(visible: pd.DataFrame) -> CoverShares:
     """Cover-page share count from the most recently filed report that carries one, else NaN.
 
     Precondition: `visible` holds one ticker's facts after `pit_filter`. The filing is the dei
@@ -199,12 +212,12 @@ def current_shares(visible: pd.DataFrame) -> float:
     """
     dei = visible.loc[visible["tag"] == SHARES_DEI_TAG]
     if dei.empty:
-        return math.nan
+        return _NO_COVER
     accn = dei.sort_values(["filed", "end", "accn"], kind="stable").iloc[-1]["accn"]
     return _cover_count(dei.loc[dei["accn"] == accn])
 
 
-def prior_shares(visible: pd.DataFrame, prior_end: pd.Timestamp) -> float:
+def prior_shares(visible: pd.DataFrame, prior_end: pd.Timestamp) -> CoverShares:
     """Cover-page share count of the filing that first reported `prior_end`, else NaN.
 
     The first reporter is the smallest (`filed`, `accn`) among non-dei facts ending exactly at
@@ -214,21 +227,22 @@ def prior_shares(visible: pd.DataFrame, prior_end: pd.Timestamp) -> float:
     """
     reporting = visible.loc[(visible["end"] == prior_end) & _non_dei(visible)]
     if reporting.empty:
-        return math.nan
+        return _NO_COVER
     accn = reporting.sort_values(["filed", "accn"], kind="stable").iloc[0]["accn"]
     return _cover_count(visible.loc[(visible["tag"] == SHARES_DEI_TAG) & (visible["accn"] == accn)])
 
 
-def _cover_count(dei: pd.DataFrame) -> float:
-    """One filing's dei share count at its latest cover date; NaN if none or ambiguous.
+def _cover_count(dei: pd.DataFrame) -> CoverShares:
+    """One filing's dei share count and its latest cover date; NaN if none or ambiguous.
 
     More than one distinct value at that date (e.g. per-class counts reported undimensioned)
     gives NaN rather than an arbitrary pick; identical duplicates are one value.
     """
     if dei.empty:
-        return math.nan
-    values = dei.loc[dei["end"] == dei["end"].max(), "value"].unique()
-    return float(values[0]) if len(values) == 1 else math.nan
+        return _NO_COVER
+    cover_date = dei["end"].max()
+    values = dei.loc[dei["end"] == cover_date, "value"].unique()
+    return CoverShares(float(values[0]), cover_date) if len(values) == 1 else _NO_COVER
 
 
 def metric_values(versioned: pd.DataFrame, end: pd.Timestamp) -> dict[str, float]:
@@ -244,13 +258,19 @@ def metric_values(versioned: pd.DataFrame, end: pd.Timestamp) -> dict[str, float
     return values
 
 
-def derive_ticker(facts: pd.DataFrame, as_of: date) -> TickerFundamentals | str:
+def derive_ticker(
+    facts: pd.DataFrame, as_of: date, splits: Sequence[Split] = ()
+) -> TickerFundamentals | str:
     """One ticker's metrics at E and E′ as of `as_of`, or the reason it is unresolved.
 
     Flow and stock values come from the version-selected frame; dei shares and `last_filed`
     from the PIT-filtered frame before version selection. `E` older than
     `as_of - MAX_STALENESS_DAYS` is stale; exactly at the limit is kept. Without an E′ the
     prior metrics are all NaN.
+
+    Prices are split-adjusted, so shares reported before a split in `splits` (the ticker's
+    own, ex-dated by `as_of`) are restated to the as_of basis: a dei count from its cover
+    date, the us-gaap fallback from the reference period end (E or E′).
     """
     visible = pit_filter(facts, as_of)
     versioned = select_versions(visible)
@@ -260,29 +280,36 @@ def derive_ticker(facts: pd.DataFrame, as_of: date) -> TickerFundamentals | str:
     if end < pd.Timestamp(as_of) - pd.Timedelta(days=MAX_STALENESS_DAYS):
         return STALE_FUNDAMENTALS
     prior_end = prior_reference(versioned, end)
+    ticker = str(visible["ticker"].iloc[0])
+
+    def restate(on: pd.Timestamp) -> float:
+        return float(split_factor(ticker, on.date(), splits, through=as_of))
+
     current = metric_values(versioned, end)
-    _prefer_dei_shares(current, current_shares(visible))
+    _set_shares(current, current_shares(visible), end, restate)
     prior = dict.fromkeys(METRIC_NAMES, math.nan)
     if not pd.isna(prior_end):
         prior = metric_values(versioned, prior_end)
-        _prefer_dei_shares(prior, prior_shares(visible, prior_end))
+        _set_shares(prior, prior_shares(visible, prior_end), prior_end, restate)
     return TickerFundamentals(
         current=current, prior=prior, periods=(end, prior_end, last_filed(visible))
     )
 
 
-def derive_fundamentals(facts: pd.DataFrame, tickers: Sequence[str], as_of: date) -> Derived:
+def derive_fundamentals(
+    facts: pd.DataFrame, tickers: Sequence[str], as_of: date, splits: Sequence[Split] = ()
+) -> Derived:
     """Derive every requested ticker from a multi-ticker facts frame.
 
-    Tickers without rows are `no_filings`; see derive_ticker for the other reasons. Duplicate
-    tickers count once.
+    Tickers without rows are `no_filings`; see derive_ticker for the other reasons and for
+    how `splits` restate shares. Duplicate tickers count once.
     """
     by_ticker = dict(list(facts.reset_index(drop=True).groupby("ticker", sort=False)))
     resolved: dict[str, TickerFundamentals] = {}
     unresolved: dict[str, str] = {}
     for ticker in dict.fromkeys(tickers):
         group = by_ticker.get(ticker)
-        result = NO_FILINGS if group is None else derive_ticker(group, as_of)
+        result = NO_FILINGS if group is None else derive_ticker(group, as_of, splits)
         if isinstance(result, str):
             unresolved[ticker] = result
         else:
@@ -298,10 +325,20 @@ def derive_fundamentals(facts: pd.DataFrame, tickers: Sequence[str], as_of: date
     )
 
 
-def _prefer_dei_shares(values: dict[str, float], dei_shares: float) -> None:
-    """The dei cover count wins; the us-gaap value stays only when no dei count qualifies."""
-    if not math.isnan(dei_shares):
-        values[_SHARES_METRIC] = dei_shares
+def _set_shares(
+    values: dict[str, float],
+    dei: CoverShares,
+    period_end: pd.Timestamp,
+    restate: Callable[[pd.Timestamp], float],
+) -> None:
+    """Shares on the as_of basis: the dei cover count wins; the us-gaap value (dated
+    `period_end`) stays only when no dei count qualifies. NaN stays NaN.
+    """
+    on = period_end
+    if not math.isnan(dei.value):
+        values[_SHARES_METRIC] = dei.value
+        on = dei.on
+    values[_SHARES_METRIC] *= restate(on)
 
 
 def _metric_frame(rows: list[Mapping[str, float]], index: list[str]) -> pd.DataFrame:

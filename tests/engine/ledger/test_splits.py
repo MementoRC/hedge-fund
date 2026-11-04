@@ -10,7 +10,7 @@ import pytest
 
 from hedge_fund.domain.ledger import Fill, FillStatus, OpeningEntry, Split
 from hedge_fund.domain.orders import OrderAction
-from hedge_fund.engine.ledger.splits import apply_splits, split_window
+from hedge_fund.engine.ledger.splits import apply_splits, split_factor, split_window
 
 EX = date(2026, 10, 5)
 BEFORE = datetime(2026, 10, 2, 13, 30, tzinfo=UTC)
@@ -45,6 +45,24 @@ def _opening(ticker: str = "AAA", shares: int = 10, price: float = 100.0) -> Ope
 
 def _split(ratio: Fraction, ticker: str = "AAA", ex_date: date = EX) -> Split:
     return Split(ticker=ticker, ex_date=ex_date, ratio=ratio)
+
+
+def test_split_factor_multiplies_the_ratios_of_splits_after_the_date() -> None:
+    splits = [_split(Fraction(10)), _split(Fraction(1, 2), ex_date=date(2026, 12, 1))]
+    assert split_factor("AAA", date(2026, 10, 4), splits) == Fraction(5)
+    assert split_factor("AAA", date(2026, 10, 5), splits) == Fraction(1, 2)  # ex day is post-split
+    assert split_factor("AAA", date(2026, 12, 1), splits) == 1
+
+
+def test_split_factor_ignores_other_tickers() -> None:
+    assert split_factor("BBB", date(2026, 10, 4), [_split(Fraction(10))]) == 1
+
+
+def test_split_factor_through_leaves_out_later_splits() -> None:
+    splits = [_split(Fraction(10)), _split(Fraction(2), ex_date=date(2026, 12, 1))]
+    assert split_factor("AAA", date(2026, 9, 1), splits, through=date(2026, 10, 5)) == 10
+    assert split_factor("AAA", date(2026, 9, 1), splits, through=date(2026, 10, 4)) == 1
+    assert split_factor("AAA", date(2026, 9, 1), splits, through=date(2026, 12, 1)) == 20
 
 
 def test_a_forward_split_scales_a_fill_before_the_ex_date() -> None:

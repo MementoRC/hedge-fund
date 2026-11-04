@@ -7,7 +7,7 @@ from datetime import UTC, date
 from pathlib import Path
 
 from hedge_fund.adapters._json import jsonable
-from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.domain.attribution import AttributionReport
 
 ATTRIBUTIONS_DIR = "attributions"
@@ -28,10 +28,11 @@ class JsonAttributionReportStore:
         """Write atomically; FileExistsError, writing nothing, if the name is taken."""
         stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
         path = self._dir / f"{_bound(report.start)}_{_bound(report.end)}_{stamp}.json"
-        if path.exists():
-            raise FileExistsError(f"{path}: a report for this window and second exists")
         body = json.dumps(jsonable(report), indent=2, allow_nan=False)
-        atomic_write(path, lambda tmp: tmp.write_text(body, encoding="utf-8"))
+        try:
+            atomic_create(path, lambda tmp: tmp.write_text(body, encoding="utf-8"))
+        except FileExistsError as exc:
+            raise FileExistsError(f"{path}: a report for this window and second exists") from exc
 
 
 def _bound(day: date | None) -> str:

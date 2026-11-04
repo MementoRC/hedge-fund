@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from hedge_fund.adapters.ledger import fills
 from hedge_fund.adapters.ledger.fills import JsonFillStore
 from hedge_fund.domain.ledger import Fill, FillStatus
 from hedge_fund.domain.orders import OrderAction
@@ -96,6 +98,30 @@ def test_a_recorded_fill_is_never_overwritten(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError, match=FILL.client_order_id):
         store.save(dataclasses.replace(FILL, filled_shares=3))
     assert _path(tmp_path).read_text(encoding="utf-8") == first
+
+
+def test_a_save_that_loses_the_race_raises_and_keeps_the_first_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonFillStore(tmp_path)
+    real = fills.atomic_create
+    rival_saved = False
+
+    def interleaved(path: Path, write: Callable[[Path], Any]) -> None:
+        def write_then_rival_saves(tmp: Path) -> None:
+            nonlocal rival_saved
+            write(tmp)
+            if not rival_saved:
+                rival_saved = True
+                store.save(dataclasses.replace(FILL, filled_shares=3))
+
+        real(path, write_then_rival_saves)
+
+    monkeypatch.setattr(fills, "atomic_create", interleaved)
+    with pytest.raises(FileExistsError, match=FILL.client_order_id):
+        store.save(FILL)
+    assert json.loads(_path(tmp_path).read_text(encoding="utf-8"))["filled_shares"] == 3
+    assert [p.name for p in _dir(tmp_path).iterdir()] == [_path(tmp_path).name]
 
 
 def test_a_failed_write_leaves_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

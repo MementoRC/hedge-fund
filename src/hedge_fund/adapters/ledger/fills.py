@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from hedge_fund.adapters._json import jsonable
-from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.domain.ledger import Fill, FillStatus
 from hedge_fund.domain.orders import OrderAction
 
@@ -34,10 +34,13 @@ class JsonFillStore:
     def save(self, fill: Fill) -> None:
         """Write atomically; FileExistsError, leaving the first file intact, if the id is taken."""
         path = self._dir / f"{_checked(fill.client_order_id)}.json"
-        if path.exists():
-            raise FileExistsError(f"{path}: fill {fill.client_order_id!r} is already recorded")
         body = json.dumps(jsonable(fill), indent=2, allow_nan=False)
-        atomic_write(path, lambda tmp: tmp.write_text(body, encoding="utf-8"))
+        try:
+            atomic_create(path, lambda tmp: tmp.write_text(body, encoding="utf-8"))
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{path}: fill {fill.client_order_id!r} is already recorded"
+            ) from exc
 
     def load_all(self) -> tuple[Fill, ...]:
         """Every ``*.json`` fill, by file name (temp files end in ``.tmp`` and never match).

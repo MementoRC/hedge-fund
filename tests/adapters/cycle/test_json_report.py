@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ from typing import Any
 import pytest
 
 from hedge_fund.adapters._json import jsonable
+from hedge_fund.adapters.cycle import json_report
 from hedge_fund.adapters.cycle.json_report import JsonCycleReportStore
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
@@ -364,6 +366,30 @@ def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:
         store.save(dataclasses.replace(REPORT, outcome=CycleOutcome.ERROR))
     assert path.read_text(encoding="utf-8") == first
     assert _runs(tmp_path) == [path]
+
+
+def test_a_save_that_loses_the_race_raises_and_keeps_the_first_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JsonCycleReportStore(tmp_path)
+    real = json_report.atomic_create
+    rival_saved = False
+
+    def interleaved(path: Path, write: Callable[[Path], Any]) -> None:
+        def write_then_rival_saves(tmp: Path) -> None:
+            nonlocal rival_saved
+            write(tmp)
+            if not rival_saved:
+                rival_saved = True
+                store.save(dataclasses.replace(REPORT, outcome=CycleOutcome.ERROR))
+
+        real(path, write_then_rival_saves)
+
+    monkeypatch.setattr(json_report, "atomic_create", interleaved)
+    with pytest.raises(FileExistsError, match="2026-09-30_220509.json"):
+        store.save(REPORT)
+    [path] = _runs(tmp_path)
+    assert json.loads(path.read_text(encoding="utf-8"))["outcome"] == CycleOutcome.ERROR.value
 
 
 def test_a_failed_write_leaves_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

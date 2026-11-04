@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from fractions import Fraction
 from pathlib import Path
 
 import pandas as pd
@@ -37,6 +38,8 @@ class CachingProvider:
     covered range. A request the cache does not fully cover is refetched over the union
     of the requested and cached ranges and replaces the cache: adjusted closes are
     restated after dividends and splits, so fetches are never spliced together.
+    splits/<TICKER>.json holds a ticker's full split history (exact ratios) and the NY date it
+    was fetched; it is trusted for that day only.
     sectors.json caches resolved (non-None) sectors only, so empty vendor answers are retried.
     Cached sectors are never refreshed automatically; delete sectors.json in the cache dir
     to refresh them. Unreadable cache files are treated as misses and rewritten.
@@ -50,6 +53,7 @@ class CachingProvider:
     ) -> None:
         self._inner = inner
         self._prices_dir = Path(cache_dir) / "prices"
+        self._splits_dir = Path(cache_dir) / "splits"
         self._sectors_path = Path(cache_dir) / "sectors.json"
         self._clock = clock
 
@@ -81,8 +85,26 @@ class CachingProvider:
         return _assemble(requested, served, start, end)
 
     def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
-        """Always asked of `inner`: split lists are short and a new split must show at once."""
-        return self._inner.splits(tickers, start, end)
+        """Per-ticker full split history, refetched from `inner` at most once per NY day.
+
+        Tickers not fetched today are fetched together in one call over all time.
+        """
+        today = self._clock()
+        history: dict[str, tuple[Split, ...]] = {}
+        stale: list[str] = []
+        for ticker in dict.fromkeys(tickers):
+            cached = self._read_splits(ticker, today)
+            if cached is None:
+                stale.append(ticker)
+            else:
+                history[ticker] = cached
+        if stale:
+            fetched = self._inner.splits(stale, date.min, today)
+            for ticker in stale:
+                history[ticker] = tuple(s for s in fetched if s.ticker == ticker)
+                self._write_splits(ticker, history[ticker], today)
+        found = [s for entries in history.values() for s in entries if start < s.ex_date <= end]
+        return tuple(sorted(found, key=lambda s: (s.ex_date, s.ticker)))
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         requested = list(tickers)
@@ -107,9 +129,54 @@ class CachingProvider:
             return {}
         return known if isinstance(known, dict) else {}
 
-    def _paths(self, ticker: str) -> tuple[Path, Path]:
+    def _splits_path(self, ticker: str) -> Path:
+        self._check_ticker(ticker)
+        return self._splits_dir / f"{ticker}.json"
+
+    def _read_splits(self, ticker: str, today: date) -> tuple[Split, ...] | None:
+        path = self._splits_path(ticker)
+        if not path.is_file():
+            return None
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+            if date.fromisoformat(body["fetched_on"]) != today:
+                return None
+            return tuple(
+                Split(
+                    ticker,
+                    date.fromisoformat(item["ex_date"]),
+                    Fraction(item["numerator"], item["denominator"]),
+                )
+                for item in body["splits"]
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            return None  # corrupt cache files count as a miss and are overwritten on refetch
+
+    def _write_splits(self, ticker: str, splits: tuple[Split, ...], today: date) -> None:
+        body = json.dumps(
+            {
+                "fetched_on": today.isoformat(),
+                "splits": [
+                    {
+                        "ex_date": s.ex_date.isoformat(),
+                        "numerator": s.ratio.numerator,
+                        "denominator": s.ratio.denominator,
+                    }
+                    for s in splits
+                ],
+            }
+        )
+        atomic_write(
+            self._splits_path(ticker), lambda path: path.write_text(body, encoding="utf-8")
+        )
+
+    @staticmethod
+    def _check_ticker(ticker: str) -> None:
         if not _SAFE_TICKER.fullmatch(ticker):
             raise ValueError(f"ticker not safe as a cache file name: {ticker!r}")
+
+    def _paths(self, ticker: str) -> tuple[Path, Path]:
+        self._check_ticker(ticker)
         return self._prices_dir / f"{ticker}.parquet", self._prices_dir / f"{ticker}.json"
 
     def _read(self, ticker: str) -> _CachedSeries | None:

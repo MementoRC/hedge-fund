@@ -13,6 +13,7 @@ import pytest
 from hedge_fund.adapters.data._clock import market_today
 from hedge_fund.adapters.data.caching import CachingProvider
 from hedge_fund.domain.ledger import Split
+from hedge_fund.ports.data import DataProviderError
 from tests.factories import make_closes
 from tests.fakes import FakeProvider, assert_closes_equal
 
@@ -52,14 +53,111 @@ def test_cold_fetch_writes_parquet_and_coverage(tmp_path: Path) -> None:
     assert _coverage(tmp_path, "AAA") == {"start": "2026-06-01", "end": "2026-09-30"}
 
 
-def test_splits_are_never_cached(tmp_path: Path) -> None:
+def _split_fake(*splits: Split) -> FakeProvider:
+    return FakeProvider(make_closes(["AAA", "BBB", "CCC"]), {}, splits=splits)
+
+
+def _splits_file(root: Path, ticker: str) -> Path:
+    return root / "splits" / f"{ticker}.json"
+
+
+def test_splits_second_same_day_call_is_served_from_disk(tmp_path: Path) -> None:
     split = Split("AAA", date(2026, 9, 15), Fraction(2))
-    fake = FakeProvider(make_closes(["AAA"]), {}, splits=[split])
+    fake = _split_fake(split)
     cache = _cache(fake, tmp_path)
     assert cache.splits(["AAA"], JUN, SEP_END) == (split,)
     assert cache.splits(["AAA"], JUN, SEP_END) == (split,)
-    assert fake.splits_calls == [(("AAA",), JUN, SEP_END)] * 2
-    assert not (tmp_path / "prices").exists()
+    assert fake.splits_calls == [(("AAA",), date.min, TODAY)]
+    assert _cache(fake, tmp_path).splits(["AAA"], JUN, SEP_END) == (split,)
+    assert len(fake.splits_calls) == 1
+    stored = json.loads(_splits_file(tmp_path, "AAA").read_text(encoding="utf-8"))
+    assert stored["fetched_on"] == "2026-10-09"
+
+
+def test_splits_are_refetched_the_next_day(tmp_path: Path) -> None:
+    fake = _split_fake()
+    _cache(fake, tmp_path).splits(["AAA"], JUN, SEP_END)
+    late = Split("AAA", date(2026, 10, 10), Fraction(3))
+    fake.split_list = (late,)
+    tomorrow = date(2026, 10, 10)
+    result = _cache(fake, tmp_path, today=tomorrow).splits(["AAA"], JUN, tomorrow)
+    assert result == (late,)
+    assert len(fake.splits_calls) == 2
+
+
+def test_splits_only_stale_tickers_are_fetched_in_one_call(tmp_path: Path) -> None:
+    fake = _split_fake(Split("BBB", date(2026, 8, 1), Fraction(2)))
+    cache = _cache(fake, tmp_path)
+    cache.splits(["AAA"], JUN, SEP_END)
+    cache.splits(["AAA", "BBB", "CCC"], JUN, SEP_END)
+    assert fake.splits_calls == [
+        (("AAA",), date.min, TODAY),
+        (("BBB", "CCC"), date.min, TODAY),
+    ]
+
+
+def test_splits_are_windowed_and_ordered(tmp_path: Path) -> None:
+    early = Split("AAA", date(2026, 3, 2), Fraction(2))
+    edge_start = Split("AAA", JUN, Fraction(2))
+    mid_b = Split("BBB", date(2026, 7, 1), Fraction(3))
+    mid_a = Split("AAA", date(2026, 7, 1), Fraction(4))
+    edge_end = Split("CCC", SEP_END, Fraction(5))
+    late = Split("CCC", date(2026, 10, 1), Fraction(2))
+    fake = _split_fake(late, edge_end, mid_b, edge_start, mid_a, early)
+    cache = _cache(fake, tmp_path)
+    expected = (mid_a, mid_b, edge_end)
+    assert cache.splits(["CCC", "BBB", "AAA"], JUN, SEP_END) == expected
+    assert cache.splits(["CCC", "BBB", "AAA"], JUN, SEP_END) == expected
+    assert len(fake.splits_calls) == 1
+
+
+def test_splits_empty_history_is_cached(tmp_path: Path) -> None:
+    fake = _split_fake()
+    cache = _cache(fake, tmp_path)
+    assert cache.splits(["AAA"], JUN, SEP_END) == ()
+    assert cache.splits(["AAA"], JUN, SEP_END) == ()
+    assert len(fake.splits_calls) == 1
+    assert _splits_file(tmp_path, "AAA").is_file()
+
+
+def test_splits_ratio_round_trips_exactly(tmp_path: Path) -> None:
+    split = Split("AAA", date(2026, 9, 15), Fraction(3, 2))
+    fake = _split_fake(split)
+    _cache(fake, tmp_path).splits(["AAA"], JUN, SEP_END)
+    (result,) = _cache(fake, tmp_path).splits(["AAA"], JUN, SEP_END)
+    assert result == split
+    assert result.ratio == Fraction(3, 2)
+    assert len(fake.splits_calls) == 1
+
+
+def test_splits_inner_error_propagates_and_writes_nothing(tmp_path: Path) -> None:
+    fake = _split_fake()
+
+    def boom(tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        raise DataProviderError("vendor down")
+
+    fake.splits = boom  # type: ignore[method-assign]
+    with pytest.raises(DataProviderError):
+        _cache(fake, tmp_path).splits(["AAA", "BBB"], JUN, SEP_END)
+    assert not (tmp_path / "splits").exists()
+
+
+@pytest.mark.parametrize("body", ["{not json", "{}", '{"fetched_on": "2026-10-09"}', "[]"])
+def test_corrupt_splits_file_is_refetched_and_rewritten(tmp_path: Path, body: str) -> None:
+    split = Split("AAA", date(2026, 9, 15), Fraction(2))
+    fake = _split_fake(split)
+    cache = _cache(fake, tmp_path)
+    cache.splits(["AAA"], JUN, SEP_END)
+    _splits_file(tmp_path, "AAA").write_text(body, encoding="utf-8")
+    assert cache.splits(["AAA"], JUN, SEP_END) == (split,)
+    assert len(fake.splits_calls) == 2
+    assert cache.splits(["AAA"], JUN, SEP_END) == (split,)
+    assert len(fake.splits_calls) == 2
+
+
+def test_splits_unsafe_ticker_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="not safe"):
+        _cache(_split_fake(), tmp_path).splits(["../AAA"], JUN, SEP_END)
 
 
 def test_covered_request_makes_no_inner_call(tmp_path: Path) -> None:

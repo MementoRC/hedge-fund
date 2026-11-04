@@ -55,10 +55,19 @@ def split_window(
     return sorted({ticker for ticker, _ in days}), min(day for _, day in days)
 
 
-def _factor(ticker: str, on: date, splits: Sequence[Split]) -> Fraction:
+def split_factor(
+    ticker: str, on: date, splits: Sequence[Split], through: date | None = None
+) -> Fraction:
+    """The product of ``ratio`` over ``ticker``'s splits with ``on < ex_date``.
+
+    With ``through``, only splits with ``ex_date <= through`` count: the factor that takes a
+    quantity dated ``on`` to the basis of prices as of ``through``.
+    """
     factor = Fraction(1)
     for split in splits:
-        if split.ticker == ticker and on < split.ex_date:
+        if split.ticker != ticker or on >= split.ex_date:
+            continue
+        if through is None or split.ex_date <= through:
             factor *= split.ratio
     return factor
 
@@ -71,7 +80,7 @@ def _shares(shares: int, factor: Fraction, record: str) -> int:
 
 
 def _opening(entry: OpeningEntry, splits: Sequence[Split]) -> OpeningEntry:
-    factor = _factor(entry.ticker, entry.on, splits)
+    factor = split_factor(entry.ticker, entry.on, splits)
     if factor == 1:
         return entry
     return dataclasses.replace(
@@ -84,7 +93,7 @@ def _opening(entry: OpeningEntry, splits: Sequence[Split]) -> OpeningEntry:
 def _fill(fill: Fill, splits: Sequence[Split]) -> Fill:
     if fill.filled_at is None:
         return fill
-    factor = _factor(fill.ticker, fill.filled_at.astimezone(MARKET_TZ).date(), splits)
+    factor = split_factor(fill.ticker, fill.filled_at.astimezone(MARKET_TZ).date(), splits)
     if factor == 1:
         return fill
     record = f"{fill.ticker} {fill.client_order_id}"

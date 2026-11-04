@@ -6,8 +6,9 @@ import dataclasses
 import functools
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
+from fractions import Fraction
 from typing import Any, NoReturn
 
 import pytest
@@ -16,7 +17,7 @@ from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalStatus
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
-from hedge_fund.domain.ledger import OrderState, OrderStatus
+from hedge_fund.domain.ledger import OrderState, OrderStatus, Split
 from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
 from hedge_fund.domain.research import ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
@@ -31,6 +32,7 @@ from hedge_fund.engine.risk.limits import DEFAULT_LIMITS, RiskLimits
 from hedge_fund.engine.shortlist.select import ShortlistParams
 from hedge_fund.ports.account import SnapshotStoreError
 from hedge_fund.ports.broker import BrokerError, OrderDataError
+from hedge_fund.ports.data import DataProviderError
 from hedge_fund.services import cycle
 from hedge_fund.services.cycle import (
     PendingOrdersError,
@@ -494,6 +496,39 @@ def test_an_empty_universe_fails_in_the_data_stage() -> None:
         _run(world, options=DRY)
     [report] = world.report_store.saved
     assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "data")
+
+
+def test_provider_splits_reach_the_fundamentals_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    split = Split(ticker="T0", ex_date=date(2026, 8, 15), ratio=Fraction(4))
+    prices = FakeProvider(FRAME, SECTORS, splits=[split])
+    passed: list[Any] = []
+    real = cycle.build_fundamentals_snapshot
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        passed.append(kwargs["splits"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(cycle, "build_fundamentals_snapshot", spy)
+    world = World(prices=prices)
+    _run(world, options=DRY)
+    assert passed == [(split,)]
+    assert prices.splits_calls == [(tuple(SECTORS), AS_OF - cycle.SPLIT_LOOKBACK, AS_OF)]
+    assert world.fundamentals.calls == [tuple(SECTORS)]
+
+
+def test_a_failing_splits_fetch_fails_closed_in_the_data_stage() -> None:
+    class NoSplits(FakeProvider):
+        def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+            raise DataProviderError("splits down")
+
+    world = World(prices=NoSplits(FRAME, SECTORS))
+    with pytest.raises(DataProviderError, match="splits down"):
+        _run(world, options=DRY)
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "data")
+    assert world.fundamentals.calls == []
+    assert world.researcher.calls == []
+    assert world.broker.submitted == []
 
 
 def test_breaker_params_reach_the_preflight() -> None:

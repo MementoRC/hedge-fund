@@ -72,6 +72,9 @@ from hedge_fund.universe import Universe
 HELD_PRICE_DAYS = 14  # calendar days of closes fetched for held names outside the snapshot
 HISTORY_RUNS = 30  # stored run costs the budget estimate is the median of (newest first)
 HISTORY_DATES = 60  # stored research dates read for them, at most (newest first)
+# Splits fetched to restate share counts: back past the oldest cover date used (a stale-limit
+# E, a year earlier E′, and the cover lag after each).
+SPLIT_LOOKBACK = timedelta(days=3 * 365)
 
 _NOT_APPROVED: Mapping[ApprovalStatus, CycleOutcome] = {
     ApprovalStatus.BLOCKED: CycleOutcome.BLOCKED,
@@ -431,8 +434,9 @@ def _data(deps: CycleDeps, run: _Run) -> tuple[PriceSnapshot, FundamentalsSnapsh
     prices = build_snapshot(deps.prices, deps.universe.tickers, run.as_of)
     run.price_unresolved = prices.unresolved
     priced = [ticker for ticker in prices.snapshot.sectors if ticker not in prices.unresolved]
+    splits = deps.prices.splits(priced, run.as_of - SPLIT_LOOKBACK, run.as_of)
     fundamentals = build_fundamentals_snapshot(
-        deps.fundamentals, priced, run.as_of, ciks=deps.universe.ciks
+        deps.fundamentals, priced, run.as_of, ciks=deps.universe.ciks, splits=splits
     )
     run.fundamentals_unresolved = fundamentals.unresolved
     return prices.snapshot, fundamentals.snapshot

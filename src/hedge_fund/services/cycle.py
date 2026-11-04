@@ -243,6 +243,7 @@ def _cycle(
     """
     _check_live(run.as_of, today)
     _check_not_a_moving_read(run.as_of, today, run.started_at)
+    _check_k(options.k, deps.params.conviction.min_valid)
     if options.budget is not None:
         check_budget(options.budget)
     run.stage = "account"
@@ -580,6 +581,15 @@ def _check_not_a_moving_read(as_of: date, today: date, started_at: datetime) -> 
         raise ValueError(
             f"as_of {as_of} is not live: it is the previous weekday, but today's session "
             f"opened at {MARKET_OPEN:%H:%M} New York time; use as_of {today}"
+        )
+
+
+def _check_k(k: int, min_valid: int) -> None:
+    """Fewer runs than ``min_valid`` leave every verdict INSUFFICIENT: an empty book."""
+    if k < min_valid:
+        raise ValueError(
+            f"k={k} is below min_valid={min_valid}: every verdict would be INSUFFICIENT "
+            "and the cycle would plan to sell the whole book"
         )
 
 

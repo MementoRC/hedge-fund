@@ -216,6 +216,9 @@ def cycle(
     Refuses (exit 1) while orders from an earlier cycle are still open at the broker; run
     `settle` or wait for the open first. A dry run does not check.
     """
+    min_valid = CycleParams().conviction.min_valid
+    if k < min_valid:
+        raise typer.BadParameter(f"k={k} is below min_valid={min_valid}", param_hint="-k")
     runs = root / RUNS_DIR
     try:
         deps = build_deps(root, root / PRICES_FILE if prices is None else prices)

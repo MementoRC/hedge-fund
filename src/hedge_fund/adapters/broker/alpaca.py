@@ -144,7 +144,7 @@ class AlpacaPaperBroker:
         """
         order = request.order
         body = {
-            "symbol": order.ticker,
+            "symbol": order.ticker.replace("-", "."),
             "qty": str(order.shares),
             "side": _ORDER_SIDE[order.action],
             "type": "market",

@@ -10,10 +10,12 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 
 from hedge_fund.domain.account import AccountSnapshot
+from hedge_fund.domain.orders import Holding
 from hedge_fund.domain.risk import NavHistory
 from hedge_fund.engine.account import nav_history, validate_snapshot
+from hedge_fund.engine.ledger import canonical_symbol
 from hedge_fund.ports.account import SnapshotStore
-from hedge_fund.ports.broker import Broker
+from hedge_fund.ports.broker import Broker, BrokerError
 
 
 def read_snapshot(
@@ -27,12 +29,29 @@ def read_snapshot(
     ``observed_at`` is ``now()``, taken after both reads. A BrokerError from either read or
     a ValueError from ``validate_snapshot`` propagates. ``as_of`` is not compared with
     ``observed_at.date()``: a pre-open run and a UTC offset make them legitimately differ.
+    Broker symbols are canonicalised (``BRK.B`` -> ``BRK-B``, the universe's form); two
+    positions with one canonical symbol raise BrokerError rather than being merged.
     """
     equity = broker.account().equity
-    holdings = broker.positions()
+    holdings = _canonical_holdings(broker.positions())
     snapshot = AccountSnapshot(as_of=as_of, observed_at=now(), equity=equity, holdings=holdings)
     validate_snapshot(snapshot)
     return snapshot
+
+
+def _canonical_holdings(positions: tuple[Holding, ...]) -> tuple[Holding, ...]:
+    """``positions`` under ``canonical_symbol``, order kept (``validate_snapshot`` checks it);
+    two positions with one canonical symbol raise BrokerError.
+    """
+    seen: set[str] = set()
+    holdings = []
+    for position in positions:
+        ticker = canonical_symbol(position.ticker)
+        if ticker in seen:
+            raise BrokerError(f"positions hold {ticker!r} under more than one broker symbol")
+        seen.add(ticker)
+        holdings.append(Holding(ticker=ticker, shares=position.shares))
+    return tuple(holdings)
 
 
 def record_snapshot(

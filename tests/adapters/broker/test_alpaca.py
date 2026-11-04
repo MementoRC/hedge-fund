@@ -425,6 +425,16 @@ def test_submit_posts_a_market_on_open_order() -> None:
     assert get.calls == []
 
 
+def test_submit_sends_the_dot_form_of_a_dash_ticker_and_keeps_the_client_order_id() -> None:
+    cid = "hf-2026-10-21-BRK-B-buy-10"
+    order = dataclasses.replace(ORDER, ticker="BRK-B", action=OrderAction.BUY)
+    post = FakePost(FakeResponse(200, {"id": "ord-1", "status": "accepted"}))
+    _broker(FakeGet(), post).submit(OrderRequest(order=order, client_order_id=cid))
+    [(_, kwargs)] = post.calls
+    assert kwargs["json"]["symbol"] == "BRK.B"
+    assert kwargs["json"]["client_order_id"] == cid
+
+
 @pytest.mark.parametrize(
     ("action", "side"),
     [

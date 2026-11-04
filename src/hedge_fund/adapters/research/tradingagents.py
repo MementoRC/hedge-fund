@@ -88,7 +88,11 @@ def _call_usage(generation: Any) -> ModelUsage | None:
     """One call's usage from a generation's message; None when it has no ``usage_metadata``.
 
     The model is ``response_metadata["model"]``, else ``["model_name"]``, else ``"unknown"``;
-    cache tokens come from ``input_token_details`` (``cache_creation``, ``cache_read``).
+    cache tokens come from ``input_token_details``. Cache writes are ``cache_creation`` plus
+    the per-TTL ``ephemeral_5m_input_tokens`` and ``ephemeral_1h_input_tokens``:
+    langchain_anthropic zeroes ``cache_creation`` whenever it emits the breakdown, so the
+    sum does not double count. Known approximation: the price table has one cache-write
+    rate, so 1h writes (billed at 2x) are priced at it.
     """
     message = getattr(generation, "message", None)
     metadata = getattr(message, "usage_metadata", None)
@@ -101,7 +105,10 @@ def _call_usage(generation: Any) -> ModelUsage | None:
         calls=1,
         input_tokens=int(metadata.get("input_tokens") or 0),
         output_tokens=int(metadata.get("output_tokens") or 0),
-        cache_write_tokens=int(details.get("cache_creation") or 0),
+        cache_write_tokens=sum(
+            int(details.get(key) or 0)
+            for key in ("cache_creation", "ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")
+        ),
         cache_read_tokens=int(details.get("cache_read") or 0),
     )
 

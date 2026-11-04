@@ -7,7 +7,7 @@ from datetime import UTC
 from pathlib import Path
 
 from hedge_fund.adapters._json import jsonable
-from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.domain.ledger import SettlementReport
 
 SETTLEMENTS_DIR = "settlements"
@@ -27,7 +27,10 @@ class JsonSettlementReportStore:
         """Write atomically; FileExistsError, writing nothing, if the name is taken."""
         stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
         path = self._dir / f"{report.as_of.isoformat()}_{stamp}.json"
-        if path.exists():
-            raise FileExistsError(f"{path}: a report for a settle started in this second exists")
         body = json.dumps(jsonable(report), indent=2, allow_nan=False)
-        atomic_write(path, lambda tmp: tmp.write_text(body, encoding="utf-8"))
+        try:
+            atomic_create(path, lambda tmp: tmp.write_text(body, encoding="utf-8"))
+        except FileExistsError as exc:
+            raise FileExistsError(
+                f"{path}: a report for a settle started in this second exists"
+            ) from exc

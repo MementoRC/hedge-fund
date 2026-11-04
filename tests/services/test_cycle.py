@@ -140,6 +140,25 @@ def test_an_as_of_that_is_not_live_fails_before_any_broker_read(as_of: date) -> 
     _untouched(world)
 
 
+def test_k_below_min_valid_fails_before_any_broker_read() -> None:
+    # Audit G7: k=1 < min_valid=2 makes every verdict INSUFFICIENT, so the target is empty and
+    # the plan exits every holding.
+    world = World(broker=ScriptedBroker(account_error=AssertionError("broker was read")))
+    with pytest.raises(ValueError, match=r"k=1 is below min_valid=2"):
+        _run(world, options=CycleOptions(k=1))
+    [report] = world.report_store.saved
+    assert (report.outcome, report.failed_stage) == (CycleOutcome.ERROR, "inputs")
+    assert report.account is None
+    assert world.snapshot_store.saved == []
+    _untouched(world)
+
+
+def test_k_equal_to_min_valid_is_accepted() -> None:
+    world = World(snapshot_store=_halting_store())
+    report = _run(world, options=CycleOptions(k=2))
+    assert report.outcome is CycleOutcome.HALTED_PREFLIGHT
+
+
 def test_a_previous_weekday_as_of_after_the_open_fails_before_any_broker_read() -> None:
     # Audit G3: Wed closed at 100; a Thursday run after the open must not re-date its moving
     # equity as Wednesday's, or nav_history would let it replace the 100 point.
@@ -446,7 +465,7 @@ def test_a_missing_or_stale_price_fails_closed_before_orders(
             "min_valid must be an int >= 1",
             id="conviction",
         ),
-        pytest.param({}, CycleOptions(dry_run=True, k=0), "research", "k must be", id="k"),
+        pytest.param({}, CycleOptions(dry_run=True, k=0), "inputs", "k=0 is below", id="k"),
         pytest.param(
             {}, CycleOptions(dry_run=True, max_workers=0), "research", "max_workers", id="workers"
         ),

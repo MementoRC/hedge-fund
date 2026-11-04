@@ -350,6 +350,16 @@ def test_a_budget_skip_ends_nothing_to_do_and_prints_why(
     assert world.gate.summaries == []
 
 
+def test_k_below_min_valid_is_a_usage_error_and_the_cycle_does_not_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls = _canned(monkeypatch, BASE)
+    result = _invoke("-k", "1", "--root", str(tmp_path))
+    assert result.exit_code == 2, result.output
+    assert "k=1 is below min_valid=2" in click.unstyle(result.stderr)
+    assert calls == []
+
+
 @pytest.mark.parametrize(("value", "code"), [("nan", 1), ("-1", 1), ("abc", 2)])
 def test_a_bad_budget_fails_before_the_cycle_reads_the_broker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str, code: int

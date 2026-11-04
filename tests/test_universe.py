@@ -31,6 +31,10 @@ def test_parse_universe_reads_list_date_tickers_and_sectors() -> None:
         ("# list_date: 2026-10-01\nsymbol,sector\nAAA,Energy\n", "header"),
         ("# list_date: 2026-10-01\nticker,gics_sector\nAAA,Energy\nAAA,Energy\n", "duplicate"),
         ("# list_date: 2026-10-01\nticker,gics_sector\nAAA,Tech\n", "unknown sector"),
+        ("# list_date: 2026-10-01\nticker,gics_sector\n,Energy\n", "empty ticker"),
+        ("# list_date: 2026-10-01\nticker,gics_sector\n  ,Energy\n", "empty ticker"),
+        ("# list_date: 2026-10-01\nticker,gics_sector\nAAA,Energy,junk\n", "extra field"),
+        ("# list_date: 2026-10-01\nticker,gics_sector,cik\nAAA,Energy,,x\n", "extra field"),
     ],
 )
 def test_parse_universe_rejects_malformed_text(text: str, message: str) -> None:

@@ -201,15 +201,27 @@ def decode_run(item: Mapping[str, Any]) -> RunRecord:
 
 
 def decode_usage(item: Mapping[str, Any]) -> ModelUsage:
-    """A ModelUsage from its JSON object; KeyError or TypeError if malformed."""
+    """A ModelUsage from its JSON object; KeyError if a field is missing, ValueError if
+    ``model`` is not a string or a count is not an int (a bool is not one).
+    """
+    model = item["model"]
+    if not isinstance(model, str):
+        raise ValueError(f"usage model must be a string, got {model!r}")
     return ModelUsage(
-        model=item["model"],
-        calls=item["calls"],
-        input_tokens=item["input_tokens"],
-        output_tokens=item["output_tokens"],
-        cache_write_tokens=item["cache_write_tokens"],
-        cache_read_tokens=item["cache_read_tokens"],
+        model=model,
+        calls=_count(item, "calls"),
+        input_tokens=_count(item, "input_tokens"),
+        output_tokens=_count(item, "output_tokens"),
+        cache_write_tokens=_count(item, "cache_write_tokens"),
+        cache_read_tokens=_count(item, "cache_read_tokens"),
     )
+
+
+def _count(item: Mapping[str, Any], key: str) -> int:
+    value = item[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"usage {key} must be an int, got {value!r}")
+    return value
 
 
 def _optional_float(value: Any) -> float | None:

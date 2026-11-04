@@ -30,9 +30,10 @@ class JsonOpeningBalance:
         """The entries in file order, tickers canonicalised (``BRK.B`` -> ``BRK-B``).
 
         Raises ValueError naming the file for invalid JSON, a body that is not a list, an
-        entry without exactly the four keys, an empty ticker, ``shares`` that is not a
-        non-zero integer, a ``price`` that is not a finite positive number, a ``date`` that
-        is not ISO, or a (canonical) ticker listed twice.
+        entry without exactly the four keys, a blank ticker or one with surrounding
+        whitespace, ``shares`` that is not a non-zero integer, a ``price`` that is not a
+        finite positive number, a ``date`` that is not ``YYYY-MM-DD``, or a (canonical)
+        ticker listed twice.
         """
         if not self._path.exists():
             return ()
@@ -64,8 +65,10 @@ def _entry(item: Any, where: str) -> OpeningEntry:
 
 
 def _ticker(value: Any, where: str) -> str:
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{where}: ticker must be a non-empty string")
+    if value != value.strip():
+        raise ValueError(f"{where}: ticker {value!r} has surrounding whitespace")
     return canonical_symbol(value)
 
 
@@ -87,6 +90,9 @@ def _day(value: Any, where: str) -> date:
     if not isinstance(value, str):
         raise ValueError(f"{where}: date must be an ISO date string, got {value!r}")
     try:
-        return date.fromisoformat(value)
+        day = date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(f"{where}: date {value!r} is not an ISO date") from exc
+    if day.isoformat() != value:
+        raise ValueError(f"{where}: date {value!r} is not in YYYY-MM-DD form")
+    return day

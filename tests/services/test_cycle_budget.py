@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import math
 from collections.abc import Callable, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from hedge_fund.adapters.research.store import JsonResearchStore, save_research
 from hedge_fund.domain.cost import (
     BudgetError,
     Estimate,
@@ -36,14 +40,19 @@ ONE_DOLLAR = (ModelUsage("m", 1, 1_000_000, 0, 0, 0),)  # one run's usage: 1.00 
 
 
 def _run(
-    world: World, budget: float | None = None, *, dry_run: bool = True, **options: Any
+    world: World,
+    budget: float | None = None,
+    *,
+    dry_run: bool = True,
+    at: datetime = EVENING,
+    **options: Any,
 ) -> CycleReport:
     return run_cycle(
         world.deps,
         as_of=AS_OF,
         today=TODAY,
         options=CycleOptions(dry_run=dry_run, budget=budget, **options),
-        now=Clock(EVENING),
+        now=Clock(at),
     )
 
 
@@ -211,6 +220,26 @@ def test_a_malformed_history_date_is_skipped() -> None:
     assert store.loaded == [AS_OF, bad, date(2026, 9, 28)]
 
 
+def test_a_history_date_with_a_non_int_count_is_skipped(tmp_path: Path) -> None:
+    good, bad = date(2026, 9, 28), date(2026, 9, 29)
+    save_research(_history(good, 0.5), tmp_path)
+    path = save_research(_history(bad, 9.0), tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))["result"]
+    payload["names"][0]["runs"][0]["usage"][0]["input_tokens"] = "9000000"
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+    forged = path.with_name(f"{bad.isoformat()}_{digest}.json")
+    forged.write_text(
+        json.dumps({"created_at": "2026-09-29T22:00:00+00:00", "result": payload}),
+        encoding="utf-8",
+    )
+    path.unlink()
+    world = World(price_table=PRICED, research_store=JsonResearchStore(tmp_path))
+    report = _run(world, budget=100.0)
+    assert report.budget is not None
+    assert report.budget.estimate == Estimate(cost=0.5, source=EstimateSource.HISTORY, n_samples=1)
+
+
 def test_no_estimate_fails_the_budget_stage_before_any_llm_call() -> None:
     world = World(price_table=PriceTable())
     with pytest.raises(BudgetError, match="no run cost history and no fallback_run_cost"):
@@ -242,8 +271,11 @@ def test_a_bad_budget_fails_the_inputs_even_when_research_would_be_reused(budget
 
 
 def _stored(world: World, budget: float | None = None) -> ResearchResult:
-    """Run one dry cycle so the store holds today's research; forget the researcher calls."""
-    research = _run(world, budget=budget).research
+    """Run one dry cycle so the store holds today's research; forget the researcher calls.
+
+    It starts a minute before the later cycles: the report store refuses a repeat second.
+    """
+    research = _run(world, budget=budget, at=EVENING - timedelta(minutes=1)).research
     assert research is not None
     world.researcher.calls.clear()
     return research

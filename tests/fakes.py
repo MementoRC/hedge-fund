@@ -320,8 +320,11 @@ class InMemoryResearchStore:
 class InMemoryReportStore:
     """CycleReportStore keeping reports in ``saved``, in save order.
 
-    ``save`` raises ``fail`` instead, keeping nothing, when it is set. ``load_all`` returns
-    the saved reports sorted by ``started_at`` and ``unreadable`` (a plain attribute).
+    ``save`` raises ``fail`` instead, keeping nothing, when it is set. Like
+    JsonCycleReportStore, whose file is named ``<as_of>_<HHMMSS>.json`` (UTC), it raises
+    FileExistsError, keeping the first, for a report whose ``as_of`` and ``started_at``
+    second were already saved. ``load_all`` returns the saved reports sorted by
+    ``started_at`` and ``unreadable`` (a plain attribute).
     """
 
     def __init__(
@@ -334,7 +337,15 @@ class InMemoryReportStore:
     def save(self, report: CycleReport) -> None:
         if self.fail is not None:
             raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for a cycle started in this second exists")
         self.saved.append(report)
+
+    @staticmethod
+    def _name(report: CycleReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.as_of.isoformat()}_{stamp}"
 
     def load_all(self) -> ReportLoad:
         reports = tuple(sorted(self.saved, key=lambda report: report.started_at))

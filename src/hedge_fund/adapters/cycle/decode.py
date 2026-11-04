@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import date, datetime
-from typing import Any, TypeVar
+from typing import Any
 
 from hedge_fund.adapters._json import decode_float
 from hedge_fund.adapters.research.store import decode_candidate, decode_name, decode_usage
@@ -24,8 +24,6 @@ from hedge_fund.domain.portfolio import Position, TargetPortfolio
 from hedge_fund.domain.research import ResearchResult
 from hedge_fund.domain.risk import BreakerState, RiskBreakdown, RiskVerdict, Violation
 from hedge_fund.domain.shortlist import Shortlist, Side
-
-_T = TypeVar("_T")
 
 
 def decode_report(obj: Mapping[str, Any]) -> CycleReport:
@@ -56,7 +54,7 @@ def decode_report(obj: Mapping[str, Any]) -> CycleReport:
     )
 
 
-def _optional(value: Any, decode: Callable[[Any], _T]) -> _T | None:
+def _optional[T](value: Any, decode: Callable[[Any], T]) -> T | None:
     return None if value is None else decode(value)
 
 

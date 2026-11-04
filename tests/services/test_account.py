@@ -45,6 +45,20 @@ def test_records_equity_and_positions_as_one_snapshot() -> None:
     assert broker.submitted == []
 
 
+def test_broker_dot_symbols_become_the_universe_dash_form() -> None:
+    broker = ScriptedBroker(holdings=(Holding(ticker="BRK.B", shares=10),))
+    snapshot = read_snapshot(broker, as_of=AS_OF, now=_at(OBSERVED_AT))
+    assert snapshot.holdings == (Holding(ticker="BRK-B", shares=10),)
+
+
+def test_two_positions_with_one_canonical_symbol_fail_closed() -> None:
+    broker = ScriptedBroker(
+        holdings=(Holding(ticker="BRK-B", shares=5), Holding(ticker="BRK.B", shares=10))
+    )
+    with pytest.raises(BrokerError, match="BRK-B"):
+        read_snapshot(broker, as_of=AS_OF, now=_at(OBSERVED_AT))
+
+
 def test_default_clock_is_utc_now() -> None:
     before = datetime.now(UTC)
     snapshot = record_snapshot(ScriptedBroker(), InMemorySnapshotStore(), as_of=AS_OF)

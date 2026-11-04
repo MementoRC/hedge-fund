@@ -19,7 +19,7 @@ from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import OrderState, OrderStatus, Split
 from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
-from hedge_fund.domain.research import ResearchResult, Verdict
+from hedge_fund.domain.research import Rating, ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
 from hedge_fund.engine.orders import OrderParams
 from hedge_fund.engine.portfolio.alpha import AlphaParams
@@ -55,9 +55,12 @@ from tests.cycle_world import (
     WEEKEND,
     Clock,
     World,
+    shorts,
     universe,
 )
+from tests.factories import make_passing_facts
 from tests.fakes import (
+    FakeFundamentalsProvider,
     FakeProvider,
     InMemoryReportStore,
     InMemorySnapshotStore,
@@ -410,6 +413,37 @@ def test_a_held_name_missing_from_the_snapshot_is_fetched_and_traded_to_zero() -
     assert report.plan is not None
     [exit_leg] = [order for order in report.plan.orders if order.ticker == HELD_OUTSIDE]
     assert (exit_leg.action, exit_leg.shares) == (OrderAction.SELL, 100)
+
+
+def test_a_dotted_broker_symbol_matches_its_dash_target_and_is_not_traded() -> None:
+    rename = {"T0": "T-0"}
+    sectors = {rename.get(ticker, ticker): sector for ticker, sector in SECTORS.items()}
+    script = {(rename.get(t, t), run): Rating.SELL for t in shorts() for run in range(5)}
+
+    def world(holdings: tuple[Holding, ...]) -> World:
+        return World(
+            prices=FakeProvider(FRAME.rename(columns=rename), sectors),
+            fundamentals=FakeFundamentalsProvider(make_passing_facts(list(sectors))),
+            researcher=ScriptedResearcher(script, default=Rating.BUY),
+            universe=universe(sectors),
+            broker=ScriptedBroker(holdings=holdings),
+        )
+
+    first = _run(world(()), options=DRY).plan
+    assert first is not None
+    held = tuple(
+        Holding(
+            ticker="T.0" if order.ticker == "T-0" else order.ticker,
+            shares=order.shares if order.action is OrderAction.BUY else -order.shares,
+        )
+        for order in first.orders
+    )
+    assert any(holding.ticker == "T.0" for holding in held)
+    report = _run(world(held), options=DRY)
+    assert report.outcome is not CycleOutcome.ERROR
+    assert report.plan is not None
+    assert report.plan.orders == ()
+    assert report.plan.skipped["T-0"] == "band"
 
 
 def _stale(column: str, last: str) -> Any:

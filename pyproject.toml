@@ -3,7 +3,7 @@ name = "hedge-fund"
 version = "0.1.0"
 description = "Hybrid hedge fund: deterministic quant core plus LLM research layer"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 
 [project.scripts]
@@ -18,7 +18,7 @@ packages = ["src/hedge_fund"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 src = ["src", "tests"]
 extend-exclude = [".pixi", ".claude", "_site"]
 
@@ -30,7 +30,7 @@ ignore = ["E501"]
 quote-style = "double"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 mypy_path = "src"

@@ -5,7 +5,8 @@ from types import MappingProxyType
 
 import pytest
 
-from hedge_fund.universe import GICS_SECTORS, Universe, load_universe, parse_universe
+from hedge_fund.engine.backtest.membership import PointInTimeUniverse, parse_membership
+from hedge_fund.universe import GICS_SECTORS, Universe, load_universe, parse_universe, resource_text
 
 VALID = "# list_date: 2026-10-01\nticker,gics_sector\nAAA,Energy\nBRK-B,Financials\n"
 VALID_WITH_CIK = (
@@ -109,3 +110,21 @@ def test_three_column_row_missing_the_cik_column_is_rejected() -> None:
     text = "# list_date: 2026-10-01\nticker,gics_sector,cik\nAAPL,Information Technology\n"
     with pytest.raises(ValueError, match=r"universe 'demo'.*line 3"):
         parse_universe("demo", text)
+
+
+def test_resource_text_reads_a_shipped_file() -> None:
+    assert resource_text("sp500").startswith("# list_date: ")
+
+
+@pytest.mark.parametrize("name", ["../sp500", "no_such_file"])
+def test_resource_text_rejects_unknown_names(name: str) -> None:
+    with pytest.raises(ValueError, match="unknown universe"):
+        resource_text(name)
+
+
+def test_the_packaged_membership_file_parses_with_about_500_members() -> None:
+    spans = parse_membership(resource_text("sp500_membership"))
+    universe = PointInTimeUniverse(spans=spans, sectors={}, ciks={})
+    last_change = max(span.start for span in spans)
+    assert 495 <= len(universe.tickers_on(last_change)) <= 510
+    assert "AAPL" in universe.tickers_on(date(2012, 1, 3))

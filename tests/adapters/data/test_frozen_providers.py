@@ -8,11 +8,16 @@ from fractions import Fraction
 import pandas as pd
 import pytest
 
-from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider
+from hedge_fund.adapters.data.frozen_providers import (
+    FrozenDataProvider,
+    FrozenFundamentalsProvider,
+)
 from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProvider, DataProviderError
+from hedge_fund.ports.fundamentals import FACT_COLUMNS, FundamentalsProvider, coerce_facts
+from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from hedge_fund.services.snapshots import build_snapshot
-from tests.factories import make_frozen_data
+from tests.factories import make_facts, make_frozen_data
 
 DATA = make_frozen_data()  # AAA 2:1 ex 2024-01-22, 0.5 dividend ex 2024-02-01
 FIRST = date(2024, 1, 1)
@@ -117,3 +122,34 @@ def test_build_snapshot_over_the_provider_ends_at_as_of_on_its_basis() -> None:
     assert build.unresolved == {"CCC": "no_sector"}
     last_raw = DATA.closes["AAA"].loc[pd.Timestamp(as_of)]
     assert build.snapshot.closes["AAA"].iloc[-1] == last_raw * 2.0
+
+
+RESTATED = ("AAA", "us-gaap:Assets", None, "2026-06-30", 1200.0, "2026-09-15", "10-Q/A", "AAA-a")
+
+
+def test_fundamentals_provider_satisfies_the_port_and_keeps_every_row() -> None:
+    provider: FundamentalsProvider = FrozenFundamentalsProvider(DATA)
+    facts = provider.facts(["BBB"])
+    assert tuple(facts.columns) == FACT_COLUMNS
+    assert set(facts["ticker"]) == {"BBB"}
+    assert len(facts) == int((DATA.facts["ticker"] == "BBB").sum())
+
+
+def test_fundamentals_for_unknown_tickers_are_empty() -> None:
+    assert FrozenFundamentalsProvider(DATA).facts(["ZZZ"]).empty
+
+
+def test_a_restatement_is_invisible_before_its_filed_date() -> None:
+    original = make_facts(["AAA"])
+    restated = pd.DataFrame([RESTATED], columns=list(FACT_COLUMNS))
+    facts = coerce_facts(pd.concat([original, restated], ignore_index=True))
+    provider = FrozenFundamentalsProvider(make_frozen_data(facts=facts))
+    ciks = {"AAA": "0000000001"}
+
+    def assets(as_of: date) -> float:
+        build = build_fundamentals_snapshot(provider, ["AAA"], as_of, ciks=ciks)
+        return float(build.snapshot.current.loc["AAA", "total_assets"])
+
+    assert assets(date(2026, 9, 15)) == 1100.0  # filed == as_of is not yet visible
+    assert assets(date(2026, 9, 16)) == 1200.0
+    assert len(provider.facts(["AAA"])) == len(original) + 1

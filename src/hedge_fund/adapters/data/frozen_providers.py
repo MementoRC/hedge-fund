@@ -11,6 +11,7 @@ from hedge_fund.domain.backtest import FrozenData
 from hedge_fund.domain.ledger import Split
 from hedge_fund.engine.backtest.pit_prices import closes_as_of
 from hedge_fund.ports.data import DataProviderError
+from hedge_fund.ports.fundamentals import coerce_facts
 
 
 class FrozenDataProvider:
@@ -72,3 +73,18 @@ class FrozenDataProvider:
                 f"{method} end {end} is after as_of {self._as_of}: the frozen store never "
                 "serves data from after the cycle date"
             )
+
+
+class FrozenFundamentalsProvider:
+    """Every stored fact row for the requested tickers, restatements included, unfiltered.
+
+    The port has no as_of: point-in-time selection is derive.py's (pit_filter keeps
+    ``filed < as_of``, select_versions the latest filing), so this provider never drops
+    or deduplicates a row.
+    """
+
+    def __init__(self, data: FrozenData) -> None:
+        self._facts = coerce_facts(data.facts)
+
+    def facts(self, tickers: Sequence[str]) -> pd.DataFrame:
+        return coerce_facts(self._facts.loc[self._facts["ticker"].isin(list(tickers))])

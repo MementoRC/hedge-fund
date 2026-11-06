@@ -22,7 +22,7 @@ from typing import Any
 import pandas as pd
 
 from hedge_fund.adapters.data._atomic import atomic_create
-from hedge_fund.domain.backtest import Dividend, FrozenData, MemberSpan
+from hedge_fund.domain.backtest import Dividend, FlaggedSpan, FrozenData, MemberSpan
 from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.fundamentals import coerce_facts
 
@@ -35,6 +35,7 @@ KINDS: tuple[str, ...] = (
     "dividends",
     "facts",
     "membership",
+    "flagged",
     "sectors",
     "ciks",
 )
@@ -110,6 +111,7 @@ def load_store(root: Path) -> FrozenData:
         no_sector=tuple(manifest["no_sector"]),
         no_cik=tuple(manifest["no_cik"]),
         sic_sectors=tuple(manifest["sic_sectors"]),
+        flagged=_flagged(_parquet(bodies["flagged"])),
     )
 
 
@@ -137,6 +139,14 @@ def _encode(data: FrozenData) -> dict[str, tuple[str, bytes]]:
             "end": _dates([m.end for m in data.membership]),
         }
     )
+    flagged = pd.DataFrame(
+        {
+            "ticker": pd.Series([f.span.ticker for f in data.flagged], dtype="str"),
+            "start": _dates([f.span.start for f in data.flagged]),
+            "end": _dates([f.span.end for f in data.flagged]),
+            "reason": pd.Series([f.reason for f in data.flagged], dtype="str"),
+        }
+    )
     return {
         "opens": ("parquet", data.opens.to_parquet()),
         "closes": ("parquet", data.closes.to_parquet()),
@@ -144,6 +154,7 @@ def _encode(data: FrozenData) -> dict[str, tuple[str, bytes]]:
         "dividends": ("parquet", dividends.to_parquet()),
         "facts": ("parquet", data.facts.to_parquet()),
         "membership": ("parquet", membership.to_parquet()),
+        "flagged": ("parquet", flagged.to_parquet()),
         "sectors": ("json", _json(data.sectors)),
         "ciks": ("json", _json(data.ciks)),
     }
@@ -223,8 +234,15 @@ def _dividends(frame: pd.DataFrame) -> tuple[Dividend, ...]:
     )
 
 
-def _membership(frame: pd.DataFrame) -> tuple[MemberSpan, ...]:
-    return tuple(
-        MemberSpan(str(row.ticker), row.start.date(), None if pd.isna(row.end) else row.end.date())
-        for row in frame.itertuples(index=False)
+def _span(row: Any) -> MemberSpan:
+    return MemberSpan(
+        str(row.ticker), row.start.date(), None if pd.isna(row.end) else row.end.date()
     )
+
+
+def _membership(frame: pd.DataFrame) -> tuple[MemberSpan, ...]:
+    return tuple(_span(row) for row in frame.itertuples(index=False))
+
+
+def _flagged(frame: pd.DataFrame) -> tuple[FlaggedSpan, ...]:
+    return tuple(FlaggedSpan(_span(row), str(row.reason)) for row in frame.itertuples(index=False))

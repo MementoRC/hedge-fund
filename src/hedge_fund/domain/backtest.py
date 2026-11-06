@@ -73,6 +73,8 @@ class FrozenData:
     ``dividends`` those ex-dated in ``start..end``. ``facts`` is the raw FACT_COLUMNS frame,
     every filing's row. ``unpriced``, ``no_sector``, ``no_cik`` and ``sic_sectors`` are
     sorted member tickers: no price rows, no sector, no CIK, sector from the SEC SIC code.
+    ``flagged`` is the reused-ticker spans excluded from the universe, frozen so a replay
+    does not change when the packaged list is edited.
     Frozen only prevents field reassignment; readers must never mutate the frames.
     """
 
@@ -90,6 +92,7 @@ class FrozenData:
     no_sector: tuple[str, ...]
     no_cik: tuple[str, ...]
     sic_sectors: tuple[str, ...]
+    flagged: tuple[FlaggedSpan, ...] = ()
 
     def __post_init__(self) -> None:
         index = self.closes.index

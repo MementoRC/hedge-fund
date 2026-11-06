@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,7 @@ from hedge_fund.adapters.data.frozen_store import (
     load_store,
     write_store,
 )
+from hedge_fund.domain.backtest import FlaggedSpan, MemberSpan
 from tests.factories import make_frozen_data
 from tests.fakes import assert_closes_equal
 
@@ -68,6 +69,27 @@ def test_empty_event_tables_round_trip(tmp_path: Path) -> None:
     assert loaded.splits == ()
     assert loaded.dividends == ()
     assert loaded.membership == ()
+
+
+def test_flagged_spans_round_trip_including_an_open_end(tmp_path: Path) -> None:
+    flagged = (
+        FlaggedSpan(MemberSpan("AAA", date(2020, 1, 2), date(2021, 3, 1)), "other company"),
+        FlaggedSpan(MemberSpan("BBB", date(2022, 5, 3), None), "reused symbol"),
+    )
+    write_store(tmp_path, make_frozen_data(flagged=flagged), created_at=CREATED)
+    assert load_store(tmp_path).flagged == flagged
+
+
+def test_the_default_empty_flagged_spans_round_trip(tmp_path: Path) -> None:
+    _write(tmp_path)
+    assert load_store(tmp_path).flagged == ()
+
+
+def test_a_manifest_without_the_flagged_kind_fails_the_load(tmp_path: Path) -> None:
+    _write(tmp_path)
+    _edit_manifest(tmp_path, lambda m: m["files"].pop("flagged"))
+    with pytest.raises(FrozenStoreError, match="manifest files"):
+        load_store(tmp_path)
 
 
 def test_files_are_named_by_their_digest_and_listed_in_the_manifest(tmp_path: Path) -> None:

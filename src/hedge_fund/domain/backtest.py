@@ -43,3 +43,14 @@ class MemberSpan:
     def overlaps(self, first: date, last: date) -> bool:
         """True when the span holds at least one day of ``first..last`` inclusive."""
         return self.start <= last and (self.end is None or self.end > first)
+
+
+@dataclass(frozen=True)
+class FlaggedSpan:
+    """A membership span of a reused ticker that belongs to the wrong company.
+
+    ``span`` is half-open ``[start, end)`` like MemberSpan; ``reason`` names the company.
+    """
+
+    span: MemberSpan
+    reason: str

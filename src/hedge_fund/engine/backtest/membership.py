@@ -17,10 +17,11 @@ from itertools import pairwise
 from types import MappingProxyType
 from typing import Any
 
-from hedge_fund.domain.backtest import MemberSpan
+from hedge_fund.domain.backtest import FlaggedSpan, MemberSpan
 from hedge_fund.universe import Universe
 
 _HEADER = ["ticker", "start", "end"]
+_FLAGGED_HEADER = ["ticker", "start", "end", "reason"]
 
 
 @dataclass(frozen=True)
@@ -36,10 +37,18 @@ class PointInTimeUniverse:
     sectors: Mapping[str, str]
     ciks: Mapping[str, str]
     name: str = "sp500_pit"
+    flagged: tuple[FlaggedSpan, ...] = ()
 
     def tickers_on(self, on: date) -> tuple[str, ...]:
-        """Sorted tickers with a span containing ``on``."""
-        return tuple(sorted({span.ticker for span in self.spans if span.contains(on)}))
+        """Sorted members on ``on`` that are not inside a flagged span."""
+        members = {span.ticker for span in self.spans if span.contains(on)}
+        return tuple(sorted(members - set(self.excluded_on(on))))
+
+    def excluded_on(self, on: date) -> tuple[str, ...]:
+        """Sorted members on ``on`` left out because a flagged span covers them (counted by the report)."""
+        members = {span.ticker for span in self.spans if span.contains(on)}
+        flagged = {item.span.ticker for item in self.flagged if item.span.contains(on)}
+        return tuple(sorted(members & flagged))
 
     def members(self, on: date) -> Universe:
         """The members on ``on`` as a Universe with ``list_date`` ``on``, tickers sorted."""
@@ -103,6 +112,30 @@ def spans_from_compositions(
             opened[ticker] = day
     spans += [MemberSpan(ticker, start, None) for ticker, start in opened.items()]
     return tuple(sorted(spans, key=lambda span: (span.start, span.ticker)))
+
+
+def parse_flagged_spans(text: str) -> tuple[FlaggedSpan, ...]:
+    """Flagged spans from the text, sorted by start, then ticker (pure: the caller reads the file).
+
+    Raises ValueError on a bad header, a short or long row, an empty ticker or reason, a date
+    that is not YYYY-MM-DD or an empty span. Unknown tickers are fine: they match no member.
+    """
+    body = "\n".join(line for line in text.splitlines() if not line.startswith("#"))
+    reader = csv.DictReader(io.StringIO(body))
+    if reader.fieldnames != _FLAGGED_HEADER:
+        raise ValueError("flagged spans header must be 'ticker,start,end,reason'")
+    flagged = [_flagged(row, number) for number, row in enumerate(reader, start=1)]
+    return tuple(sorted(flagged, key=lambda item: (item.span.start, item.span.ticker)))
+
+
+def _flagged(row: Mapping[Any, Any], number: int) -> FlaggedSpan:
+    span = _span(row, number)
+    reason = row.get("reason")
+    if reason is None:
+        raise ValueError(f"membership row {number} is missing a column")
+    if not str(reason).strip():
+        raise ValueError(f"membership row {number} has an empty reason")
+    return FlaggedSpan(span=span, reason=str(reason).strip())
 
 
 def _span(row: Mapping[Any, Any], number: int) -> MemberSpan:

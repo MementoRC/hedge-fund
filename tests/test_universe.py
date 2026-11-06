@@ -5,7 +5,11 @@ from types import MappingProxyType
 
 import pytest
 
-from hedge_fund.engine.backtest.membership import PointInTimeUniverse, parse_membership
+from hedge_fund.engine.backtest.membership import (
+    PointInTimeUniverse,
+    parse_flagged_spans,
+    parse_membership,
+)
 from hedge_fund.universe import GICS_SECTORS, Universe, load_universe, parse_universe, resource_text
 
 VALID = "# list_date: 2026-10-01\nticker,gics_sector\nAAA,Energy\nBRK-B,Financials\n"
@@ -128,3 +132,25 @@ def test_the_packaged_membership_file_parses_with_about_500_members() -> None:
     last_change = max(span.start for span in spans)
     assert 495 <= len(universe.tickers_on(last_change)) <= 510
     assert "AAPL" in universe.tickers_on(date(2012, 1, 3))
+
+
+def test_the_packaged_flagged_spans_parse_and_reach_the_floor() -> None:
+    flagged = parse_flagged_spans(resource_text("sp500_flagged_spans"))
+    assert flagged
+    assert all(item.span.end is None or item.span.end > date(2008, 1, 1) for item in flagged)
+    assert {item.span.ticker for item in flagged} <= {
+        "Q",
+        "CEG",
+        "DD",
+        "DOW",
+        "HP",
+        "DELL",
+        "KRFT",
+        "KFT",
+    }
+
+
+def test_every_packaged_flagged_span_is_an_existing_membership_span() -> None:
+    members = set(parse_membership(resource_text("sp500_membership")))
+    flagged = parse_flagged_spans(resource_text("sp500_flagged_spans"))
+    assert all(item.span in members for item in flagged)

@@ -11,6 +11,7 @@ from hedge_fund.engine.backtest.membership import (
     PointInTimeUniverse,
     ever_members,
     format_membership,
+    parse_flagged_spans,
     parse_membership,
     spans_from_compositions,
 )
@@ -92,6 +93,69 @@ def test_adjacent_spans_of_one_ticker_are_allowed() -> None:
 def test_parse_rejects_bad_files(body: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         parse_membership(body)
+
+
+FLAGGED_TEXT = (
+    "# source: example\n"
+    "ticker,start,end,reason\n"
+    'AAA,2024-02-01,2024-03-01,"other company, not the current one"\n'
+    "NOPE,2024-02-01,2024-03-01,never a member\n"
+)
+FLAGGED = parse_flagged_spans(FLAGGED_TEXT)
+FLAGGED_UNIVERSE = PointInTimeUniverse(
+    spans=(
+        MemberSpan("AAA", date(2024, 1, 2), None),
+        MemberSpan("BBB", date(2024, 1, 2), None),
+    ),
+    sectors={"AAA": "Energy", "BBB": "Energy"},
+    ciks={},
+    flagged=FLAGGED,
+)
+
+
+def test_a_ticker_inside_a_flagged_span_is_excluded_and_reported() -> None:
+    day = date(2024, 2, 15)
+    assert FLAGGED_UNIVERSE.tickers_on(day) == ("BBB",)
+    assert FLAGGED_UNIVERSE.members(day).tickers == ("BBB",)
+    assert FLAGGED_UNIVERSE.excluded_on(day) == ("AAA",)
+
+
+def test_the_flagged_span_is_half_open() -> None:
+    assert FLAGGED_UNIVERSE.excluded_on(date(2024, 2, 1)) == ("AAA",)
+    assert FLAGGED_UNIVERSE.excluded_on(date(2024, 1, 31)) == ()
+    assert FLAGGED_UNIVERSE.excluded_on(date(2024, 3, 1)) == ()
+    assert FLAGGED_UNIVERSE.tickers_on(date(2024, 3, 1)) == ("AAA", "BBB")
+
+
+def test_outside_a_flagged_span_nothing_is_excluded() -> None:
+    assert FLAGGED_UNIVERSE.tickers_on(date(2024, 1, 31)) == ("AAA", "BBB")
+
+
+def test_a_flagged_ticker_that_is_not_a_member_is_not_reported() -> None:
+    assert "NOPE" not in FLAGGED_UNIVERSE.excluded_on(date(2024, 2, 15))
+
+
+def test_an_unknown_ticker_in_the_flagged_file_is_fine() -> None:
+    assert [flagged.span.ticker for flagged in FLAGGED] == ["AAA", "NOPE"]
+
+
+def test_a_flagged_span_keeps_its_reason() -> None:
+    assert FLAGGED[0].reason == "other company, not the current one"
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("ticker,start,end\nAAA,2024-02-01,\n", "header must be"),
+        ("ticker,start,end,reason\nAAA,2024-02-01,\n", "missing a column"),
+        ("ticker,start,end,reason\nAAA,2024-02-01,,\n", "empty reason"),
+        ("ticker,start,end,reason\nAAA,02/01/2024,,x\n", "YYYY-MM-DD"),
+        ("ticker,start,end,reason\nAAA,2024-03-01,2024-02-01,x\n", "is not after start"),
+    ],
+)
+def test_a_malformed_flagged_row_fails_closed(text: str, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        parse_flagged_spans(text)
 
 
 def test_compositions_become_spans_from_each_list_to_the_next() -> None:

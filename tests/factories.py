@@ -3,12 +3,15 @@
 import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
+from fractions import Fraction
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from hedge_fund.domain.backtest import Dividend, FrozenData, MemberSpan
 from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS, FundamentalsSnapshot
+from hedge_fund.domain.ledger import Split
 from hedge_fund.domain.research import Verdict
 from hedge_fund.domain.shortlist import Side
 from hedge_fund.domain.snapshot import PriceSnapshot
@@ -174,6 +177,38 @@ def make_facts(tickers: Sequence[str]) -> pd.DataFrame:
             (t, shares, None, "2026-07-25", 50.0, "2026-08-01", "10-Q", f"{t}-q226"),
         ]
     return coerce_facts(pd.DataFrame(rows, columns=list(FACT_COLUMNS)))
+
+
+def make_frozen_data(**changes: Any) -> FrozenData:
+    """A small frozen store: AAA, BBB and SPY on the 30 business days to 2024-02-09.
+
+    AAA splits 2:1 ex 2024-01-22 (the stored prices are post-split throughout) and pays 0.5
+    ex 2024-02-01. BBB leaves the index effective 2024-01-29, when CCC (unpriced, no
+    sector, no CIK) joins. ``changes`` replace fields.
+    """
+    days = pd.bdate_range("2024-01-01", periods=30)
+    closes = make_closes(["AAA", "BBB", "SPY"], n_days=30).set_axis(days, axis=0)
+    base = FrozenData(
+        start=date(2024, 1, 1),
+        end=date(2024, 2, 9),
+        opens=closes * 0.99,
+        closes=closes,
+        splits=(Split("AAA", date(2024, 1, 22), Fraction(2)),),
+        dividends=(Dividend("AAA", date(2024, 2, 1), 0.5),),
+        facts=make_facts(["AAA", "BBB"]),
+        sectors={"AAA": "Energy", "BBB": "Financials"},
+        ciks={"AAA": "0000000001", "BBB": "0000000002"},
+        membership=(
+            MemberSpan("AAA", date(2020, 1, 2), None),
+            MemberSpan("BBB", date(2020, 1, 2), date(2024, 1, 29)),
+            MemberSpan("CCC", date(2024, 1, 29), None),
+        ),
+        unpriced=("CCC",),
+        no_sector=("CCC",),
+        no_cik=("CCC",),
+        sic_sectors=(),
+    )
+    return dataclasses.replace(base, **changes)
 
 
 def make_observation(**changes: Any) -> Observation:

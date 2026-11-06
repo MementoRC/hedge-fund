@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+
+import pandas as pd
+
+from hedge_fund.domain.ledger import Split
 
 
 @dataclass(frozen=True)
@@ -54,3 +59,46 @@ class FlaggedSpan:
 
     span: MemberSpan
     reason: str
+
+
+@dataclass(frozen=True, eq=False)
+class FrozenData:
+    """Everything one offline backtest reads, frozen once by ``backtest snapshot``.
+
+    ``opens`` and ``closes`` are dates x tickers (priced tickers only, SPY included) on one
+    tz-naive, sorted, unique DatetimeIndex (SPY's trading days) within ``start..end``, with
+    yfinance ``auto_adjust=False`` values: split-adjusted to the freeze date, not
+    dividend-adjusted. ``splits`` is the priced tickers' full split history through the
+    freeze date (later than ``end`` included: the stored prices are adjusted for them);
+    ``dividends`` those ex-dated in ``start..end``. ``facts`` is the raw FACT_COLUMNS frame,
+    every filing's row. ``unpriced``, ``no_sector``, ``no_cik`` and ``sic_sectors`` are
+    sorted member tickers: no price rows, no sector, no CIK, sector from the SEC SIC code.
+    Frozen only prevents field reassignment; readers must never mutate the frames.
+    """
+
+    start: date
+    end: date
+    opens: pd.DataFrame
+    closes: pd.DataFrame
+    splits: tuple[Split, ...]
+    dividends: tuple[Dividend, ...]
+    facts: pd.DataFrame
+    sectors: Mapping[str, str]
+    ciks: Mapping[str, str]
+    membership: tuple[MemberSpan, ...]
+    unpriced: tuple[str, ...]
+    no_sector: tuple[str, ...]
+    no_cik: tuple[str, ...]
+    sic_sectors: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        index = self.closes.index
+        if not isinstance(index, pd.DatetimeIndex) or index.tz is not None:
+            raise ValueError("closes index must be a tz-naive DatetimeIndex")
+        if not index.is_monotonic_increasing or index.has_duplicates:
+            raise ValueError("closes index must be sorted and unique")
+        same_tickers = list(self.opens.columns) == list(self.closes.columns)
+        if not (same_tickers and self.opens.index.equals(index)):
+            raise ValueError("opens and closes must share dates and tickers")
+        if len(index) and (index[0].date() < self.start or index[-1].date() > self.end):
+            raise ValueError(f"prices fall outside {self.start}..{self.end}")

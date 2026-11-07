@@ -1,18 +1,19 @@
 """Run-once CLI: ``hedge-fund cycle`` runs one paper-trading cycle (Layer 6d),
 ``hedge-fund settle`` records what it filled (Layer 7a) and ``hedge-fund attribute`` splits
 the book's P&L (Layer 7b) and ``hedge-fund verify`` scores the stored research ratings
-against what followed (Layer 7d).
+against what followed (Layer 7d). ``hedge-fund backtest snapshot`` freezes point-in-time
+data for the offline backtest (Layer 8).
 
 This is the only composition root: ``build_deps``, ``build_settle_deps``,
-``build_attribute_deps`` and ``build_verify_deps`` build the real adapters and ``clock`` is
-the only clock read.
+``build_attribute_deps``, ``build_verify_deps`` and ``build_snapshot_sources`` build the real
+adapters and ``clock`` is the only clock read.
 Tests replace them. Paper trading only.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -26,7 +27,12 @@ from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.cost import PRICES_FILE, load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
+from hedge_fund.adapters.data.edgar_provider import EdgarProvider
 from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
+from hedge_fund.adapters.data.frozen_store import check_fresh_root, write_store
+from hedge_fund.adapters.data.sec_sources import SecLookups
+from hedge_fund.adapters.data.yfinance_history import YFinanceHistory
+from hedge_fund.adapters.data.yfinance_provider import YFinanceProvider
 from hedge_fund.adapters.ledger import (
     JsonFillStore,
     JsonOpeningBalance,
@@ -43,6 +49,7 @@ from hedge_fund.domain.attribution import (
     AttributionReport,
     AttributionTotals,
 )
+from hedge_fund.domain.backtest import FrozenData
 from hedge_fund.domain.cost import BudgetPlan, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
@@ -55,10 +62,16 @@ from hedge_fund.domain.verification import (
     VerificationReport,
     VerifyOutcome,
 )
+from hedge_fund.engine.backtest.membership import (
+    ever_members,
+    parse_flagged_spans,
+    parse_membership,
+)
 from hedge_fund.engine.execution import MARKET_TZ
 from hedge_fund.ports.broker import BrokerError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.services.attribute import AttributeDeps, AttributionSaveError, run_attribute
+from hedge_fund.services.backtest_snapshot import SnapshotSources, build_frozen_data
 from hedge_fund.services.cycle import (
     CycleDeps,
     CycleParams,
@@ -69,9 +82,13 @@ from hedge_fund.services.cycle import (
 )
 from hedge_fund.services.settle import SettleDeps, SettlementSaveError, run_settle
 from hedge_fund.services.verify import VerificationSaveError, VerifyDeps, run_verify
-from hedge_fund.universe import load_universe
+from hedge_fund.universe import load_universe, resource_text
 
 UNIVERSE = "sp500"
+MEMBERSHIP = "sp500_membership"
+FLAGGED_SPANS = "sp500_flagged_spans"
+DEFAULT_SNAPSHOT_START = date(2010, 1, 1)
+MEMBERSHIP_FLOOR = date(2008, 1, 1)  # decision D3: membership is reliable from here
 _FAILED_LEGS = frozenset({SubmitStatus.ERROR, SubmitStatus.REJECTED})
 _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
     SettleOutcome.CLEAN: 0,
@@ -91,6 +108,8 @@ _VERIFY_EXIT: Mapping[VerifyOutcome, int] = {
 _OVER_BUDGET: Mapping[bool | None, str] = {None: "n/a", True: "yes", False: "no"}
 
 app = typer.Typer(add_completion=False)
+backtest_app = typer.Typer(add_completion=False, help="Offline backtest of the quant core.")
+app.add_typer(backtest_app, name="backtest")
 
 
 @app.callback()
@@ -174,6 +193,23 @@ def build_verify_deps(root: Path) -> VerifyDeps:
         fills=JsonFillStore(root),
         data=default_provider(root / "cache" / "prices", UNIVERSE),
         reports=JsonVerificationReportStore(root),
+    )
+
+
+def build_snapshot_sources() -> SnapshotSources:
+    """The real vendors for ``backtest snapshot``: yfinance prices and splits, SEC EDGAR.
+
+    The SEC client is built first, so a missing SEC_USER_AGENT (FundamentalsProviderError)
+    fails before anything is fetched.
+    """
+    sec = SecLookups(EdgarProvider({}))
+    splits = YFinanceProvider()
+    return SnapshotSources(
+        history=YFinanceHistory(),
+        splits=lambda tickers: splits.splits(tickers, date.min, date.max),
+        company_ciks=sec.company_ciks,
+        sic=sec.sic,
+        fundamentals=EdgarProvider,
     )
 
 
@@ -367,9 +403,89 @@ def verify(
     raise typer.Exit(_VERIFY_EXIT[report.outcome])
 
 
+@backtest_app.command("snapshot")
+def backtest_snapshot(
+    root: Annotated[Path, typer.Option("--root", help="Store root; must be absent or empty.")],
+    start: Annotated[
+        datetime | None,
+        typer.Option(
+            "--start",
+            formats=["%Y-%m-%d"],
+            help="First day of prices. Default: 2010-01-01. Earlier than 2008-01-01 is refused.",
+        ),
+    ] = None,
+    end: Annotated[
+        datetime | None,
+        typer.Option("--end", formats=["%Y-%m-%d"], help="Last day. Default: yesterday in NY."),
+    ] = None,
+    membership: Annotated[
+        Path | None,
+        typer.Option("--membership", help="Membership CSV. Default: the packaged S&P 500 file."),
+    ] = None,
+) -> None:
+    """Freeze point-in-time prices, splits, dividends, facts and sectors (online, once).
+
+    Refuses a non-empty --root before fetching anything. Exit 0 when the store is written,
+    1 on any failure; a failed run leaves no manifest, so its root never loads as a store.
+    """
+    first = DEFAULT_SNAPSHOT_START if start is None else start.date()
+    try:
+        if first < MEMBERSHIP_FLOOR:
+            raise ValueError(
+                f"--start {first} is before {MEMBERSHIP_FLOOR}: membership is not reliable earlier"
+            )
+        check_fresh_root(root)
+        spans = parse_membership(_membership_text(membership))
+        flagged = parse_flagged_spans(resource_text(FLAGGED_SPANS))
+        universe = load_universe(UNIVERSE)
+        sources = build_snapshot_sources()
+    except (ValueError, OSError, FundamentalsProviderError) as exc:
+        _fail(f"cannot start the snapshot: {exc}", exc)
+    last = _yesterday_in_new_york() if end is None else end.date()
+    try:
+        data = build_frozen_data(
+            sources,
+            spans,
+            sectors=universe.sectors,
+            ciks=universe.ciks,
+            start=first,
+            end=last,
+            flagged=flagged,
+        )
+        digest = write_store(root, data, created_at=clock())
+    except KeyboardInterrupt as exc:
+        _fail(f"interrupted; {root} has no manifest: delete it and use a fresh root", exc)
+    except Exception as exc:
+        _fail(f"{type(exc).__name__}: {exc}", exc)
+    typer.echo(_snapshot_summary(data, root, digest))
+
+
 def _fail(message: str, cause: BaseException) -> NoReturn:
     typer.echo(f"error: {message}", err=True)
     raise typer.Exit(1) from cause
+
+
+def _membership_text(path: Path | None) -> str:
+    return resource_text(MEMBERSHIP) if path is None else path.read_text(encoding="utf-8")
+
+
+def _yesterday_in_new_york() -> date:
+    return clock().astimezone(MARKET_TZ).date() - timedelta(days=1)
+
+
+def _snapshot_summary(data: FrozenData, root: Path, digest: str) -> str:
+    members = len(ever_members(data.membership, data.start, data.end))
+    return "\n".join(
+        [
+            f"frozen store {root}: {data.start} to {data.end}, manifest sha256 {digest}",
+            f"members {members}, priced {len(data.closes.columns)} (SPY included), "
+            f"unpriced {len(data.unpriced)}",
+            f"splits {len(data.splits)}, dividends {len(data.dividends)}, "
+            f"fact rows {len(data.facts)}",
+            f"no sector {len(data.no_sector)}, sector from SIC {len(data.sic_sectors)}, "
+            f"no CIK {len(data.no_cik)}",
+        ]
+    )
 
 
 def _exit_code(report: CycleReport) -> int:

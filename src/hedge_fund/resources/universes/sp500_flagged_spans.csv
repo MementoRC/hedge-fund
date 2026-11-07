@@ -1,0 +1,8 @@
+# source: Wikipedia "Historical components of the S&P 500" (table id=changes) + fja05680/sp500 @ a2430f2af0c7; compiled 2026-11-06
+# rows: spans overlapping 2008-01-01 or later of a reused ticker that belong to a company other than the current owner of the symbol
+ticker,start,end,reason
+Q,2000-07-06,2011-04-01,Qwest Communications; symbol now Qnity
+CEG,1996-01-02,2012-03-13,Constellation Energy Group; symbol now the 2022 Constellation Energy spin-off
+DD,1996-01-02,2017-09-01,E. I. du Pont de Nemours; symbol now the 2019 DuPont de Nemours
+DOW,1996-01-02,2017-09-01,The Dow Chemical Company; symbol now the 2019 Dow Inc.
+DELL,1996-09-06,2013-10-29,Dell Inc.; symbol now Dell Technologies

@@ -318,3 +318,15 @@ def test_defaults_are_requests_get_and_monotonic_time() -> None:
     assert provider._get is requests.get
     assert provider._clock is time.monotonic
     assert provider._sleep is time.sleep
+
+
+def test_get_json_fetches_any_sec_url_with_the_same_client() -> None:
+    url = "https://data.sec.gov/submissions/CIK0000320193.json"
+    get = FakeGet(FakeResponse(payload={"sic": "3571"}))
+    assert _provider(get).get_json(url) == {"sic": "3571"}
+    assert get.calls[0][0] == url
+    assert get.calls[0][1]["headers"] == {"User-Agent": AGENT}
+
+
+def test_get_json_gives_none_on_404() -> None:
+    assert _provider(FakeGet(FakeResponse(404))).get_json("https://www.sec.gov/x.json") is None

@@ -21,9 +21,11 @@ from hedge_fund.domain.backtest import FrozenData, SimCosts, SimEvent, SimEventK
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
 from hedge_fund.domain.ledger import OrderState, OrderStatus
 from hedge_fund.domain.orders import Holding, OrderAction
+from hedge_fund.engine.ledger.splits import split_factor
 
 _MARKET_OPEN = time(9, 30)
 _MARKET_TZ = ZoneInfo("America/New_York")
+_BUY_SIDE = frozenset({OrderAction.BUY, OrderAction.BUY_TO_COVER})
 _ORDER_SIDE = {
     OrderAction.BUY: "buy",
     OrderAction.BUY_TO_COVER: "buy",
@@ -82,6 +84,11 @@ class SimulatedBroker:
             raise SimulationError(f"open({day}): day {self.day} is not closed")
         self.day = day
         self.phase = "open"
+        for sim in self.orders.values():
+            if sim.state is OrderState.PENDING and (
+                sim.submitted_on is None or sim.submitted_on < day
+            ):
+                self._fill(sim, day)
 
     def close(self, day: date) -> None:
         """End ``day``, which must be the open day."""
@@ -144,6 +151,42 @@ class SimulatedBroker:
             broker_state=sim.state.value,
         )
 
+    def _raw_open(self, ticker: str, day: date) -> float:
+        """The open actually traded on ``day``: the stored (split-adjusted) open unwound."""
+        stored = float(self._data.opens.at[pd.Timestamp(day), ticker])
+        return stored * float(split_factor(ticker, day, self._data.splits))
+
+    def _fill(self, sim: _SimOrder, day: date) -> None:
+        order = sim.request.order
+        held = self.shares.get(order.ticker, 0)
+        reason = _fill_violation(order.action, order.shares, held)
+        if reason is not None:
+            sim.state = OrderState.REJECTED
+            self._reject(sim.request, reason)
+            return
+        raw_open = self._raw_open(order.ticker, day)
+        slip = self._costs.slippage_bps / 10_000
+        buy = order.action in _BUY_SIDE
+        signed = order.shares if buy else -order.shares
+        price = raw_open * (1 + slip if buy else 1 - slip)
+        cash = -signed * price
+        self.cash += cash
+        self.shares[order.ticker] = held + signed
+        self.marks.setdefault(order.ticker, raw_open)
+        sim.state, sim.fill_price, sim.filled_on = OrderState.FILLED, price, day
+        self._events.append(
+            SimEvent(
+                day=day,
+                kind=SimEventKind.FILL,
+                ticker=order.ticker,
+                shares=signed,
+                price=price,
+                cash=cash,
+                cost=abs(signed) * raw_open * slip,
+                client_order_id=sim.request.client_order_id,
+            )
+        )
+
     def _reject(self, request: OrderRequest, reason: str) -> None:
         self._events.append(
             SimEvent(
@@ -157,6 +200,17 @@ class SimulatedBroker:
                 reason=reason,
             )
         )
+
+
+def _fill_violation(action: OrderAction, shares: int, held: int) -> str | None:
+    """Why an order must not fill against the holding ``held``, or None (fail closed)."""
+    if action is OrderAction.SELL and shares > max(held, 0):
+        return "would cross zero"
+    if action is OrderAction.BUY_TO_COVER and shares > max(-held, 0):
+        return "would cross zero"
+    if (action is OrderAction.BUY and held < 0) or (action is OrderAction.SELL_SHORT and held > 0):
+        return "wrong side for the holding"
+    return None
 
 
 def _fill_time(filled_on: date) -> datetime:

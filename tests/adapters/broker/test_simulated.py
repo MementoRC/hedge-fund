@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from fractions import Fraction
 
 import pandas as pd
 import pytest
 
 from hedge_fund.adapters.broker.simulated import SimulatedBroker, SimulationError
-from hedge_fund.domain.backtest import SimCosts, SimEvent, SimEventKind
+from hedge_fund.domain.backtest import Dividend, SimCosts, SimEvent, SimEventKind
 from hedge_fund.domain.execution import OrderRequest, SubmitStatus
-from hedge_fund.domain.ledger import FillStatus, OrderState
+from hedge_fund.domain.ledger import FillStatus, OrderState, Split
 from hedge_fund.domain.orders import Holding, Order, OrderAction
 from hedge_fund.engine.ledger.open_order import is_open
 from hedge_fund.engine.ledger.validate import to_fill
@@ -405,6 +406,171 @@ def test_account_between_open_and_close_prices_a_new_position_at_the_open() -> N
     assert broker.account().equity == pytest.approx(10_000.0 - 0.5)
     broker.submit(_request("c2", "AAA", 10, OrderAction.SELL_SHORT))
     assert broker.account().equity == pytest.approx(10_000.0 - 0.5)
+
+
+def _corp_data(splits=(), dividends=()):
+    """Three days of AAA; stored (split-adjusted) opens 50/50.5/51 and closes 50.5/51/51.5."""
+    days = pd.bdate_range("2024-01-02", periods=3)
+    return make_frozen_data(
+        start=days[0].date(),
+        end=days[-1].date(),
+        opens=pd.DataFrame({"AAA": [50.0, 50.5, 51.0]}, index=days),
+        closes=pd.DataFrame({"AAA": [50.5, 51.0, 51.5]}, index=days),
+        splits=splits,
+        dividends=dividends,
+    ), [d.date() for d in days]
+
+
+def _held_on_day_two(
+    held: int, splits=(), dividends=(), mark: float | None = 101.0
+) -> tuple[SimulatedBroker, list[date]]:
+    """A broker holding ``held`` AAA with 1000 cash, closed on day 1 and opened on day 2."""
+    data, days = _corp_data(splits, dividends)
+    broker = SimulatedBroker(data, cash=1_000.0, costs=SimCosts(0.0, 0.0))
+    broker.open(days[0])
+    broker.close(days[0])
+    broker.shares = {"AAA": held}
+    if mark is not None:
+        broker.marks = {"AAA": mark}
+    return broker, days
+
+
+def _split(ratio: Fraction, day_index: int = 1) -> Split:
+    return Split("AAA", _corp_data()[1][day_index], ratio)
+
+
+def test_a_two_for_one_split_doubles_a_long_and_keeps_equity() -> None:
+    broker, days = _held_on_day_two(10, splits=(_split(Fraction(2)),))
+    assert broker.account().equity == pytest.approx(1_000.0 + 10 * 101.0)
+    broker.open(days[1])
+    assert broker.shares == {"AAA": 20}
+    assert broker.marks == {"AAA": pytest.approx(50.5)}
+    assert broker.cash == 1_000.0
+    assert broker.account().equity == pytest.approx(1_000.0 + 10 * 101.0)
+    (event,) = broker.events
+    assert event == SimEvent(
+        day=days[1],
+        kind=SimEventKind.SPLIT,
+        ticker="AAA",
+        shares=10,
+        price=pytest.approx(50.5),
+        cash=0.0,
+    )
+
+
+def test_a_two_for_one_split_doubles_a_short() -> None:
+    broker, days = _held_on_day_two(-10, splits=(_split(Fraction(2)),))
+    broker.open(days[1])
+    assert broker.shares == {"AAA": -20}
+    assert broker.events[0].shares == -10
+    assert broker.events[0].cash == 0.0
+
+
+def test_a_reverse_split_pays_cash_in_lieu_of_the_fraction() -> None:
+    broker, days = _held_on_day_two(10, splits=(_split(Fraction(1, 3)),))
+    broker.open(days[1])
+    assert broker.shares == {"AAA": 3}
+    assert broker.cash == pytest.approx(1_000.0 + 50.5 / 3)
+    assert broker.marks == {"AAA": pytest.approx(303.0)}
+    (event,) = broker.events
+    assert (event.kind, event.shares) == (SimEventKind.SPLIT, -7)
+    assert event.price == pytest.approx(50.5)
+    assert event.cash == pytest.approx(50.5 / 3)
+
+
+def test_a_reverse_split_on_a_short_pays_the_cash_in_lieu() -> None:
+    broker, days = _held_on_day_two(-10, splits=(_split(Fraction(1, 3)),))
+    broker.open(days[1])
+    assert broker.shares == {"AAA": -3}
+    assert broker.cash == pytest.approx(1_000.0 - 50.5 / 3)
+    assert broker.events[0].shares == 7
+    assert broker.events[0].cash == pytest.approx(-50.5 / 3)
+
+
+def test_a_split_on_a_held_name_without_a_mark_leaves_marks_alone() -> None:
+    broker, days = _held_on_day_two(10, splits=(_split(Fraction(2)),), mark=None)
+    broker.open(days[1])
+    assert broker.shares == {"AAA": 20}
+    assert broker.marks == {}
+
+
+def test_a_pending_order_on_a_split_ex_date_is_rejected() -> None:
+    broker, days = _held_on_day_two(10, splits=(_split(Fraction(2)),))
+    broker.submit(_request("c1", "AAA", 5, OrderAction.SELL))
+    broker.open(days[1])
+    assert broker.orders["c1"].state is OrderState.REJECTED
+    assert broker.shares == {"AAA": 20}
+    reject = broker.events[0]
+    assert (reject.kind, reject.reason, reject.client_order_id) == (
+        SimEventKind.REJECT,
+        "split on fill day",
+        "c1",
+    )
+    assert [e.kind for e in broker.events] == [SimEventKind.REJECT, SimEventKind.SPLIT]
+
+
+def test_a_dividend_credits_a_long_and_debits_a_short() -> None:
+    div = (Dividend("AAA", _corp_data()[1][1], 0.25),)
+    long_broker, days = _held_on_day_two(10, dividends=div)
+    long_broker.open(days[1])
+    assert long_broker.cash == pytest.approx(1_002.5)
+    assert long_broker.events == (
+        SimEvent(
+            day=days[1],
+            kind=SimEventKind.DIVIDEND,
+            ticker="AAA",
+            shares=10,
+            price=0.25,
+            cash=pytest.approx(2.5),
+        ),
+    )
+    short_broker, _ = _held_on_day_two(-10, dividends=div)
+    short_broker.open(days[1])
+    assert short_broker.cash == pytest.approx(997.5)
+    assert short_broker.events[0].shares == -10
+    assert short_broker.events[0].cash == pytest.approx(-2.5)
+
+
+def test_a_dividend_before_a_later_split_is_unwound_to_the_raw_amount() -> None:
+    days = _corp_data()[1]
+    broker, _ = _held_on_day_two(
+        10,
+        splits=(Split("AAA", days[2], Fraction(2)),),
+        dividends=(Dividend("AAA", days[1], 0.25),),
+    )
+    broker.open(days[1])
+    assert broker.cash == pytest.approx(1_005.0)
+    assert broker.events[0].price == pytest.approx(0.5)
+    assert broker.events[0].cash == pytest.approx(5.0)
+
+
+def test_a_split_unwinds_the_dividend_on_the_same_day_only_after_it() -> None:
+    days = _corp_data()[1]
+    broker, _ = _held_on_day_two(
+        10,
+        splits=(_split(Fraction(2)),),
+        dividends=(Dividend("AAA", days[1], 0.25),),
+    )
+    broker.open(days[1])
+    assert broker.shares == {"AAA": 20}
+    assert broker.cash == pytest.approx(1_000.0 + 20 * 0.25)
+    assert [e.kind for e in broker.events] == [SimEventKind.SPLIT, SimEventKind.DIVIDEND]
+
+
+@pytest.mark.parametrize("shares", [{}, {"AAA": 0}])
+def test_no_corporate_action_event_fires_for_a_name_that_is_not_held(
+    shares: dict[str, int],
+) -> None:
+    days = _corp_data()[1]
+    broker, _ = _held_on_day_two(
+        0,
+        splits=(_split(Fraction(2)),),
+        dividends=(Dividend("AAA", days[1], 0.25),),
+    )
+    broker.shares = shares
+    broker.open(days[1])
+    assert broker.events == ()
+    assert broker.cash == 1_000.0
 
 
 @pytest.mark.parametrize("cash", [0.0, -1.0, float("nan"), float("inf")])

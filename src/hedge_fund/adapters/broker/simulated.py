@@ -84,6 +84,9 @@ class SimulatedBroker:
             raise SimulationError(f"open({day}): day {self.day} is not closed")
         self.day = day
         self.phase = "open"
+        # Ex-date events come before fills, in this order: delistings (Task 8), splits, dividends.
+        self._apply_splits(day)
+        self._apply_dividends(day)
         for sim in self.orders.values():
             if sim.state is OrderState.PENDING and (
                 sim.submitted_on is None or sim.submitted_on < day
@@ -155,6 +158,58 @@ class SimulatedBroker:
         """The open actually traded on ``day``: the stored (split-adjusted) open unwound."""
         stored = float(self._data.opens.at[pd.Timestamp(day), ticker])
         return stored * float(split_factor(ticker, day, self._data.splits))
+
+    def _apply_splits(self, day: date) -> None:
+        """Restate holdings and marks for splits ex-dated ``day``; reject orders sized pre-split."""
+        for split in self._data.splits:
+            if split.ex_date != day:
+                continue
+            ticker = split.ticker
+            for sim in self.orders.values():
+                if sim.state is OrderState.PENDING and sim.request.order.ticker == ticker:
+                    sim.state = OrderState.REJECTED
+                    self._reject(sim.request, "split on fill day")
+            held = self.shares.get(ticker, 0)
+            if held == 0:
+                continue
+            scaled = held * split.ratio
+            whole = int(scaled)  # truncates toward zero, so shorts are symmetric
+            raw_open = self._raw_open(ticker, day)
+            cash = float(scaled - whole) * raw_open if scaled != whole else 0.0
+            self.cash += cash
+            self.shares[ticker] = whole
+            if ticker in self.marks:
+                self.marks[ticker] /= float(split.ratio)
+            self._events.append(
+                SimEvent(
+                    day=day,
+                    kind=SimEventKind.SPLIT,
+                    ticker=ticker,
+                    shares=whole - held,
+                    price=raw_open,
+                    cash=cash,
+                )
+            )
+
+    def _apply_dividends(self, day: date) -> None:
+        """Pay (or charge, for a short) the raw dividend of every held name ex-dated ``day``."""
+        for dividend in self._data.dividends:
+            held = self.shares.get(dividend.ticker, 0)
+            if dividend.ex_date != day or held == 0:
+                continue
+            raw = dividend.amount * float(split_factor(dividend.ticker, day, self._data.splits))
+            cash = held * raw
+            self.cash += cash
+            self._events.append(
+                SimEvent(
+                    day=day,
+                    kind=SimEventKind.DIVIDEND,
+                    ticker=dividend.ticker,
+                    shares=held,
+                    price=raw,
+                    cash=cash,
+                )
+            )
 
     def _fill(self, sim: _SimOrder, day: date) -> None:
         order = sim.request.order

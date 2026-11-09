@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
+from fractions import Fraction
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
@@ -67,12 +68,23 @@ class SimulatedBroker:
         self.marks: dict[str, float] = {}
         self.orders: dict[str, _SimOrder] = {}
         self._events: list[SimEvent] = []
+        self._delisted: list[str] = []
+        self._last_day: dict[str, date] = {
+            str(t): last.date()
+            for t in data.closes.columns
+            if (last := data.closes[t].last_valid_index()) is not None
+        }
         self.day: date | None = None
         self.phase: Literal["open", "closed"] = "closed"
 
     @property
     def events(self) -> tuple[SimEvent, ...]:
         return tuple(self._events)
+
+    @property
+    def delisted(self) -> tuple[str, ...]:
+        """Held names closed out because they stopped trading, in delisting order."""
+        return tuple(self._delisted)
 
     def open(self, day: date) -> None:
         """Start ``day``; it must be a trading day after the last one, which must be closed."""
@@ -84,13 +96,18 @@ class SimulatedBroker:
             raise SimulationError(f"open({day}): day {self.day} is not closed")
         self.day = day
         self.phase = "open"
-        # Ex-date events come before fills, in this order: delistings (Task 8), splits, dividends.
+        # Ex-date events come before fills, in this order: delistings, splits, dividends.
+        self._apply_delistings(day)
         self._apply_splits(day)
         self._apply_dividends(day)
         for sim in self.orders.values():
             if sim.state is OrderState.PENDING and (
                 sim.submitted_on is None or sim.submitted_on < day
             ):
+                if pd.isna(self._data.opens.at[pd.Timestamp(day), sim.request.order.ticker]):
+                    sim.state = OrderState.REJECTED
+                    self._reject(sim.request, "no open")
+                    continue
                 self._fill(sim, day)
 
     def close(self, day: date) -> None:
@@ -159,6 +176,58 @@ class SimulatedBroker:
         stored = float(self._data.opens.at[pd.Timestamp(day), ticker])
         return stored * float(split_factor(ticker, day, self._data.splits))
 
+    def _gone(self, ticker: str, day: date) -> bool:
+        """Whether ``ticker`` has stopped trading before ``day`` (its last close is earlier)."""
+        last = self._last_day.get(ticker)
+        return last is not None and day > last
+
+    def _apply_delistings(self, day: date) -> None:
+        """Close out held names that stopped trading, and reject orders on them."""
+        for ticker in sorted(self.shares):
+            held = self.shares[ticker]
+            if held == 0 or not self._gone(ticker, day):
+                continue
+            last = self._last_day[ticker]
+            stored = float(self._data.closes.at[pd.Timestamp(last), ticker])
+            price = stored * float(split_factor(ticker, last, self._data.splits))
+            cash = held * price
+            self.cash += cash
+            del self.shares[ticker]
+            self.marks.pop(ticker, None)
+            if ticker not in self._delisted:
+                self._delisted.append(ticker)
+            self._events.append(
+                SimEvent(
+                    day=day,
+                    kind=SimEventKind.DELIST,
+                    ticker=ticker,
+                    shares=-held,
+                    price=price,
+                    cash=cash,
+                )
+            )
+        for sim in self.orders.values():
+            if sim.state is OrderState.PENDING and self._gone(sim.request.order.ticker, day):
+                sim.state = OrderState.REJECTED
+                self._reject(sim.request, "not trading")
+
+    def _split_price(self, ticker: str, day: date, ratio: Fraction) -> float:
+        """The post-split price for cash in lieu: the raw open, else the prior raw close.
+
+        With no open on the split day, the last earlier close is restated onto the post-split
+        basis (divided by ``ratio``, as marks are). With neither, the simulation fails closed.
+        """
+        opened = float(self._data.opens.at[pd.Timestamp(day), ticker])
+        if not math.isnan(opened):
+            return self._raw_open(ticker, day)
+        closes = self._data.closes[ticker]
+        prior = closes[closes.index < pd.Timestamp(day)].dropna()
+        if prior.empty:
+            raise SimulationError(f"split of {ticker} on {day}: no open and no prior close")
+        prior_day = prior.index[-1].date()
+        raw = float(prior.iloc[-1]) * float(split_factor(ticker, prior_day, self._data.splits))
+        return raw / float(ratio)
+
     def _apply_splits(self, day: date) -> None:
         """Restate holdings and marks for splits ex-dated ``day``; reject orders sized pre-split."""
         for split in self._data.splits:
@@ -174,7 +243,7 @@ class SimulatedBroker:
                 continue
             scaled = held * split.ratio
             whole = int(scaled)  # truncates toward zero, so shorts are symmetric
-            raw_open = self._raw_open(ticker, day)
+            raw_open = self._split_price(ticker, day, split.ratio)
             cash = float(scaled - whole) * raw_open if scaled != whole else 0.0
             self.cash += cash
             self.shares[ticker] = whole

@@ -573,6 +573,189 @@ def test_no_corporate_action_event_fires_for_a_name_that_is_not_held(
     assert broker.cash == 1_000.0
 
 
+NAN = float("nan")
+
+
+def _gap_data(splits=(), aaa_closes=None, aaa_opens=None, bbb_ends: bool = False):
+    """Five days. AAA closes end on day 3 by default; BBB trades throughout unless ``bbb_ends``."""
+    bbb = [50.0, 49.0, 48.0, NAN, NAN] if bbb_ends else [50.0, 49.0, 48.0, 47.0, 46.0]
+    closes = pd.DataFrame(
+        {"AAA": aaa_closes or [10.0, 11.0, 12.0, NAN, NAN], "BBB": bbb}, index=DAYS
+    )
+    opens = pd.DataFrame(
+        {"AAA": aaa_opens or [9.5, 10.5, 11.5, NAN, NAN], "BBB": closes["BBB"] - 0.5},
+        index=DAYS,
+    )
+    return make_frozen_data(
+        start=D1, end=D5, opens=opens, closes=closes, splits=splits, dividends=()
+    )
+
+
+def _gap_broker(data, shares: dict[str, int], through: int = 3) -> SimulatedBroker:
+    """1000 cash, days 1..``through`` driven and closed, ``shares`` held, no slippage."""
+    broker = SimulatedBroker(data, cash=1_000.0, costs=SimCosts(0.0, 0.0))
+    for day in (D1, D2, D3, D4, D5)[:through]:
+        broker.open(day)
+        broker.close(day)
+    broker.shares = dict(shares)
+    broker.marks = dict.fromkeys(shares, 1.0)
+    return broker
+
+
+@pytest.mark.parametrize(("held", "cash"), [(10, 1_120.0), (-10, 880.0)])
+def test_a_name_past_its_last_close_is_closed_out_at_that_close(held: int, cash: float) -> None:
+    broker = _gap_broker(_gap_data(), {"AAA": held})
+    broker.open(D4)
+    assert broker.cash == cash
+    assert broker.positions() == ()
+    assert broker.shares == {}
+    assert broker.marks == {}
+    assert broker.delisted == ("AAA",)
+    assert broker.events == (
+        SimEvent(
+            day=D4,
+            kind=SimEventKind.DELIST,
+            ticker="AAA",
+            shares=-held,
+            price=12.0,
+            cash=cash - 1_000.0,
+        ),
+    )
+
+
+def test_a_name_on_its_last_trading_day_is_not_delisted() -> None:
+    broker = _gap_broker(_gap_data(), {"AAA": 10}, through=2)
+    broker.open(D3)
+    assert broker.shares == {"AAA": 10}
+    assert broker.delisted == ()
+    assert broker.events == ()
+
+
+def test_delisting_runs_once_and_in_delisting_order() -> None:
+    data = _gap_data(bbb_ends=True)
+    broker = _gap_broker(data, {"BBB": -2, "AAA": 10, "SPY": 0})
+    broker.open(D4)
+    broker.close(D4)
+    broker.open(D5)
+    assert broker.delisted == ("AAA", "BBB")
+    assert broker.cash == 1_000.0 + 10 * 12.0 - 2 * 48.0
+    assert [e.ticker for e in broker.events] == ["AAA", "BBB"]
+
+
+def test_the_close_out_price_is_the_raw_close_unwound_for_a_later_split() -> None:
+    splits = (Split("AAA", D4, Fraction(2)),)
+    broker = _gap_broker(_gap_data(splits=splits), {"AAA": 10})
+    broker.open(D4)
+    assert broker.cash == 1_000.0 + 10 * 24.0
+    assert [e.kind for e in broker.events] == [SimEventKind.DELIST]
+    assert broker.events[0].price == 24.0
+
+
+@pytest.mark.parametrize("held", [0, 10])
+def test_a_pending_order_on_a_delisted_name_is_rejected_as_not_trading(held: int) -> None:
+    broker = _gap_broker(_gap_data(), {"AAA": held} if held else {}, through=2)
+    broker.open(D3)
+    broker.submit(_request("c1", "AAA", 5, OrderAction.BUY))
+    broker.close(D3)
+    broker.open(D4)
+    assert broker.orders["c1"].state is OrderState.REJECTED
+    assert broker.order_status("c1").filled_at is None
+    reject = broker.events[-1]
+    assert (reject.kind, reject.reason, reject.client_order_id) == (
+        SimEventKind.REJECT,
+        "not trading",
+        "c1",
+    )
+    assert broker.delisted == (("AAA",) if held else ())
+
+
+def test_a_pending_order_on_a_split_day_of_a_delisted_name_is_not_trading() -> None:
+    splits = (Split("AAA", D4, Fraction(2)),)
+    broker = _gap_broker(_gap_data(splits=splits), {}, through=2)
+    broker.open(D3)
+    broker.submit(_request("c1", "AAA", 5, OrderAction.BUY))
+    broker.close(D3)
+    broker.open(D4)
+    assert [(e.kind, e.reason) for e in broker.events] == [(SimEventKind.REJECT, "not trading")]
+
+
+def test_a_nan_open_while_still_trading_rejects_the_order_as_no_open() -> None:
+    data = _gap_data(
+        aaa_opens=[9.5, NAN, 11.5, 12.5, 13.5], aaa_closes=[10.0, 11.0, 12.0, 13.0, 14.0]
+    )
+    broker = _gap_broker(data, {}, through=1)
+    broker.submit(_request("c1", "AAA", 5, OrderAction.BUY))
+    broker.submit(_request("c2", "BBB", 5, OrderAction.BUY))
+    broker.open(D2)
+    assert broker.orders["c1"].state is OrderState.REJECTED
+    assert broker.orders["c2"].state is OrderState.FILLED
+    assert broker.shares == {"BBB": 5}
+    assert broker.cash == 1_000.0 - 5 * 48.5
+    assert [(e.kind, e.ticker, e.reason) for e in broker.events] == [
+        (SimEventKind.REJECT, "AAA", "no open"),
+        (SimEventKind.FILL, "BBB", None),
+    ]
+    assert broker.events[0].shares == 0
+    assert broker.events[0].cash == 0.0
+
+
+def test_a_name_that_never_traded_has_no_open() -> None:
+    data = _gap_data(aaa_closes=[NAN] * 5, aaa_opens=[NAN] * 5)
+    broker = _gap_broker(data, {}, through=1)
+    broker.submit(_request("c1", "AAA", 5, OrderAction.BUY))
+    broker.open(D2)
+    assert broker.orders["c1"].state is OrderState.REJECTED
+    assert broker.events[0].reason == "no open"
+    assert broker.delisted == ()
+
+
+def _nan_open_split_broker(ratio: Fraction, held: int, prior_close_nan: bool = False):
+    days = pd.bdate_range("2024-01-02", periods=3)
+    closes = [NAN, 51.0, 51.5] if prior_close_nan else [50.5, 51.0, 51.5]
+    data = make_frozen_data(
+        start=days[0].date(),
+        end=days[-1].date(),
+        opens=pd.DataFrame({"AAA": [50.0, NAN, 51.0]}, index=days),
+        closes=pd.DataFrame({"AAA": closes}, index=days),
+        splits=(Split("AAA", days[1].date(), ratio),),
+        dividends=(),
+    )
+    broker = SimulatedBroker(data, cash=1_000.0, costs=SimCosts(0.0, 0.0))
+    broker.open(days[0].date())
+    broker.close(days[0].date())
+    broker.shares = {"AAA": held}
+    return broker, [d.date() for d in days]
+
+
+@pytest.mark.parametrize(("held", "sign"), [(10, 1), (-10, -1)])
+def test_a_nan_open_on_a_split_day_pays_the_cash_in_lieu_at_the_prior_close(
+    held: int, sign: int
+) -> None:
+    broker, days = _nan_open_split_broker(Fraction(1, 3), held)
+    broker.open(days[1])
+    # Prior stored close 50.5 is already on the post-split basis, so the third of a share
+    # is paid at 50.5.
+    assert broker.shares == {"AAA": 3 * sign}
+    assert broker.cash == pytest.approx(1_000.0 + sign * 50.5 / 3)
+    assert broker.cash == broker.cash  # not NaN
+    (event,) = broker.events
+    assert event.price == pytest.approx(50.5)
+    assert event.cash == pytest.approx(sign * 50.5 / 3)
+
+
+def test_a_nan_open_on_a_whole_share_split_still_moves_the_shares() -> None:
+    broker, days = _nan_open_split_broker(Fraction(2), 10)
+    broker.open(days[1])
+    assert broker.shares == {"AAA": 20}
+    assert broker.events[0].price == pytest.approx(50.5)
+
+
+def test_a_nan_open_on_a_split_day_with_no_prior_close_is_a_simulation_error() -> None:
+    broker, days = _nan_open_split_broker(Fraction(1, 3), 10, prior_close_nan=True)
+    with pytest.raises(SimulationError, match="no prior close"):
+        broker.open(days[1])
+
+
 @pytest.mark.parametrize("cash", [0.0, -1.0, float("nan"), float("inf")])
 def test_constructor_rejects_bad_cash(cash: float) -> None:
     with pytest.raises(SimulationError, match="cash must be finite and > 0"):

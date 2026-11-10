@@ -159,3 +159,64 @@ class SimEvent:
     cost: float = 0.0
     client_order_id: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Performance:
+    """Return statistics of one equity curve (risk-free rate 0, 252 trading days a year).
+
+    ``sharpe`` is None when ``volatility`` is 0. ``peak`` and ``trough`` bound the max
+    drawdown (both the start date when there is none).
+    """
+
+    start: date
+    end: date
+    total_return: float
+    cagr: float
+    volatility: float
+    sharpe: float | None
+    max_drawdown: float
+    peak: date
+    trough: date
+
+
+@dataclass(frozen=True)
+class TradingCosts:
+    """Trading volume and costs of a backtest, in dollars.
+
+    ``turnover`` is two-sided and annualized: traded notional / mean NAV / years.
+    """
+
+    traded_notional: float
+    turnover: float
+    slippage: float
+    borrow: float
+
+
+@dataclass(frozen=True)
+class Honesty:
+    """What a backtest dropped, rejected, closed out or would have tripped.
+
+    Ticker counts are distinct tickers over the whole run. ``price_unresolved`` and
+    ``rejects`` are keyed by reason; ``outcomes`` by ``CycleOutcome`` value.
+    """
+
+    price_unresolved: Mapping[str, int]
+    fundamentals_unresolved: int
+    flagged_excluded: int
+    stopped_trading: int
+    rejects: Mapping[str, int]
+    daily_breaker_days: int
+    drawdown_breaker_days: int
+    outcomes: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class BacktestMetrics:
+    """The summary of one backtest run: performance vs the benchmark, costs, honesty."""
+
+    strategy: Performance
+    benchmark: Performance
+    beta: float | None
+    costs: TradingCosts
+    honesty: Honesty

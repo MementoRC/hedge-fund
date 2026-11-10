@@ -103,7 +103,8 @@ def test_honesty_counts_distinct_tickers_and_events():
 
 
 def test_honesty_of_a_quiet_run_is_all_zero():
-    result = honesty((), (), CURVE, flagged=())
+    result = honesty((), (), _curve(100.0, 100.0, 100.0), flagged=())
+    assert (result.daily_breaker_days, result.drawdown_breaker_days) == (0, 0)
     assert (result.price_unresolved, result.rejects, result.outcomes) == ({}, {}, {})
     assert (result.fundamentals_unresolved, result.flagged_excluded, result.stopped_trading) == (
         0,

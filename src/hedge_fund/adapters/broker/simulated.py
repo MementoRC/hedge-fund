@@ -75,6 +75,7 @@ class SimulatedBroker:
             if (last := data.closes[t].last_valid_index()) is not None
         }
         self.day: date | None = None
+        self._last_close: date | None = None
         self.phase: Literal["open", "closed"] = "closed"
 
     @property
@@ -114,6 +115,15 @@ class SimulatedBroker:
         """End ``day``, which must be the open day."""
         if day != self.day or self.phase != "open":
             raise SimulationError(f"close({day}): that day is not open")
+        days = 1 if self._last_close is None else (day - self._last_close).days
+        for ticker in sorted(self.shares):
+            held = self.shares[ticker]
+            if held == 0:
+                continue
+            self.marks[ticker] = self._close_mark(ticker, day)
+            if held < 0:
+                self._accrue_borrow(ticker, held, days, day)
+        self._last_close = day
         self.phase = "closed"
 
     def account(self) -> Account:
@@ -175,6 +185,32 @@ class SimulatedBroker:
         """The open actually traded on ``day``: the stored (split-adjusted) open unwound."""
         stored = float(self._data.opens.at[pd.Timestamp(day), ticker])
         return stored * float(split_factor(ticker, day, self._data.splits))
+
+    def _close_mark(self, ticker: str, day: date) -> float:
+        """The raw close on ``day``; a NaN close keeps the previous mark (none: fail closed)."""
+        stored = float(self._data.closes.at[pd.Timestamp(day), ticker])
+        if not math.isnan(stored):
+            return stored * float(split_factor(ticker, day, self._data.splits))
+        if ticker not in self.marks:
+            raise SimulationError(f"close({day}): no close and no mark for {ticker}")
+        return self.marks[ticker]
+
+    def _accrue_borrow(self, ticker: str, held: int, days: int, day: date) -> None:
+        """Charge a short ``days`` of borrow at its mark and log it."""
+        price = self.marks[ticker]
+        cost = abs(held) * price * self._costs.borrow_rate * days / 365
+        self.cash -= cost
+        self._events.append(
+            SimEvent(
+                day=day,
+                kind=SimEventKind.BORROW,
+                ticker=ticker,
+                shares=held,
+                price=price,
+                cash=-cost,
+                cost=cost,
+            )
+        )
 
     def _gone(self, ticker: str, day: date) -> bool:
         """Whether ``ticker`` has stopped trading before ``day`` (its last close is earlier)."""

@@ -15,8 +15,9 @@ from hedge_fund.domain.orders import Holding, Order, OrderAction
 from hedge_fund.engine.ledger.open_order import is_open
 from hedge_fund.engine.ledger.validate import to_fill
 from hedge_fund.ports.broker import Broker
+from hedge_fund.services.account import record_snapshot
 from tests.factories import make_frozen_data
-from tests.fakes import not_found
+from tests.fakes import InMemorySnapshotStore, not_found
 
 DAYS = pd.bdate_range("2024-01-01", periods=5)
 D1, D2, D3, D4, D5 = (d.date() for d in DAYS)
@@ -754,6 +755,163 @@ def test_a_nan_open_on_a_split_day_with_no_prior_close_is_a_simulation_error() -
     broker, days = _nan_open_split_broker(Fraction(1, 3), 10, prior_close_nan=True)
     with pytest.raises(SimulationError, match="no prior close"):
         broker.open(days[1])
+
+
+def test_close_marks_held_names_at_the_raw_close() -> None:
+    broker, (d1, *_) = _flat_broker(SimCosts(0.0, 0.0))
+    broker.submit(_request("c1", "AAA", 10))
+    broker.open(d1)
+    broker.close(d1)
+    assert broker.marks == {"AAA": 101.0}
+    assert broker.cash == 9_000.0
+    assert broker.account().equity == 9_000.0 + 10 * 101.0
+    assert broker.events[-1].kind is SimEventKind.FILL
+
+
+def test_close_unwinds_the_close_for_a_later_split() -> None:
+    data, days = _corp_data(splits=(_split(Fraction(2)),))
+    broker = SimulatedBroker(data, cash=1_000.0, costs=SimCosts(0.0, 0.0))
+    broker.shares = {"AAA": 10}
+    broker.marks = {"AAA": 1.0}
+    broker.open(days[0])
+    broker.close(days[0])
+    assert broker.marks == {"AAA": pytest.approx(101.0)}
+
+
+def _borrow_broker(rate: float = 0.005) -> tuple[SimulatedBroker, list[date]]:
+    """Thu 2024-01-04, Fri 05, Mon 08, Tue 09; AAA closes 52/51/50/49, opens 0.5 below."""
+    days = pd.bdate_range("2024-01-04", periods=4)
+    closes = pd.DataFrame({"AAA": [52.0, 51.0, 50.0, 49.0]}, index=days)
+    data = make_frozen_data(
+        start=days[0].date(),
+        end=days[-1].date(),
+        opens=closes - 0.5,
+        closes=closes,
+        splits=(),
+        dividends=(),
+    )
+    return SimulatedBroker(data, cash=10_000.0, costs=SimCosts(0.0, rate)), [d.date() for d in days]
+
+
+def _short_through_monday(broker: SimulatedBroker, days: list[date]) -> None:
+    thu, fri, mon, _ = days
+    broker.open(thu)
+    broker.submit(_request("c1", "AAA", 100, OrderAction.SELL_SHORT))
+    broker.close(thu)
+    broker.open(fri)
+    broker.close(fri)
+    broker.open(mon)
+    broker.close(mon)
+
+
+def test_a_short_accrues_borrow_for_the_calendar_days_since_the_last_close() -> None:
+    broker, days = _borrow_broker()
+    _short_through_monday(broker, days)
+    borrows = [e for e in broker.events if e.kind is SimEventKind.BORROW]
+    assert len(borrows) == 2
+    thursday_to_friday, friday_to_monday = borrows
+    assert thursday_to_friday.cost == pytest.approx(100 * 51.0 * 0.005 * 1 / 365)
+    expected = 100 * 50.0 * 0.005 * 3 / 365
+    assert friday_to_monday == SimEvent(
+        day=days[2],
+        kind=SimEventKind.BORROW,
+        ticker="AAA",
+        shares=-100,
+        price=50.0,
+        cash=pytest.approx(-expected),
+        cost=pytest.approx(expected),
+    )
+    start = 10_000.0 + 100 * 50.5
+    assert broker.cash == pytest.approx(start - thursday_to_friday.cost - expected)
+    assert broker.account().equity == pytest.approx(broker.cash - 100 * 50.0)
+
+
+def test_the_first_close_accrues_one_day_of_borrow() -> None:
+    broker, days = _borrow_broker()
+    broker.shares = {"AAA": -100}
+    broker.marks = {"AAA": 1.0}
+    broker.open(days[2])
+    broker.close(days[2])
+    (event,) = broker.events
+    assert event.cost == pytest.approx(100 * 50.0 * 0.005 / 365)
+
+
+def test_a_long_pays_no_borrow() -> None:
+    broker, days = _borrow_broker()
+    broker.open(days[0])
+    broker.submit(_request("c1", "AAA", 100))
+    broker.close(days[0])
+    broker.open(days[1])
+    broker.close(days[1])
+    assert all(e.kind is not SimEventKind.BORROW for e in broker.events)
+    assert broker.cash == 10_000.0 - 100 * 50.5
+
+
+def test_a_nan_close_keeps_the_previous_mark() -> None:
+    data = _gap_data(
+        aaa_opens=[9.5, 10.5, 11.5, 12.5, 13.5], aaa_closes=[10.0, NAN, 12.0, 13.0, 14.0]
+    )
+    broker = SimulatedBroker(data, cash=1_000.0, costs=SimCosts(0.0, 0.0))
+    broker.submit(_request("c1", "AAA", 10))
+    broker.open(D1)
+    broker.close(D1)
+    assert broker.marks == {"AAA": 10.0}
+    broker.open(D2)
+    broker.close(D2)
+    assert broker.marks == {"AAA": 10.0}
+    assert broker.account().equity == 1_000.0 - 10 * 9.5 + 10 * 10.0
+
+
+def test_a_nan_close_with_no_mark_is_a_simulation_error() -> None:
+    data = _gap_data(
+        aaa_opens=[9.5, 10.5, 11.5, 12.5, 13.5], aaa_closes=[10.0, NAN, 12.0, 13.0, 14.0]
+    )
+    broker = SimulatedBroker(data, cash=1_000.0, costs=SimCosts(0.0, 0.0))
+    broker.shares = {"AAA": 10}
+    broker.open(D1)
+    broker.close(D1)
+    del broker.marks["AAA"]
+    broker.open(D2)
+    with pytest.raises(SimulationError, match="no mark"):
+        broker.close(D2)
+
+
+def test_the_close_snapshot_fits_the_account_service() -> None:
+    broker, (d1, *_) = _flat_broker(SimCosts(0.0, 0.0))
+    broker.submit(_request("c1", "AAA", 10))
+    broker.open(d1)
+    broker.close(d1)
+    store = InMemorySnapshotStore()
+    observed = datetime(d1.year, d1.month, d1.day, 21, 30, tzinfo=UTC)
+    snapshot = record_snapshot(broker, store, as_of=d1, now=lambda: observed)
+    assert store.saved == [snapshot]
+    assert snapshot.as_of == d1
+    assert snapshot.observed_at == observed
+    assert snapshot.equity == 9_000.0 + 10 * 101.0
+    assert snapshot.holdings == (Holding("AAA", 10),)
+
+
+def _script(broker: SimulatedBroker, days: list[date]) -> None:
+    thu, fri, mon, tue = days
+    broker.open(thu)
+    broker.submit(_request("c1", "AAA", 100, OrderAction.SELL_SHORT))
+    broker.close(thu)
+    broker.open(fri)
+    broker.submit(_request("c2", "AAA", 40, OrderAction.BUY_TO_COVER))
+    broker.close(fri)
+    broker.open(mon)
+    broker.close(mon)
+    broker.open(tue)
+    broker.close(tue)
+
+
+def test_two_brokers_driven_by_one_script_agree() -> None:
+    (first, days), (second, _) = _borrow_broker(), _borrow_broker()
+    _script(first, days)
+    _script(second, days)
+    assert first.events == second.events
+    assert first.account().equity == second.account().equity
+    assert first.positions() == second.positions() == (Holding("AAA", -60),)
 
 
 @pytest.mark.parametrize("cash", [0.0, -1.0, float("nan"), float("inf")])

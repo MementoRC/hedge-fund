@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import random
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 import pytest
 
+from hedge_fund.domain.backtest import SimEvent, SimEventKind
+from hedge_fund.domain.cycle import CycleOutcome
 from hedge_fund.domain.risk import NavPoint
-from hedge_fund.engine.backtest.honesty import breaker_days
+from hedge_fund.engine.backtest.honesty import breaker_days, honesty
 from hedge_fund.engine.risk.breakers import BreakerParams, check_breakers
 
 D0 = date(2024, 1, 1)
@@ -47,3 +51,67 @@ def test_breaker_days_match_the_per_prefix_check(seed):
     states = [check_breakers(curve[: end + 1]) for end in range(len(curve))]
     expected = (sum(s.daily_tripped for s in states), sum(s.drawdown_tripped for s in states))
     assert breaker_days(curve) == expected
+
+
+# --- honesty ---
+
+
+@dataclass(frozen=True)
+class _Facts:
+    outcome: CycleOutcome
+    price_unresolved: Mapping[str, str] = field(default_factory=dict)
+    fundamentals_unresolved: Mapping[str, str] = field(default_factory=dict)
+
+
+def _event(kind, *, ticker="AAA", reason=None):
+    return SimEvent(day=D0, kind=kind, ticker=ticker, shares=0, price=0.0, cash=0.0, reason=reason)
+
+
+CURVE = _curve(100.0, 97.0, 104.0)  # one daily trip (-3%), no drawdown trip
+
+
+def test_honesty_counts_distinct_tickers_and_events():
+    reports = (
+        _Facts(
+            CycleOutcome.SUBMITTED,
+            price_unresolved={"AAA": "no_prices", "BBB": "no_sector"},
+            fundamentals_unresolved={"CCC": "no facts"},
+        ),
+        _Facts(
+            CycleOutcome.BLOCKED,
+            price_unresolved={"AAA": "no_prices", "DDD": "no_prices"},
+            fundamentals_unresolved={"CCC": "no facts", "EEE": "no cik"},
+        ),
+        _Facts(CycleOutcome.HALTED_PREFLIGHT),
+    )
+    events = (
+        _event(SimEventKind.DELIST, ticker="XXX"),
+        _event(SimEventKind.DELIST, ticker="XXX"),
+        _event(SimEventKind.REJECT, reason="no open"),
+        _event(SimEventKind.REJECT, reason="no open"),
+        _event(SimEventKind.REJECT, reason="not trading"),
+        _event(SimEventKind.FILL),
+    )
+    result = honesty(reports, events, CURVE, flagged=("Q", "Q", "DOW"))
+    assert result.price_unresolved == {"no_prices": 2, "no_sector": 1}
+    assert result.fundamentals_unresolved == 2
+    assert result.flagged_excluded == 2
+    assert result.stopped_trading == 1
+    assert result.rejects == {"no open": 2, "not trading": 1}
+    assert (result.daily_breaker_days, result.drawdown_breaker_days) == (1, 0)
+    assert result.outcomes == {"blocked": 1, "halted-preflight": 1, "submitted": 1}
+
+
+def test_honesty_of_a_quiet_run_is_all_zero():
+    result = honesty((), (), CURVE, flagged=())
+    assert (result.price_unresolved, result.rejects, result.outcomes) == ({}, {}, {})
+    assert (result.fundamentals_unresolved, result.flagged_excluded, result.stopped_trading) == (
+        0,
+        0,
+        0,
+    )
+
+
+def test_a_reject_without_a_reason_raises():
+    with pytest.raises(ValueError, match="without a reason"):
+        honesty((), (_event(SimEventKind.REJECT),), CURVE, flagged=())

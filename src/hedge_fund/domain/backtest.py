@@ -191,3 +191,21 @@ class TradingCosts:
     turnover: float
     slippage: float
     borrow: float
+
+
+@dataclass(frozen=True)
+class Honesty:
+    """What a backtest dropped, rejected, closed out or would have tripped.
+
+    Ticker counts are distinct tickers over the whole run. ``price_unresolved`` and
+    ``rejects`` are keyed by reason; ``outcomes`` by ``CycleOutcome`` value.
+    """
+
+    price_unresolved: Mapping[str, int]
+    fundamentals_unresolved: int
+    flagged_excluded: int
+    stopped_trading: int
+    rejects: Mapping[str, int]
+    daily_breaker_days: int
+    drawdown_breaker_days: int
+    outcomes: Mapping[str, int]

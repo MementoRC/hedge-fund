@@ -402,6 +402,22 @@ def test_unresolved_names_are_reported_and_only_priced_names_get_fundamentals() 
     assert world.fundamentals.calls == [tuple(ticker for ticker in SECTORS if ticker != "T0")]
 
 
+def test_plan_shortlist_is_the_shortlist_the_cycle_builds() -> None:
+    world = World()
+    report = _run(world, options=DRY)
+    assert cycle.plan_shortlist(world.deps, AS_OF) == report.shortlist
+
+
+def test_plan_data_reports_unresolved_names_without_a_run() -> None:
+    prices = FakeProvider(FRAME, {**SECTORS, "NOPRICE": "Tech"})
+    listed = universe({**SECTORS, "NOSEC": "Tech", "NOPRICE": "Tech"})
+    ciks = {ticker: cik for ticker, cik in listed.ciks.items() if ticker != "T0"}
+    world = World(prices=prices, universe=dataclasses.replace(listed, ciks=ciks))
+    data = cycle.plan_data(world.deps, AS_OF)
+    assert data.price_unresolved == {"NOPRICE": "no_prices", "NOSEC": "no_sector"}
+    assert data.fundamentals_unresolved == {"T0": "no_cik"}
+
+
 def test_a_held_name_missing_from_the_snapshot_is_fetched_and_traded_to_zero() -> None:
     world = World(broker=ScriptedBroker(holdings=(Holding(ticker=HELD_OUTSIDE, shares=100),)))
     report = _run(world, options=DRY)

@@ -3,12 +3,41 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from datetime import date
 
 import pytest
 
-from hedge_fund.domain.backtest import MemberSpan
+from hedge_fund.domain.backtest import MemberSpan, SimCosts, SimEvent, SimEventKind
 from tests.factories import make_frozen_data
+
+
+def test_sim_costs_defaults() -> None:
+    costs = SimCosts()
+    assert costs.slippage_bps == 5.0
+    assert costs.borrow_rate == 0.005
+
+
+@pytest.mark.parametrize("field", ["slippage_bps", "borrow_rate"])
+@pytest.mark.parametrize("value", [-1.0, math.nan, math.inf])
+def test_sim_costs_reject_negative_or_non_finite(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match="must be finite and >= 0"):
+        SimCosts(**{field: value})
+
+
+def test_sim_event_defaults_and_kind_values() -> None:
+    event = SimEvent(date(2024, 1, 2), SimEventKind.FILL, "AAA", 10, 100.0, -1000.0)
+    assert event.cost == 0.0
+    assert event.client_order_id is None
+    assert event.reason is None
+    assert [kind.value for kind in SimEventKind] == [
+        "fill",
+        "reject",
+        "split",
+        "dividend",
+        "delist",
+        "borrow",
+    ]
 
 
 def test_a_span_contains_its_start_and_not_its_end() -> None:

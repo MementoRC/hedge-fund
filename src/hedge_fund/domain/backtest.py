@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
+from enum import StrEnum
 
 import pandas as pd
 
@@ -105,3 +107,55 @@ class FrozenData:
             raise ValueError("opens and closes must share dates and tickers")
         if len(index) and (index[0].date() < self.start or index[-1].date() > self.end):
             raise ValueError(f"prices fall outside {self.start}..{self.end}")
+
+
+@dataclass(frozen=True)
+class SimCosts:
+    """Simulated trading costs: adverse slippage on every fill and the short borrow rate.
+
+    ``borrow_rate`` is per year on the short's market value, accrued ACT/365 over calendar
+    days between closes.
+    """
+
+    slippage_bps: float = 5.0
+    borrow_rate: float = 0.005
+
+    def __post_init__(self) -> None:
+        for name in ("slippage_bps", "borrow_rate"):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be finite and >= 0, got {value}")
+
+
+class SimEventKind(StrEnum):
+    FILL = "fill"
+    REJECT = "reject"
+    SPLIT = "split"
+    DIVIDEND = "dividend"
+    DELIST = "delist"
+    BORROW = "borrow"
+
+
+@dataclass(frozen=True)
+class SimEvent:
+    """One thing the simulated broker did on ``day``.
+
+    The fields by kind:
+    - ``shares`` is signed (+ bought, - sold) for FILL and DELIST, the share change for
+      SPLIT, the holding for DIVIDEND and BORROW, and 0 for REJECT.
+    - ``price`` is the raw fill price for FILL, the close for DELIST and BORROW, the
+      per-share amount for DIVIDEND, and the open (cash in lieu) for SPLIT.
+    - ``cash`` is the signed cash change.
+    - ``cost`` is the slippage paid on a FILL and the borrow paid on a BORROW, 0 otherwise.
+    - ``reason`` is set on REJECT only.
+    """
+
+    day: date
+    kind: SimEventKind
+    ticker: str
+    shares: int
+    price: float
+    cash: float
+    cost: float = 0.0
+    client_order_id: str | None = None
+    reason: str | None = None

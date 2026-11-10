@@ -283,9 +283,13 @@ def _plan(
     None when a budget skip (7c) stops the cycle after the shortlist.
     """
     params = deps.params
-    snapshot, fundamentals = _data(deps, run)
+    run.stage = "data"
+    data = plan_data(deps, run.as_of)
+    run.price_unresolved = data.price_unresolved
+    run.fundamentals_unresolved = data.fundamentals_unresolved
+    snapshot = data.prices
     run.stage = "shortlist"
-    candidates = shortlist(score(snapshot, fundamentals), params=params.shortlist)
+    candidates = select_shortlist(deps, data)
     run.shortlist = candidates
     run.stage = "research"
     research = _research(deps, run, candidates, today=today, options=options)
@@ -429,18 +433,37 @@ def _planned_ids(plan: OrderPlan) -> tuple[str, ...]:
     return tuple(request.client_order_id for request in (*prepared.reducing, *prepared.opening))
 
 
-def _data(deps: CycleDeps, run: _Run) -> tuple[PriceSnapshot, FundamentalsSnapshot]:
+@dataclass(frozen=True)
+class PlanData:
+    """Step 4's output: the priced snapshot, the fundamentals for the priced names, and the gaps."""
+
+    prices: PriceSnapshot
+    fundamentals: FundamentalsSnapshot
+    price_unresolved: Mapping[str, str]
+    fundamentals_unresolved: Mapping[str, str]
+
+
+def plan_data(deps: CycleDeps, as_of: date) -> PlanData:
     """Step 4: prices for the universe, then fundamentals for the names that have prices."""
-    run.stage = "data"
-    prices = build_snapshot(deps.prices, deps.universe.tickers, run.as_of)
-    run.price_unresolved = prices.unresolved
+    prices = build_snapshot(deps.prices, deps.universe.tickers, as_of)
     priced = [ticker for ticker in prices.snapshot.sectors if ticker not in prices.unresolved]
-    splits = deps.prices.splits(priced, run.as_of - SPLIT_LOOKBACK, run.as_of)
+    splits = deps.prices.splits(priced, as_of - SPLIT_LOOKBACK, as_of)
     fundamentals = build_fundamentals_snapshot(
-        deps.fundamentals, priced, run.as_of, ciks=deps.universe.ciks, splits=splits
+        deps.fundamentals, priced, as_of, ciks=deps.universe.ciks, splits=splits
     )
-    run.fundamentals_unresolved = fundamentals.unresolved
-    return prices.snapshot, fundamentals.snapshot
+    return PlanData(
+        prices.snapshot, fundamentals.snapshot, prices.unresolved, fundamentals.unresolved
+    )
+
+
+def select_shortlist(deps: CycleDeps, data: PlanData) -> Shortlist:
+    """Step 5: score the snapshot and pick the candidates."""
+    return shortlist(score(data.prices, data.fundamentals), params=deps.params.shortlist)
+
+
+def plan_shortlist(deps: CycleDeps, as_of: date) -> Shortlist:
+    """The shortlist ``run_cycle`` would build on ``as_of`` (the backtest precomputes it)."""
+    return select_shortlist(deps, plan_data(deps, as_of))
 
 
 def _research(

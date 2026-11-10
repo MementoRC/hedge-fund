@@ -159,3 +159,22 @@ class SimEvent:
     cost: float = 0.0
     client_order_id: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Performance:
+    """Return statistics of one equity curve (risk-free rate 0, 252 trading days a year).
+
+    ``sharpe`` is None when ``volatility`` is 0. ``peak`` and ``trough`` bound the max
+    drawdown (both the start date when there is none).
+    """
+
+    start: date
+    end: date
+    total_return: float
+    cagr: float
+    volatility: float
+    sharpe: float | None
+    max_drawdown: float
+    peak: date
+    trough: date

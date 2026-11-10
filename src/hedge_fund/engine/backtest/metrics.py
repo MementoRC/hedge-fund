@@ -5,9 +5,10 @@ from __future__ import annotations
 import itertools
 import math
 import statistics
+from collections.abc import Iterable
 from datetime import date
 
-from hedge_fund.domain.backtest import Performance
+from hedge_fund.domain.backtest import Performance, SimEvent, SimEventKind, TradingCosts
 from hedge_fund.domain.risk import NavHistory
 from hedge_fund.engine.factors.definitions import TRADING_DAYS
 from hedge_fund.engine.risk.breakers import validate_nav
@@ -49,6 +50,32 @@ def beta(nav: NavHistory, benchmark: NavHistory) -> float | None:
     if variance == 0:
         return None
     return statistics.covariance(ours, theirs) / variance
+
+
+def trading_costs(events: Iterable[SimEvent], nav: NavHistory) -> TradingCosts:
+    """Traded notional, turnover, slippage and borrow over the curve's window."""
+    _validate_curve(nav)
+    window = _in_window(events, nav)
+    fills = [event for event in window if event.kind is SimEventKind.FILL]
+    notional = math.fsum(abs(event.shares) * event.price for event in fills)
+    years = (len(nav) - 1) / TRADING_DAYS
+    return TradingCosts(
+        traded_notional=notional,
+        turnover=notional / statistics.fmean(point.nav for point in nav) / years,
+        slippage=math.fsum(event.cost for event in fills),
+        borrow=math.fsum(event.cost for event in window if event.kind is SimEventKind.BORROW),
+    )
+
+
+def _in_window(events: Iterable[SimEvent], nav: NavHistory) -> tuple[SimEvent, ...]:
+    collected = tuple(events)
+    for event in collected:
+        if not nav[0].date <= event.day <= nav[-1].date:
+            raise ValueError(
+                f"{event.kind} event on {event.day} is outside the curve "
+                f"{nav[0].date}..{nav[-1].date}"
+            )
+    return collected
 
 
 def _max_drawdown(nav: NavHistory) -> tuple[float, date, date]:

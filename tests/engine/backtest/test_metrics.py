@@ -7,8 +7,9 @@ from datetime import date, timedelta
 
 import pytest
 
+from hedge_fund.domain.backtest import SimEvent, SimEventKind
 from hedge_fund.domain.risk import NavPoint
-from hedge_fund.engine.backtest.metrics import beta, daily_returns, performance
+from hedge_fund.engine.backtest.metrics import beta, daily_returns, performance, trading_costs
 
 D0 = date(2024, 1, 1)
 
@@ -97,3 +98,47 @@ def test_beta_needs_the_same_dates():
     shifted = tuple(NavPoint(date=p.date + timedelta(days=1), nav=p.nav) for p in curve)
     with pytest.raises(ValueError, match="same dates"):
         beta(curve, shifted)
+
+
+# --- trading_costs ---
+
+
+def _event(kind, *, day=D0, ticker="AAA", shares=0, price=0.0, cost=0.0, reason=None):
+    return SimEvent(
+        day=day,
+        kind=kind,
+        ticker=ticker,
+        shares=shares,
+        price=price,
+        cash=0.0,
+        cost=cost,
+        reason=reason,
+    )
+
+
+YEAR_FLAT = _curve(*([1000.0] * 253))  # 252 returns = one year, mean NAV 1000
+
+
+def test_trading_costs_hand_computed():
+    events = (
+        _event(SimEventKind.FILL, shares=10, price=50.0, cost=0.25),
+        _event(SimEventKind.FILL, shares=-4, price=25.0, cost=0.0625),
+        _event(SimEventKind.BORROW, cost=0.125),
+        _event(SimEventKind.DIVIDEND, shares=10, price=1.0),
+    )
+    costs = trading_costs(events, YEAR_FLAT)
+    assert costs.traded_notional == 600.0
+    assert costs.turnover == pytest.approx(0.6)
+    assert costs.slippage == 0.3125
+    assert costs.borrow == 0.125
+
+
+def test_no_events_cost_nothing():
+    costs = trading_costs((), YEAR_FLAT)
+    assert (costs.traded_notional, costs.turnover, costs.slippage, costs.borrow) == (0, 0, 0, 0)
+
+
+@pytest.mark.parametrize("offset", [-1, 253])
+def test_an_event_outside_the_curve_raises(offset):
+    with pytest.raises(ValueError, match="outside the curve"):
+        trading_costs((_event(SimEventKind.FILL, day=_day(offset)),), YEAR_FLAT)

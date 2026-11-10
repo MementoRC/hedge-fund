@@ -178,3 +178,16 @@ class Performance:
     max_drawdown: float
     peak: date
     trough: date
+
+
+@dataclass(frozen=True)
+class TradingCosts:
+    """Trading volume and costs of a backtest, in dollars.
+
+    ``turnover`` is two-sided and annualized: traded notional / mean NAV / years.
+    """
+
+    traded_notional: float
+    turnover: float
+    slippage: float
+    borrow: float

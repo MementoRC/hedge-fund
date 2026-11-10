@@ -40,6 +40,17 @@ def performance(nav: NavHistory) -> Performance:
     )
 
 
+def beta(nav: NavHistory, benchmark: NavHistory) -> float | None:
+    """``cov(r, b) / var(b)`` of daily returns; None when the benchmark has no variance."""
+    if [point.date for point in nav] != [point.date for point in benchmark]:
+        raise ValueError("strategy and benchmark curves must have the same dates")
+    ours, theirs = daily_returns(nav), daily_returns(benchmark)
+    variance = statistics.variance(theirs)
+    if variance == 0:
+        return None
+    return statistics.covariance(ours, theirs) / variance
+
+
 def _max_drawdown(nav: NavHistory) -> tuple[float, date, date]:
     peak = nav[0]
     worst, worst_peak, worst_trough = 0.0, nav[0].date, nav[0].date

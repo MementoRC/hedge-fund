@@ -8,7 +8,7 @@ from datetime import date, timedelta
 import pytest
 
 from hedge_fund.domain.risk import NavPoint
-from hedge_fund.engine.backtest.metrics import daily_returns, performance
+from hedge_fund.engine.backtest.metrics import beta, daily_returns, performance
 
 D0 = date(2024, 1, 1)
 
@@ -77,3 +77,23 @@ def test_no_drawdown_dates_both_at_the_start():
     result = performance(_curve(1.0, 2.0, 4.0))
     assert result.max_drawdown == 0.0
     assert (result.peak, result.trough) == (_day(0), _day(0))
+
+
+# --- beta ---
+
+
+def test_beta_of_a_doubled_benchmark_is_two():
+    benchmark = _curve(100.0, 110.0, 99.0, 108.9)  # +10%, -10%, +10%
+    strategy = _curve(100.0, 120.0, 96.0, 115.2)  # +20%, -20%, +20%
+    assert beta(strategy, benchmark) == pytest.approx(2.0)
+
+
+def test_beta_is_none_for_a_benchmark_without_variance():
+    assert beta(_curve(100.0, 125.0, 100.0, 150.0), _curve(1.0, 2.0, 4.0, 8.0)) is None
+
+
+def test_beta_needs_the_same_dates():
+    curve = _curve(1.0, 2.0, 3.0)
+    shifted = tuple(NavPoint(date=p.date + timedelta(days=1), nav=p.nav) for p in curve)
+    with pytest.raises(ValueError, match="same dates"):
+        beta(curve, shifted)

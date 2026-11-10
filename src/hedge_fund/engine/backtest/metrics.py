@@ -1,4 +1,4 @@
-"""Backtest metrics: an equity curve against its benchmark, and trading costs. Pure."""
+"""Backtest metrics: performance against a benchmark, trading costs and honesty counts. Pure."""
 
 from __future__ import annotations
 
@@ -8,10 +8,17 @@ import statistics
 from collections.abc import Iterable
 from datetime import date
 
-from hedge_fund.domain.backtest import Performance, SimEvent, SimEventKind, TradingCosts
+from hedge_fund.domain.backtest import (
+    BacktestMetrics,
+    Performance,
+    SimEvent,
+    SimEventKind,
+    TradingCosts,
+)
 from hedge_fund.domain.risk import NavHistory
+from hedge_fund.engine.backtest.honesty import CycleFacts, honesty
 from hedge_fund.engine.factors.definitions import TRADING_DAYS
-from hedge_fund.engine.risk.breakers import validate_nav
+from hedge_fund.engine.risk.breakers import DEFAULT_BREAKERS, BreakerParams, validate_nav
 
 
 def daily_returns(nav: NavHistory) -> tuple[float, ...]:
@@ -64,6 +71,26 @@ def trading_costs(events: Iterable[SimEvent], nav: NavHistory) -> TradingCosts:
         turnover=notional / statistics.fmean(point.nav for point in nav) / years,
         slippage=math.fsum(event.cost for event in fills),
         borrow=math.fsum(event.cost for event in window if event.kind is SimEventKind.BORROW),
+    )
+
+
+def backtest_metrics(
+    nav: NavHistory,
+    benchmark: NavHistory,
+    events: Iterable[SimEvent],
+    reports: Iterable[CycleFacts],
+    *,
+    flagged: Iterable[str],
+    params: BreakerParams = DEFAULT_BREAKERS,
+) -> BacktestMetrics:
+    """Every metric of a run; ``benchmark`` must share ``nav``'s dates."""
+    events = tuple(events)
+    return BacktestMetrics(
+        strategy=performance(nav),
+        benchmark=performance(benchmark),
+        beta=beta(nav, benchmark),
+        costs=trading_costs(events, nav),
+        honesty=honesty(reports, events, nav, flagged=flagged, params=params),
     )
 
 

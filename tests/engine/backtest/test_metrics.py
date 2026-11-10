@@ -9,7 +9,14 @@ import pytest
 
 from hedge_fund.domain.backtest import SimEvent, SimEventKind
 from hedge_fund.domain.risk import NavPoint
-from hedge_fund.engine.backtest.metrics import beta, daily_returns, performance, trading_costs
+from hedge_fund.engine.backtest.honesty import honesty
+from hedge_fund.engine.backtest.metrics import (
+    backtest_metrics,
+    beta,
+    daily_returns,
+    performance,
+    trading_costs,
+)
 
 D0 = date(2024, 1, 1)
 
@@ -142,3 +149,18 @@ def test_no_events_cost_nothing():
 def test_an_event_outside_the_curve_raises(offset):
     with pytest.raises(ValueError, match="outside the curve"):
         trading_costs((_event(SimEventKind.FILL, day=_day(offset)),), YEAR_FLAT)
+
+
+# --- backtest_metrics ---
+
+
+def test_backtest_metrics_assembles_the_parts():
+    strategy = _curve(100.0, 120.0, 96.0, 115.2)
+    benchmark = _curve(100.0, 110.0, 99.0, 108.9)
+    events = (_event(SimEventKind.FILL, day=_day(1), shares=2, price=10.0, cost=0.01),)
+    result = backtest_metrics(strategy, benchmark, events, (), flagged=("Q",))
+    assert result.strategy == performance(strategy)
+    assert result.benchmark == performance(benchmark)
+    assert result.beta == beta(strategy, benchmark)
+    assert result.costs == trading_costs(events, strategy)
+    assert result.honesty == honesty((), events, strategy, flagged=("Q",))

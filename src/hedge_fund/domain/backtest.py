@@ -209,3 +209,14 @@ class Honesty:
     daily_breaker_days: int
     drawdown_breaker_days: int
     outcomes: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class BacktestMetrics:
+    """The summary of one backtest run: performance vs the benchmark, costs, honesty."""
+
+    strategy: Performance
+    benchmark: Performance
+    beta: float | None
+    costs: TradingCosts
+    honesty: Honesty

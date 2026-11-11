@@ -220,3 +220,32 @@ class BacktestMetrics:
     beta: float | None
     costs: TradingCosts
     honesty: Honesty
+
+
+RESIDUAL_BIASES: tuple[str, ...] = (
+    "Sectors are current, not historical.",
+    "yfinance coverage of delisted names is incomplete (see the unpriced count).",
+    "Membership accuracy depends on its source dataset.",
+    "Late removals: dataset dates can trail the effective date, so a removed stock may "
+    "be held a few extra days (late additions never look ahead).",
+    "Ticker reuse not listed in the flagged-spans file may remain: a reused symbol can "
+    "return another company's prices, CIK and facts.",
+    "With monthly rebalances the breakers act only on the one-day move at cycle time; "
+    "the would-trip breaker-day counts are the main evidence of breaker behaviour.",
+)
+
+
+@dataclass(frozen=True)
+class BacktestReport:
+    """The summary of one replay, written once the run completes."""
+
+    run_id: str
+    store_digest: str
+    start: date
+    end: date
+    cash: float
+    costs: SimCosts
+    trading_days: int
+    rebalances: int
+    metrics: BacktestMetrics
+    biases: tuple[str, ...] = RESIDUAL_BIASES

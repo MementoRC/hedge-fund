@@ -2,16 +2,17 @@
 ``hedge-fund settle`` records what it filled (Layer 7a) and ``hedge-fund attribute`` splits
 the book's P&L (Layer 7b) and ``hedge-fund verify`` scores the stored research ratings
 against what followed (Layer 7d). ``hedge-fund backtest snapshot`` freezes point-in-time
-data for the offline backtest (Layer 8).
+data for the offline backtest and ``hedge-fund backtest run`` replays it (Layer 8).
 
 This is the only composition root: ``build_deps``, ``build_settle_deps``,
-``build_attribute_deps``, ``build_verify_deps`` and ``build_snapshot_sources`` build the real
-adapters and ``clock`` is the only clock read.
+``build_attribute_deps``, ``build_verify_deps``, ``build_snapshot_sources`` and
+``build_backtest_deps`` (simulated broker only) build the adapters and ``clock`` is the only clock read.
 Tests replace them. Paper trading only.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -21,15 +22,24 @@ import typer
 
 from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.adapters.approval import ConsoleApprovalGate
+from hedge_fund.adapters.approval.auto import AutoApprovalGate
 from hedge_fund.adapters.attribution import JsonAttributionReportStore
 from hedge_fund.adapters.attribution.json_report import ATTRIBUTIONS_DIR
+from hedge_fund.adapters.backtest.report import save_backtest_report
 from hedge_fund.adapters.broker import AlpacaPaperBroker
+from hedge_fund.adapters.broker.simulated import SimulatedBroker, SimulationError
 from hedge_fund.adapters.cost import PRICES_FILE, load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
 from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
-from hedge_fund.adapters.data.frozen_store import check_fresh_root, write_store
+from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
+from hedge_fund.adapters.data.frozen_store import (
+    MANIFEST,
+    check_fresh_root,
+    load_store,
+    write_store,
+)
 from hedge_fund.adapters.data.sec_sources import SecLookups
 from hedge_fund.adapters.data.yfinance_history import YFinanceHistory
 from hedge_fund.adapters.data.yfinance_provider import YFinanceProvider
@@ -39,6 +49,7 @@ from hedge_fund.adapters.ledger import (
     JsonSettlementReportStore,
 )
 from hedge_fund.adapters.ledger.settlement_report import SETTLEMENTS_DIR
+from hedge_fund.adapters.research.neutral import NeutralResearcher
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import ResearchConfig, TradingAgentsResearcher
 from hedge_fund.adapters.verification import JsonVerificationReportStore
@@ -49,7 +60,14 @@ from hedge_fund.domain.attribution import (
     AttributionReport,
     AttributionTotals,
 )
-from hedge_fund.domain.backtest import MEMBERSHIP_FLOOR, FrozenData
+from hedge_fund.domain.backtest import (
+    MEMBERSHIP_FLOOR,
+    BacktestReport,
+    FrozenData,
+    Honesty,
+    Performance,
+    SimCosts,
+)
 from hedge_fund.domain.cost import BudgetPlan, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
@@ -62,6 +80,7 @@ from hedge_fund.domain.verification import (
     VerificationReport,
     VerifyOutcome,
 )
+from hedge_fund.engine.backtest.calendar import in_window, rebalance_days, trading_days
 from hedge_fund.engine.backtest.membership import (
     ever_members,
     parse_flagged_spans,
@@ -71,6 +90,7 @@ from hedge_fund.engine.execution import MARKET_TZ
 from hedge_fund.ports.broker import BrokerError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.services.attribute import AttributeDeps, AttributionSaveError, run_attribute
+from hedge_fund.services.backtest import BacktestDeps, BacktestError, run_backtest
 from hedge_fund.services.backtest_snapshot import SnapshotSources, build_frozen_data
 from hedge_fund.services.cycle import (
     CycleDeps,
@@ -88,6 +108,7 @@ UNIVERSE = "sp500"
 MEMBERSHIP = "sp500_membership"
 FLAGGED_SPANS = "sp500_flagged_spans"
 DEFAULT_SNAPSHOT_START = date(2010, 1, 1)
+DEFAULT_BACKTEST_CASH = 100_000.0
 _FAILED_LEGS = frozenset({SubmitStatus.ERROR, SubmitStatus.REJECTED})
 _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
     SettleOutcome.CLEAN: 0,
@@ -192,6 +213,31 @@ def build_verify_deps(root: Path) -> VerifyDeps:
         fills=JsonFillStore(root),
         data=default_provider(root / "cache" / "prices", UNIVERSE),
         reports=JsonVerificationReportStore(root),
+    )
+
+
+def build_backtest_deps(
+    root: Path, data: FrozenData, *, store_digest: str, cash: float, costs: SimCosts
+) -> BacktestDeps:
+    """The backtest's composition root: a SimulatedBroker over ``data`` and nothing else.
+
+    No Alpaca broker, vendor or LLM is built here, so no real or paper-live broker can reach
+    a backtest. Every file the replay writes is under ``root``.
+    """
+    return BacktestDeps(
+        data=data,
+        store_digest=store_digest,
+        cash=cash,
+        costs=costs,
+        broker=SimulatedBroker(data, cash, costs),
+        snapshot_store=JsonSnapshotStore(root),
+        report_store=JsonCycleReportStore(root),
+        research_store=JsonResearchStore(root),
+        gate=AutoApprovalGate(),
+        prices=lambda day: FrozenDataProvider(data, day),
+        fundamentals=FrozenFundamentalsProvider(data),
+        researcher=NeutralResearcher,
+        params=CycleParams(),
     )
 
 
@@ -457,6 +503,123 @@ def backtest_snapshot(
     except Exception as exc:
         _fail(f"{type(exc).__name__}: {exc}", exc)
     typer.echo(_snapshot_summary(data, root, digest))
+
+
+@backtest_app.command("run")
+def backtest_run(
+    store: Annotated[
+        Path, typer.Option("--store", help="A frozen store from `backtest snapshot`.")
+    ],
+    root: Annotated[Path, typer.Option("--root", help="Run root; must be absent or empty.")],
+    start: Annotated[
+        datetime,
+        typer.Option("--start", formats=["%Y-%m-%d"], help="First day (default 2012-01-01)."),
+    ] = datetime(2012, 1, 1),  # noqa: B008, DTZ001
+    end: Annotated[
+        datetime | None,
+        typer.Option("--end", formats=["%Y-%m-%d"], help="Last day. Default: the store's end."),
+    ] = None,
+    cash: Annotated[float, typer.Option("--cash", help="Starting cash.")] = DEFAULT_BACKTEST_CASH,
+    slippage_bps: Annotated[float, typer.Option("--slippage-bps")] = SimCosts.slippage_bps,
+    borrow_rate: Annotated[float, typer.Option("--borrow-rate")] = SimCosts.borrow_rate,
+) -> None:
+    """Replay the unchanged cycle over a frozen store with a simulated paper broker.
+
+    Offline: no network, no LLM, no broker credentials. Cycles run on the first trading day of
+    each month. Exit 0 with the summary and a report under --root, 1 on any failure.
+    """
+    try:
+        data = load_store(store)
+        check_fresh_root(root)
+        _refuse_root_in_store(root, store)
+        costs = SimCosts(slippage_bps=slippage_bps, borrow_rate=borrow_rate)
+        digest = hashlib.sha256((store / MANIFEST).read_bytes()).hexdigest()
+    except (ValueError, OSError) as exc:
+        _fail(f"cannot start the backtest: {exc}", exc)
+    first, last = start.date(), data.end if end is None else end.date()
+    try:
+        deps = build_backtest_deps(root, data, store_digest=digest, cash=cash, costs=costs)
+        report = run_backtest(deps, start=first, end=last)
+        path = save_backtest_report(root, report)
+    except (BacktestError, SimulationError) as exc:
+        _fail(str(exc), exc)
+    except Exception as exc:
+        _fail(f"{type(exc).__name__}: {exc}", exc)
+    typer.echo(_backtest_summary(report, data, path))
+
+
+def _refuse_root_in_store(root: Path, store: Path) -> None:
+    resolved = root.resolve()
+    if resolved == store.resolve() or store.resolve() in resolved.parents:
+        raise ValueError(f"--root {root} is the store or inside it")
+
+
+def _backtest_summary(report: BacktestReport, data: FrozenData, path: Path) -> str:
+    metrics = report.metrics
+    lines = [
+        f"backtest run {report.run_id}",
+        f"{report.start} to {report.end}, {report.trading_days} trading days, "
+        f"{report.rebalances} rebalances",
+    ]
+    note = _first_rebalance_note(report, data)
+    if note:
+        lines.append(note)
+    lines += _section(
+        "strategy vs SPY",
+        [
+            _performance_line("strategy", metrics.strategy),
+            _performance_line("SPY", metrics.benchmark),
+            f"beta {_number(metrics.beta)}",
+        ],
+    )
+    costs = metrics.costs
+    lines += _section(
+        "costs",
+        [
+            f"turnover {costs.turnover:.2f}x a year, traded ${costs.traded_notional:,.0f}",
+            f"slippage ${costs.slippage:,.2f}, borrow ${costs.borrow:,.2f}",
+        ],
+    )
+    lines += _section("honesty", _honesty_lines(metrics.honesty))
+    lines += _section("residual biases", list(report.biases))
+    lines.append(f"report {path}")
+    return "\n".join(lines)
+
+
+def _first_rebalance_note(report: BacktestReport, data: FrozenData) -> str | None:
+    calendar = trading_days(data.closes.index)
+    window = set(in_window(calendar, report.start, report.end))
+    firsts = sorted(rebalance_days(calendar) & window)
+    if not firsts or firsts[0] == report.start:
+        return None
+    return f"first rebalance on {firsts[0]}"
+
+
+def _performance_line(name: str, perf: Performance) -> str:
+    return (
+        f"{name}: CAGR {_percent(perf.cagr)}, volatility {_percent(perf.volatility)}, "
+        f"Sharpe {_number(perf.sharpe)}, max drawdown {_percent(perf.max_drawdown)}"
+    )
+
+
+def _number(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}"
+
+
+def _counts(counts: Mapping[str, int]) -> str:
+    return ", ".join(f"{key} {count}" for key, count in sorted(counts.items())) or "none"
+
+
+def _honesty_lines(honesty: Honesty) -> list[str]:
+    return [
+        f"price unresolved: {_counts(honesty.price_unresolved)}",
+        f"fundamentals unresolved {honesty.fundamentals_unresolved}, "
+        f"flagged excluded {honesty.flagged_excluded}, stopped trading {honesty.stopped_trading}",
+        f"rejects: {_counts(honesty.rejects)}",
+        f"breaker days would trip: daily {honesty.daily_breaker_days}, "
+        f"drawdown {honesty.drawdown_breaker_days}",
+        f"cycle outcomes: {_counts(honesty.outcomes)}",
+    ]
 
 
 def _fail(message: str, cause: BaseException) -> NoReturn:

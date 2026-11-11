@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -10,16 +13,37 @@ import pytest
 from typer.testing import CliRunner, Result
 
 from hedge_fund import cli
+from hedge_fund.adapters.account import JsonSnapshotStore
+from hedge_fund.adapters.approval.auto import AutoApprovalGate
+from hedge_fund.adapters.broker import AlpacaPaperBroker
+from hedge_fund.adapters.broker.simulated import SimulatedBroker
+from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
-from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store
+from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
+from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
 from hedge_fund.adapters.data.sec_sources import SecLookups
 from hedge_fund.adapters.data.yfinance_history import YFinanceHistory
-from hedge_fund.domain.backtest import FlaggedSpan, MemberSpan
+from hedge_fund.adapters.research.neutral import NeutralResearcher
+from hedge_fund.adapters.research.store import JsonResearchStore
+from hedge_fund.domain.backtest import (
+    RESIDUAL_BIASES,
+    BacktestMetrics,
+    BacktestReport,
+    FlaggedSpan,
+    Honesty,
+    MemberSpan,
+    Performance,
+    SimCosts,
+    TradingCosts,
+)
+from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.ports.data import DataProviderError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
+from hedge_fund.services.backtest import BacktestDeps
 from hedge_fund.services.backtest_snapshot import SnapshotSources
+from hedge_fund.services.cycle import CycleParams
 from hedge_fund.universe import parse_universe
-from tests.factories import make_facts
+from tests.factories import make_facts, make_frozen_data
 from tests.fakes import FakeFundamentalsProvider
 
 NOW = datetime(2024, 1, 16, 22, 0, tzinfo=UTC)  # 17:00 in New York: yesterday is 2024-01-15
@@ -212,6 +236,267 @@ def test_build_snapshot_sources_needs_the_sec_user_agent(monkeypatch: pytest.Mon
 
 
 cli_build_snapshot_sources = cli.build_snapshot_sources
+
+
+def _write(root: Path) -> Path:
+    write_store(root, make_frozen_data(), created_at=NOW)
+    return root
+
+
+def _run(*args: str) -> Result:
+    return runner.invoke(cli.app, ["backtest", "run", *args])
+
+
+def _performance(cagr: float) -> Performance:
+    return Performance(
+        start=date(2024, 1, 1),
+        end=date(2024, 2, 9),
+        total_return=0.01,
+        cagr=cagr,
+        volatility=0.2,
+        sharpe=None,
+        max_drawdown=-0.05,
+        peak=date(2024, 1, 2),
+        trough=date(2024, 1, 3),
+    )
+
+
+def _report(run_id: str = "2024-01-01_2024-02-09_abc123def456") -> BacktestReport:
+    honesty = Honesty(
+        price_unresolved={"no closes": 2},
+        fundamentals_unresolved=3,
+        flagged_excluded=1,
+        stopped_trading=4,
+        rejects={"no cash": 5},
+        daily_breaker_days=6,
+        drawdown_breaker_days=7,
+        outcomes={"submitted": 2},
+    )
+    metrics = BacktestMetrics(
+        strategy=_performance(0.11),
+        benchmark=_performance(0.22),
+        beta=None,
+        costs=TradingCosts(traded_notional=1000.0, turnover=1.5, slippage=2.0, borrow=3.0),
+        honesty=honesty,
+    )
+    return BacktestReport(
+        run_id=run_id,
+        store_digest="d",
+        start=date(2024, 1, 1),
+        end=date(2024, 2, 9),
+        cash=100000.0,
+        costs=SimCosts(),
+        trading_days=30,
+        rebalances=2,
+        metrics=metrics,
+    )
+
+
+@pytest.fixture
+def stubbed(monkeypatch: pytest.MonkeyPatch) -> list[BacktestDeps]:
+    seen: list[BacktestDeps] = []
+
+    def fake(deps: BacktestDeps, *, start: date, end: date) -> BacktestReport:
+        seen.append(deps)
+        return dataclasses.replace(_report(), start=start, end=end)
+
+    monkeypatch.setattr(cli, "run_backtest", fake)
+    return seen
+
+
+def test_run_prints_the_summary_and_writes_the_report(
+    stubbed: list[BacktestDeps], tmp_path: Path
+) -> None:
+    store, root = _write(tmp_path / "store"), tmp_path / "run"
+    result = _run("--store", str(store), "--root", str(root), "--start", "2024-01-01")
+    assert result.exit_code == 0, result.output
+    report_file = root / "backtest" / "2024-01-01_2024-02-09_abc123def456.json"
+    assert report_file.exists()
+    out = result.stdout
+    assert "run 2024-01-01_2024-02-09_abc123def456" in out
+    assert "2024-01-01 to 2024-02-09, 30 trading days, 2 rebalances" in out
+    assert "first rebalance" not in out
+    assert "CAGR" in out
+    assert "no closes 2" in out
+    assert RESIDUAL_BIASES[0] in out
+    assert str(report_file) in out
+    assert stubbed[0].cash == 100000.0
+    assert stubbed[0].data.end == date(2024, 2, 9)
+
+
+def test_run_notes_a_mid_month_start(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-10"]
+    result = _run(*args)
+    assert result.exit_code == 0, result.output
+    assert "first rebalance on 2024-02-01" in result.stdout
+
+
+def test_run_a_digest_mismatch_exits_1(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    victim = next(p for p in sorted(store.rglob("*")) if p.is_file() and p.name != MANIFEST)
+    victim.write_bytes(victim.read_bytes() + b"x")
+    result = _run("--store", str(store), "--root", str(tmp_path / "run"))
+    assert result.exit_code == 1
+    assert "digest" in result.stderr
+    assert stubbed == []
+
+
+def test_run_a_missing_manifest_exits_1(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    (tmp_path / "store").mkdir()
+    result = _run("--store", str(tmp_path / "store"), "--root", str(tmp_path / "run"))
+    assert result.exit_code == 1
+    assert "error:" in result.stderr
+
+
+def test_run_a_non_empty_root_exits_1(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    store, root = _write(tmp_path / "store"), tmp_path / "run"
+    root.mkdir()
+    (root / "old.txt").write_text("x", encoding="utf-8")
+    result = _run("--store", str(store), "--root", str(root))
+    assert result.exit_code == 1
+    assert "not empty" in result.stderr
+
+
+def test_run_a_root_inside_the_store_exits_1(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    result = _run("--store", str(store), "--root", str(store / "inner"))
+    assert result.exit_code == 1
+    assert "inside" in result.stderr
+
+
+def test_run_the_store_itself_as_root_exits_1(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    result = _run("--store", str(store), "--root", str(store))
+    assert result.exit_code == 1
+    assert stubbed == []
+
+
+def test_run_a_negative_slippage_exits_1(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--slippage-bps", "-1"]
+    result = _run(*args)
+    assert result.exit_code == 1
+    assert "slippage_bps" in result.stderr
+
+
+def _clean_failure(result: Result) -> None:
+    assert result.exit_code == 1, result.output
+    assert result.stderr.startswith("error:")
+    assert "Traceback" not in result.output
+    assert not isinstance(result.exception, (KeyError, AttributeError, TypeError))
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "fragment"),
+    [
+        ("--cash", "0", "cash"),
+        ("--cash", "-5", "cash"),
+        ("--borrow-rate", "-0.01", "borrow_rate"),
+    ],
+)
+def test_run_a_bad_option_exits_1_cleanly(
+    stubbed: list[BacktestDeps], tmp_path: Path, flag: str, value: str, fragment: str
+) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-01"]
+    result = _run(*args, flag, value)
+    _clean_failure(result)
+    assert fragment in result.stderr
+    assert stubbed == []
+
+
+def test_run_an_end_before_the_start_exits_1_cleanly(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-02-01"]
+    result = _run(*args, "--end", "2024-01-15")
+    _clean_failure(result)
+
+
+def test_run_an_end_after_the_store_end_exits_1_cleanly(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-01"]
+    result = _run(*args, "--end", "2024-02-10")
+    _clean_failure(result)
+    assert "outside the store" in result.stderr
+
+
+def _corrupt_manifest(store: Path, corruption: str) -> None:
+    """Break a store the manifest-key check and the digest check both let through."""
+    path = store / MANIFEST
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if corruption == "coverage":
+        manifest["coverage"] = {}
+    elif corruption == "entry":
+        del manifest["files"]["opens"]["sha256"]
+    else:
+        entry = manifest["files"]["facts"]
+        body = b"not parquet"
+        digest = hashlib.sha256(body).hexdigest()
+        name = f"facts_{digest[:12]}.parquet"
+        (store / name).write_bytes(body)
+        entry.update(name=name, sha256=digest)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize("corruption", ["coverage", "entry", "parquet"])
+def test_run_a_corrupt_store_exits_1_cleanly(
+    stubbed: list[BacktestDeps], tmp_path: Path, corruption: str
+) -> None:
+    store = _write(tmp_path / "store")
+    _corrupt_manifest(store, corruption)
+    result = _run("--store", str(store), "--root", str(tmp_path / "run"))
+    _clean_failure(result)
+    assert "cannot start the backtest" in result.stderr
+    assert stubbed == []
+
+
+def test_run_a_start_before_the_floor_exits_1_from_the_real_guard(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    result = _run("--store", str(store), "--root", str(tmp_path / "run"), "--start", "2007-12-31")
+    assert result.exit_code == 1
+    assert "2008-01-01" in result.stderr
+
+
+def test_run_the_default_start_outside_the_store_exits_1(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    result = _run("--store", str(store), "--root", str(tmp_path / "run"))
+    assert result.exit_code == 1
+    assert "outside the store" in result.stderr
+
+
+def test_run_an_unexpected_failure_exits_1(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(deps: BacktestDeps, *, start: date, end: date) -> BacktestReport:
+        raise RuntimeError("kaput")
+
+    monkeypatch.setattr(cli, "run_backtest", boom)
+    store = _write(tmp_path / "store")
+    result = _run("--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-01")
+    assert result.exit_code == 1
+    assert "RuntimeError: kaput" in result.stderr
+
+
+def test_build_backtest_deps_is_simulated_only_and_rooted_at_root(tmp_path: Path) -> None:
+    data = make_frozen_data()
+    deps = cli.build_backtest_deps(
+        tmp_path, data, store_digest="d", cash=5000.0, costs=SimCosts(slippage_bps=1.0)
+    )
+    assert type(deps.broker) is SimulatedBroker
+    assert not isinstance(deps.broker, AlpacaPaperBroker)
+    assert deps.cash == 5000.0
+    assert deps.costs == SimCosts(slippage_bps=1.0)
+    assert isinstance(deps.snapshot_store, JsonSnapshotStore)
+    assert isinstance(deps.report_store, JsonCycleReportStore)
+    assert isinstance(deps.research_store, JsonResearchStore)
+    assert isinstance(deps.gate, AutoApprovalGate)
+    assert isinstance(deps.fundamentals, FrozenFundamentalsProvider)
+    assert deps.params == CycleParams()
+    day = date(2024, 1, 10)
+    provider = deps.prices(day)
+    assert isinstance(provider, FrozenDataProvider)
+    assert provider.as_of == day
+    shortlist = Shortlist(as_of=day, candidates=(), trimmed={})
+    assert isinstance(deps.researcher(shortlist), NeutralResearcher)
 
 
 def _replace_history(sources: SnapshotSources, history: object) -> SnapshotSources:

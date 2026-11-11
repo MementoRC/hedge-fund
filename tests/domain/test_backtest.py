@@ -8,8 +8,29 @@ from datetime import date
 
 import pytest
 
-from hedge_fund.domain.backtest import MemberSpan, SimCosts, SimEvent, SimEventKind
+from hedge_fund.domain.backtest import (
+    RESIDUAL_BIASES,
+    MemberSpan,
+    SimCosts,
+    SimEvent,
+    SimEventKind,
+)
 from tests.factories import make_frozen_data
+
+
+def test_residual_biases_name_each_known_limitation() -> None:
+    assert RESIDUAL_BIASES
+    assert isinstance(RESIDUAL_BIASES, tuple)
+    assert all(isinstance(entry, str) for entry in RESIDUAL_BIASES)
+    for keyword in (
+        "Sectors",
+        "yfinance",
+        "Membership",
+        "Late removals",
+        "Ticker reuse",
+        "breakers",
+    ):
+        assert any(keyword in entry for entry in RESIDUAL_BIASES), keyword
 
 
 def test_sim_costs_defaults() -> None:

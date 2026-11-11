@@ -12,6 +12,8 @@ import pandas as pd
 
 from hedge_fund.domain.ledger import Split
 
+MEMBERSHIP_FLOOR = date(2008, 1, 1)  # decision D3: membership is reliable from here
+
 
 @dataclass(frozen=True)
 class Dividend:

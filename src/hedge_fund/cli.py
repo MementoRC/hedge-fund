@@ -49,7 +49,7 @@ from hedge_fund.domain.attribution import (
     AttributionReport,
     AttributionTotals,
 )
-from hedge_fund.domain.backtest import FrozenData
+from hedge_fund.domain.backtest import MEMBERSHIP_FLOOR, FrozenData
 from hedge_fund.domain.cost import BudgetPlan, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
@@ -88,7 +88,6 @@ UNIVERSE = "sp500"
 MEMBERSHIP = "sp500_membership"
 FLAGGED_SPANS = "sp500_flagged_spans"
 DEFAULT_SNAPSHOT_START = date(2010, 1, 1)
-MEMBERSHIP_FLOOR = date(2008, 1, 1)  # decision D3: membership is reliable from here
 _FAILED_LEGS = frozenset({SubmitStatus.ERROR, SubmitStatus.REJECTED})
 _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
     SettleOutcome.CLEAN: 0,

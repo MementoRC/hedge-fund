@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -26,9 +26,11 @@ from hedge_fund.adapters.broker.simulated import SimulatedBroker
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.frozen_providers import FrozenFundamentalsProvider
 from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
+from hedge_fund.adapters.research.store import load_research
 from hedge_fund.domain.backtest import BacktestReport, FrozenData, SimCosts
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
+from hedge_fund.domain.research import ResearchResult
 from hedge_fund.domain.shortlist import Side
 from hedge_fund.services.account import load_nav_history
 from hedge_fund.services.backtest import backtest_run_id, run_backtest
@@ -50,7 +52,8 @@ GOLDEN_BENCHMARK_RETURN = 0.1412692374887463
 GOLDEN_TRADED_NOTIONAL = 250780.70164808145
 GOLDEN_SLIPPAGE = 125.3926837892853
 GOLDEN_BORROW = 34.90168829395957
-GOLDEN_RUN_ID = "2024-01-10_2024-03-08_c6eda840a31d"
+GOLDEN_STORE_DIGEST = "6fa8739dad872645e7752901a53d601558d8919287e197171ee7dfba864d0bcd"
+GOLDEN_RUN_ID = "2024-01-10_2024-03-08_da376fb95d23"
 GOLDEN_FIRST_ORDERS = {
     "AE1": ("sell_short", 20),
     "AE2": ("sell_short", 56),
@@ -119,6 +122,11 @@ def _replay(store: Path, root: Path, *, end: date = END) -> Replay:
     report = run_backtest(deps, start=START, end=end)
     cycles = JsonCycleReportStore(root).load_all().reports
     return Replay(root, deps.broker, report, cycles, backtest_run_id(deps, START, end))
+
+
+def _research(root: Path) -> dict[str, ResearchResult]:
+    """Every saved research record by file name, decoded (``created_at`` is not part of it)."""
+    return {p.name: load_research(p) for p in sorted((root / "research").glob("*.json"))}
 
 
 def _tickers(cycle: CycleReport) -> dict[str, Side]:
@@ -235,6 +243,23 @@ def test_a_filing_made_after_a_rebalance_does_not_reach_that_cycle(
     assert world.POISON_TICKER in {h.ticker for h in held_at_second.holdings}
 
 
+def test_a_filing_made_on_a_rebalance_day_reaches_only_the_next_cycle(store: Path) -> None:
+    data = load_store(store)
+    provider = FrozenFundamentalsProvider(data)
+    ticker = world.BOUNDARY_TICKER
+
+    def retained_earnings(day: date) -> float:
+        build = build_fundamentals_snapshot(
+            provider, [ticker], day, ciks=data.ciks, splits=data.splits
+        )
+        return float(build.snapshot.current.at[ticker, "retained_earnings"])
+
+    # filed 2024-03-01 == the second rebalance day: not visible then, visible the day after
+    assert world.BOUNDARY_FILED.date() == SECOND
+    assert retained_earnings(SECOND) == 300.0
+    assert retained_earnings(SECOND + timedelta(days=1)) == -2_000_000.0
+
+
 def test_the_membership_change_is_effective_on_the_rebalance_day(api: Replay) -> None:
     first, second = _tickers(api.cycles[0]), _tickers(api.cycles[1])
     assert world.REMOVED in first
@@ -259,10 +284,13 @@ def test_the_cli_run_and_the_api_run_are_identical(
     out, cli_root = cli_run
     assert api.run_id == GOLDEN_RUN_ID == api.report.run_id
     assert f"backtest run {api.run_id}" in out
-    assert api.report.store_digest == _digest(store)
+    assert api.report.store_digest == GOLDEN_STORE_DIGEST
     # created_at stamps in the account and research stores use the wall clock by design, so
     # compare decoded records and the run and summary files, which carry none
     assert JsonCycleReportStore(cli_root).load_all().reports == api.cycles
+    api_research = _research(api.root)
+    assert api_research
+    assert _research(cli_root) == api_research
     assert JsonSnapshotStore(cli_root).snapshots() == JsonSnapshotStore(api.root).snapshots()
     save_backtest_report(api.root, api.report)
     for name in sorted(p.name for p in (api.root / "runs").glob("*.json")):

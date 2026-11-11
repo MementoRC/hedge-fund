@@ -530,10 +530,13 @@ def backtest_run(
     """
     try:
         data = load_store(store)
+        digest = hashlib.sha256((store / MANIFEST).read_bytes()).hexdigest()
+    except Exception as exc:  # a corrupt store can raise KeyError or a parquet reader error
+        _fail(f"cannot start the backtest: {type(exc).__name__}: {exc}", exc)
+    try:
         check_fresh_root(root)
         _refuse_root_in_store(root, store)
         costs = SimCosts(slippage_bps=slippage_bps, borrow_rate=borrow_rate)
-        digest = hashlib.sha256((store / MANIFEST).read_bytes()).hexdigest()
     except (ValueError, OSError) as exc:
         _fail(f"cannot start the backtest: {exc}", exc)
     first, last = start.date(), data.end if end is None else end.date()

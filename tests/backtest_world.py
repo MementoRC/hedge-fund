@@ -9,7 +9,10 @@ a dozen names. Events:
 - DELIST_TICKER's prices stop after 2024-02-27 (its membership ends 2024-02-28);
 - REMOVED leaves the index and ADDED joins it on the rebalance day 2024-03-01;
 - POISON_TICKER's FY2023 10-K (the late one) reports a deep accumulated deficit, so the
-  Altman gate drops it from every cycle that can see that filing, and from no earlier one.
+  Altman gate drops it from every cycle that can see that filing, and from no earlier one;
+- BOUNDARY_TICKER's FY2023 10-K is filed on 2024-03-01, the second rebalance day itself: the
+  strict ``filed < as_of`` keeps it from that cycle, so it changes no golden, and it shows
+  from the next day on.
 """
 
 from __future__ import annotations
@@ -46,6 +49,8 @@ LAST_TRADED = date(2024, 2, 27)
 DELIST_ON = date(2024, 2, 28)
 MEMBERSHIP_CHANGE = date(2024, 3, 1)
 LATE_FILED = pd.Timestamp("2024-02-20")
+BOUNDARY_TICKER = "CH2"
+BOUNDARY_FILED = pd.Timestamp("2024-03-01")  # filed ON the second rebalance day: not yet visible
 SHIFT_TO_2023 = pd.Timedelta(days=-1004)  # E 2026-06-30 -> 2023-09-30, filed 2023-11-01
 POISONED_METRIC_TAG = "us-gaap:RetainedEarningsAccumulatedDeficit"
 
@@ -70,20 +75,29 @@ def _prices(days: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
     return opens, frame
 
 
+def _late_filing(
+    early: pd.DataFrame, ticker: str, filed: pd.Timestamp, value: float
+) -> pd.DataFrame:
+    """``ticker``'s next FY10-K, filed ``filed``, with a retained-earnings deficit of ``value``."""
+    late = early[early["ticker"] == ticker].copy()
+    for column in ("start", "end"):
+        late[column] = late[column] + pd.Timedelta(days=92)
+    late["filed"] = filed
+    late["accn"] = late["accn"] + "-fy23"
+    deficit = late["tag"] == POISONED_METRIC_TAG
+    late.loc[deficit & (late["end"] == late["end"].max()), "value"] = value
+    return late
+
+
 def _facts() -> pd.DataFrame:
-    """Every name's passing filings, all filed 2023-11-01, plus POISON_TICKER's late 10-K."""
+    """Every name's passing filings, all filed 2023-11-01, plus the two late 10-Ks."""
     tickers = sorted(SECTORS)
     early = make_passing_facts(tickers)
     for column in ("start", "end", "filed"):
         early[column] = early[column] + SHIFT_TO_2023
-    late = early[early["ticker"] == POISON_TICKER].copy()
-    for column in ("start", "end"):
-        late[column] = late[column] + pd.Timedelta(days=92)
-    late["filed"] = LATE_FILED
-    late["accn"] = late["accn"] + "-fy23"
-    deficit = (late["ticker"] == POISON_TICKER) & (late["tag"] == POISONED_METRIC_TAG)
-    late.loc[deficit & (late["end"] == late["end"].max()), "value"] = -1_000_000.0
-    return pd.concat([early, late], ignore_index=True)
+    late = _late_filing(early, POISON_TICKER, LATE_FILED, -1_000_000.0)
+    boundary = _late_filing(early, BOUNDARY_TICKER, BOUNDARY_FILED, -2_000_000.0)
+    return pd.concat([early, late, boundary], ignore_index=True)
 
 
 def make_golden_data() -> FrozenData:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -376,6 +378,77 @@ def test_run_a_negative_slippage_exits_1(stubbed: list[BacktestDeps], tmp_path: 
     result = _run(*args)
     assert result.exit_code == 1
     assert "slippage_bps" in result.stderr
+
+
+def _clean_failure(result: Result) -> None:
+    assert result.exit_code == 1, result.output
+    assert result.stderr.startswith("error:")
+    assert "Traceback" not in result.output
+    assert not isinstance(result.exception, (KeyError, AttributeError, TypeError))
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "fragment"),
+    [
+        ("--cash", "0", "cash"),
+        ("--cash", "-5", "cash"),
+        ("--borrow-rate", "-0.01", "borrow_rate"),
+    ],
+)
+def test_run_a_bad_option_exits_1_cleanly(
+    stubbed: list[BacktestDeps], tmp_path: Path, flag: str, value: str, fragment: str
+) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-01"]
+    result = _run(*args, flag, value)
+    _clean_failure(result)
+    assert fragment in result.stderr
+    assert stubbed == []
+
+
+def test_run_an_end_before_the_start_exits_1_cleanly(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-02-01"]
+    result = _run(*args, "--end", "2024-01-15")
+    _clean_failure(result)
+
+
+def test_run_an_end_after_the_store_end_exits_1_cleanly(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-01"]
+    result = _run(*args, "--end", "2024-02-10")
+    _clean_failure(result)
+    assert "outside the store" in result.stderr
+
+
+def _corrupt_manifest(store: Path, corruption: str) -> None:
+    """Break a store the manifest-key check and the digest check both let through."""
+    path = store / MANIFEST
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if corruption == "coverage":
+        manifest["coverage"] = {}
+    elif corruption == "entry":
+        del manifest["files"]["opens"]["sha256"]
+    else:
+        entry = manifest["files"]["facts"]
+        body = b"not parquet"
+        digest = hashlib.sha256(body).hexdigest()
+        name = f"facts_{digest[:12]}.parquet"
+        (store / name).write_bytes(body)
+        entry.update(name=name, sha256=digest)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+@pytest.mark.parametrize("corruption", ["coverage", "entry", "parquet"])
+def test_run_a_corrupt_store_exits_1_cleanly(
+    stubbed: list[BacktestDeps], tmp_path: Path, corruption: str
+) -> None:
+    store = _write(tmp_path / "store")
+    _corrupt_manifest(store, corruption)
+    result = _run("--store", str(store), "--root", str(tmp_path / "run"))
+    _clean_failure(result)
+    assert "cannot start the backtest" in result.stderr
+    assert stubbed == []
 
 
 def test_run_a_start_before_the_floor_exits_1_from_the_real_guard(tmp_path: Path) -> None:

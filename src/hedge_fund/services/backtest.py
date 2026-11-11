@@ -144,7 +144,9 @@ def _check_guards(deps: BacktestDeps, start: date, end: date) -> None:
     if not isinstance(deps.broker, SimBroker):
         raise BacktestError("the backtest only runs against SimulatedBroker")
     runs = deps.report_store.load_all()
-    if deps.snapshot_store.snapshots() or runs.reports or runs.unreadable:
+    if runs.unreadable:
+        raise BacktestError("--root already holds unreadable run files")
+    if deps.snapshot_store.snapshots() or runs.reports:
         raise BacktestError("--root already holds snapshots or runs")
     if start < MEMBERSHIP_FLOOR:
         raise BacktestError(
@@ -199,8 +201,10 @@ def _rebalance(
     return report
 
 
-def _sides(shortlist: Shortlist) -> dict[str, str]:
-    return {candidate.ticker: candidate.side.value for candidate in shortlist.candidates}
+def _sides(shortlist: Shortlist) -> dict[str, tuple[str, str]]:
+    # ticker, side and sector are all that decisions read (researcher: ticker+side; sizing,
+    # sector caps and risk: sector); depth, composite and trimmed are never read downstream.
+    return {c.ticker: (c.side.value, c.sector) for c in shortlist.candidates}
 
 
 def _benchmark(data: FrozenData, window: tuple[date, ...], end: date) -> NavHistory:

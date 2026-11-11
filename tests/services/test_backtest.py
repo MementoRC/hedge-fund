@@ -192,7 +192,7 @@ def _guard_cases() -> list[tuple[str, dict[str, Any], date, date, str]]:
             {"report_store": _held_runs()},
             START,
             END,
-            "--root already holds snapshots or runs",
+            "--root already holds unreadable run files",
         ),
         (
             "runs",
@@ -395,6 +395,26 @@ def test_a_cycle_exception_aborts_with_the_cause() -> None:
 def test_a_shortlist_mismatch_aborts() -> None:
     with pytest.raises(BacktestError, match="shortlist mismatch"):
         _run(shortlist=lambda planned: replace(planned, candidates=(*planned.candidates, EXTRA)))
+
+
+def test_a_flipped_side_aborts() -> None:
+    def flip(planned: Shortlist) -> Shortlist:
+        return replace(
+            planned, candidates=tuple(replace(c, side=Side.SHORT) for c in planned.candidates)
+        )
+
+    with pytest.raises(BacktestError, match="shortlist mismatch"):
+        _run(shortlist=flip)
+
+
+def test_a_changed_sector_aborts() -> None:
+    def move(planned: Shortlist) -> Shortlist:
+        return replace(
+            planned, candidates=tuple(replace(c, sector="Tech") for c in planned.candidates)
+        )
+
+    with pytest.raises(BacktestError, match="shortlist mismatch"):
+        _run(shortlist=move)
 
 
 def test_a_report_without_a_shortlist_does_not_abort() -> None:

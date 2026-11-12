@@ -2,7 +2,7 @@
 
 ``write_store`` -> ``load_store`` -> ``build_backtest_deps`` -> ``run_backtest`` (the real
 ``plan_shortlist`` and ``run_cycle``, default ``CycleParams``) and, on a fresh root, the CLI
-``backtest run``. The store is tests/backtest_world.py. The golden numbers below were generated
+``backtest run``. The store is hedge_fund.demo.world. The golden numbers below were generated
 once from this code and pasted in, so they are regression goldens, not recomputed here; they
 are pinned to 1e-9 relative (shares are whole numbers, so only float noise could move them).
 """
@@ -27,6 +27,7 @@ from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.frozen_providers import FrozenFundamentalsProvider
 from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
 from hedge_fund.adapters.research.store import load_research
+from hedge_fund.demo import world
 from hedge_fund.domain.backtest import BacktestReport, FrozenData, SimCosts
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
@@ -35,7 +36,6 @@ from hedge_fund.domain.shortlist import Side
 from hedge_fund.services.account import load_nav_history
 from hedge_fund.services.backtest import backtest_run_id, run_backtest
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
-from tests import backtest_world as world
 
 START, END = date(2024, 1, 10), date(2024, 3, 8)
 FIRST, SECOND = date(2024, 2, 1), date(2024, 3, 1)  # the monthly rebalance days in START..END

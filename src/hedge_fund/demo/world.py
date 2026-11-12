@@ -1,7 +1,10 @@
-"""A small frozen store for the golden backtest: 18 members in 3 sectors, SPY, 13 months of prices.
+"""A small frozen store for the demo and the golden backtest: 18 members in 3 sectors, SPY,
+13 months of prices.
 
 Every fact is filed before the first rebalance (2024-02-01), save POISON_TICKER's FY2023 10-K
-filed 2024-02-20 (after it, before the second); prices are a seeded random walk. The book is
+filed 2024-02-20 (after it, before the second); prices are a seeded random walk (one integer
+``seed``, default 1: the value the golden test pins; the facts stream is seeded ``seed - 1``,
+see ``demo.facts``). The book is
 this wide because the default risk limits (name_risk 0.15) veto any book of fewer than about
 a dozen names. Events:
 - SPLIT_TICKER splits 2:1 ex 2024-02-14 (stored prices are post-split throughout);
@@ -18,17 +21,17 @@ a dozen names. Events:
 from __future__ import annotations
 
 import random
-from datetime import date
+from datetime import UTC, date, datetime
 from fractions import Fraction
 
 import numpy as np
 import pandas as pd
 
+from hedge_fund.demo.facts import make_passing_facts
 from hedge_fund.domain.backtest import Dividend, FrozenData, MemberSpan
 from hedge_fund.domain.ledger import Split
-from tests.factories import make_passing_facts
 
-SEED = 1  # picked so both rebalances trade and every event below hits a held name
+DEFAULT_SEED = 1  # picked so both rebalances trade and every event below hits a held name
 SECTORS = {
     f"{prefix}{number}": sector
     for prefix, sector in (("AE", "Energy"), ("BT", "Tech"), ("CH", "Health"))
@@ -43,6 +46,8 @@ POISON_TICKER = "BT2"
 DIVIDEND = 0.4
 FIRST_DAY = date(2023, 2, 1)
 LAST_DAY = date(2024, 3, 8)
+RUN_START = date(2024, 1, 10)  # the golden window: the cycles need a year of history before it
+FROZEN_AT = datetime(2024, 6, 1, tzinfo=UTC)  # fixed, so the manifest (and its digest) repeats
 SPLIT_EX = date(2024, 2, 14)
 DIVIDEND_EX = date(2024, 2, 21)
 LAST_TRADED = date(2024, 2, 27)
@@ -55,9 +60,9 @@ SHIFT_TO_2023 = pd.Timedelta(days=-1004)  # E 2026-06-30 -> 2023-09-30, filed 20
 POISONED_METRIC_TAG = "us-gaap:RetainedEarningsAccumulatedDeficit"
 
 
-def _prices(days: pd.DatetimeIndex) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _prices(days: pd.DatetimeIndex, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Seeded random walks: a market factor plus per-name drift and noise; opens near closes."""
-    rng = random.Random(SEED)
+    rng = random.Random(seed)
     market = np.array([rng.gauss(0.0003, 0.008) for _ in days])
     closes = {"SPY": 400.0 * np.exp(np.cumsum(market))}
     for ticker in SECTORS:
@@ -89,10 +94,10 @@ def _late_filing(
     return late
 
 
-def _facts() -> pd.DataFrame:
+def _facts(seed: int) -> pd.DataFrame:
     """Every name's passing filings, all filed 2023-11-01, plus the two late 10-Ks."""
     tickers = sorted(SECTORS)
-    early = make_passing_facts(tickers)
+    early = make_passing_facts(tickers, seed - 1)  # seed 1 -> stream 0: today's bytes
     for column in ("start", "end", "filed"):
         early[column] = early[column] + SHIFT_TO_2023
     late = _late_filing(early, POISON_TICKER, LATE_FILED, -1_000_000.0)
@@ -100,10 +105,10 @@ def _facts() -> pd.DataFrame:
     return pd.concat([early, late, boundary], ignore_index=True)
 
 
-def make_golden_data() -> FrozenData:
-    """The golden store (see the module docstring)."""
+def make_golden_data(seed: int = DEFAULT_SEED) -> FrozenData:
+    """The golden store (see the module docstring); ``seed`` drives prices and facts."""
     days = pd.bdate_range(FIRST_DAY, LAST_DAY)
-    opens, closes = _prices(days)
+    opens, closes = _prices(days, seed)
     start = date(2020, 1, 2)
     membership = tuple(
         MemberSpan(
@@ -120,7 +125,7 @@ def make_golden_data() -> FrozenData:
         closes=closes,
         splits=(Split(SPLIT_TICKER, SPLIT_EX, Fraction(2)),),
         dividends=(Dividend(DIVIDEND_TICKER, DIVIDEND_EX, DIVIDEND),),
-        facts=_facts(),
+        facts=_facts(seed),
         sectors=dict(SECTORS),
         ciks={ticker: f"{i + 1:010d}" for i, ticker in enumerate(SECTORS)},
         membership=membership,

@@ -201,3 +201,47 @@ def test_package_exports() -> None:
     assert ledger.JsonFillStore is JsonFillStore
     assert ledger.JsonOpeningBalance is JsonOpeningBalance
     assert ledger.JsonSettlementReportStore is JsonSettlementReportStore
+
+
+def test_load_all_round_trips_a_saved_report(tmp_path: Path) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+
+    loaded = store.load_all()
+
+    # Python 3.13 dataclass equality compares field by field, so NaN != NaN: check it apart.
+    (report,) = loaded.items
+    assert math.isnan(report.unrealised_total)
+    assert dataclasses.replace(report, unrealised_total=0.0) == dataclasses.replace(
+        REPORT, unrealised_total=0.0
+    )
+    assert loaded.unreadable == {}
+
+
+def test_load_all_round_trips_a_failed_run_with_nothing_reached(tmp_path: Path) -> None:
+    bare = dataclasses.replace(
+        REPORT,
+        outcome=SettleOutcome.ERROR,
+        new_fills=(),
+        pending=(),
+        unreadable_reports={},
+        unsettled=(),
+        broker_positions=None,
+        open_lots=(),
+        unmarked=(),
+        closed_lots=(),
+        breaks=(),
+        realised_total=0.0,
+        unrealised_total=0.0,
+    )
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(bare)
+
+    assert store.load_all().items == (bare,)
+
+
+def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
+    loaded = JsonSettlementReportStore(tmp_path).load_all()
+
+    assert loaded.items == ()
+    assert loaded.unreadable == {}

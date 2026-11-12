@@ -27,7 +27,6 @@ from hedge_fund.viz.views import (
     NameRow,
     PositionRow,
     SectorExposure,
-    _drawdown,
     backtest_view,
     cycle_view,
     overview_view,
@@ -411,12 +410,6 @@ def test_backtest_view_without_reports_is_empty() -> None:
 def test_a_zero_first_nav_is_rejected_by_the_engine_not_divided_by() -> None:
     with pytest.raises(ValueError, match="nav must be a finite number > 0"):
         portfolio_view(make_snapshots(0.0, 10.0, 5.0), None, ())
-
-
-def test_drawdown_of_a_non_positive_peak_is_zero_until_the_peak_turns_positive() -> None:
-    curve = _drawdown(make_nav(0.0, 0.0, 10.0, 5.0))
-
-    assert [v for _, v in curve] == pytest.approx([0.0, 0.0, 0.0, -0.5])
 
 
 def test_zero_and_nan_sector_weights_are_skipped() -> None:

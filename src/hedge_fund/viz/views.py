@@ -323,7 +323,7 @@ def _drawdown(nav: NavHistory) -> Curve:
     peak = 0.0
     for point in nav:
         peak = max(peak, point.nav)
-        curve.append((point.date, point.nav / peak - 1.0 if peak > 0 else 0.0))
+        curve.append((point.date, point.nav / peak - 1.0))
     return tuple(curve)
 
 

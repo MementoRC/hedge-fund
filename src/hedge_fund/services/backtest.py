@@ -12,8 +12,6 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date
 
-import pandas as pd
-
 from hedge_fund.domain.backtest import (
     MEMBERSHIP_FLOOR,
     BacktestReport,
@@ -21,13 +19,13 @@ from hedge_fund.domain.backtest import (
     SimCosts,
 )
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
-from hedge_fund.domain.risk import NavHistory, NavPoint
+from hedge_fund.domain.risk import NavHistory
 from hedge_fund.domain.shortlist import Shortlist
+from hedge_fund.engine.backtest.benchmark import BENCHMARK, benchmark_curve
 from hedge_fund.engine.backtest.calendar import in_window, rebalance_days, trading_days
 from hedge_fund.engine.backtest.clock import SimClock
 from hedge_fund.engine.backtest.membership import PointInTimeUniverse
 from hedge_fund.engine.backtest.metrics import backtest_metrics
-from hedge_fund.engine.backtest.pit_prices import closes_as_of
 from hedge_fund.ports.account import SnapshotStore
 from hedge_fund.ports.approval import ApprovalGate
 from hedge_fund.ports.cycle import CycleReportStore
@@ -39,7 +37,6 @@ from hedge_fund.services.account import load_nav_history, record_snapshot
 from hedge_fund.services.cycle import CycleDeps, CycleParams, plan_shortlist, run_cycle
 
 MIN_TRADING_DAYS = 3  # the metrics need a curve of at least three points
-BENCHMARK = "SPY"
 
 ACCEPTED_OUTCOMES = frozenset(
     {
@@ -209,13 +206,7 @@ def _sides(shortlist: Shortlist) -> dict[str, tuple[str, str]]:
 
 def _benchmark(data: FrozenData, window: tuple[date, ...], end: date) -> NavHistory:
     """SPY's vendor-adjusted closes on the window days, as a curve."""
-    if BENCHMARK not in data.closes.columns:
-        raise BacktestError(f"the store has no {BENCHMARK} closes")
-    series = closes_as_of(data.closes[BENCHMARK], BENCHMARK, data.splits, data.dividends, as_of=end)
-    points = []
-    for day in window:
-        value = series.get(pd.Timestamp(day))
-        if value is None or pd.isna(value):
-            raise BacktestError(f"{BENCHMARK} has no close on {day}")
-        points.append(NavPoint(date=day, nav=float(value)))
-    return tuple(points)
+    try:
+        return benchmark_curve(data, window, end, BENCHMARK)
+    except ValueError as exc:
+        raise BacktestError(str(exc)) from exc

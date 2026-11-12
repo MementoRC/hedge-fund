@@ -14,7 +14,8 @@ def load_dir[T](directory: Path, decode: Callable[[Any], T]) -> Loaded[T]:
     """Decode every ``directory/*.json`` in file-name order (temp files never match).
 
     A file that cannot be read or decoded is listed in ``unreadable`` under its name; a
-    missing directory loads nothing.
+    missing directory loads nothing. The broad ``except`` also reports a decoder bug as
+    unreadable, matching ``JsonCycleReportStore.load_all``.
     """
     items: list[T] = []
     names: list[str] = []

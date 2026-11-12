@@ -220,6 +220,37 @@ def test_the_cli_refuses_a_symlinked_root_before_resolving_it(
     assert (target / "keep.txt").is_file() is not dangling
 
 
+def test_force_through_a_symlink_to_a_built_demo_refuses_and_leaves_it_untouched(
+    tmp_path: Path,
+) -> None:
+    real = tmp_path / "real"
+    assert _build(real).exit_code == 0
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    result = _build(link, "--force")
+
+    assert result.exit_code == 1
+    assert "symlink" in result.output
+    assert link.is_symlink()
+    assert (real / DEMO_MARKER).is_file()
+    assert (_store(real) / MANIFEST).is_file()
+    assert (real / BACKTEST_DIR / f"{GOLDEN_RUN_ID}.json").is_file()
+
+
+def test_a_symlinked_parent_component_builds_into_the_resolved_directory(tmp_path: Path) -> None:
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(actual)
+
+    result = _build(link / "demo")
+
+    assert result.exit_code == 0, result.output
+    assert read_demo_marker(actual / "demo") == DemoMarker(1, GOLDEN_STORE_DIGEST, GOLDEN_RUN_ID)
+    assert (actual / "demo.store" / MANIFEST).is_file()
+
+
 def test_force_refuses_a_demo_whose_run_summary_is_gone(tmp_path: Path) -> None:
     root = tmp_path / "demo"
     assert _build(root).exit_code == 0

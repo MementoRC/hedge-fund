@@ -599,6 +599,9 @@ def demo_build(
     --force, which deletes both directories only when they are a demo this command built. A
     failed build leaves no marker: delete <root> and <root>.store by hand and retry.
     """
+    # Only the final path component is refused. Symlinks in a parent are allowed on purpose
+    # (e.g. data on a symlinked mount): _clear_demo still requires a valid marker, manifest
+    # and run summary before it deletes anything.
     if root.is_symlink():
         _fail(f"{root} is a symlink: refusing to build a demo through it", ValueError(str(root)))
     root = root.resolve()

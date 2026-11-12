@@ -84,3 +84,5 @@ def _validate(marker: DemoMarker) -> None:
         raise ValueError(f"store_digest {digest!r} is not 64 lowercase hex characters")
     if not isinstance(run_id, str) or not run_id:
         raise ValueError(f"run_id {run_id!r} is not a non-empty string")
+    if run_id in {".", ".."} or "/" in run_id or os.sep in run_id or Path(run_id).name != run_id:
+        raise ValueError(f"run_id {run_id!r} is not a plain file name")

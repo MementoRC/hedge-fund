@@ -176,3 +176,16 @@ def test_a_marker_that_is_not_exactly_a_demo_marker_is_refused(tmp_path: Path, b
 
     with pytest.raises(ValueError, match="not a demo marker"):
         read_demo_marker(tmp_path)
+
+
+@pytest.mark.parametrize("run_id", ["../x", "a/b", "..", ".", "/abs"])
+def test_a_run_id_that_is_not_a_plain_file_name_is_refused_by_reader_and_writer(
+    tmp_path: Path, run_id: str
+) -> None:
+    with pytest.raises(ValueError, match="not a plain file name"):
+        write_demo_marker(tmp_path, _marker(run_id=run_id))
+    assert not (tmp_path / DEMO_MARKER).exists()
+
+    (tmp_path / DEMO_MARKER).write_text(json.dumps({**GOOD, "run_id": run_id}), encoding="utf-8")
+    with pytest.raises(ValueError, match="not a plain file name"):
+        read_demo_marker(tmp_path)

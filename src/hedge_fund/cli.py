@@ -3,18 +3,21 @@
 the book's P&L (Layer 7b) and ``hedge-fund verify`` scores the stored research ratings
 against what followed (Layer 7d). ``hedge-fund backtest snapshot`` freezes point-in-time
 data for the offline backtest and ``hedge-fund backtest run`` replays it (Layer 8).
+``hedge-fund demo build`` writes the synthetic demo world (a frozen store and a backtest run over it).
 
 This is the only composition root: ``build_deps``, ``build_settle_deps``,
-``build_attribute_deps``, ``build_verify_deps``, ``build_snapshot_sources`` and
-``build_backtest_deps`` (simulated broker only) build the adapters and ``clock`` is the only clock read.
+``build_attribute_deps``, ``build_verify_deps``, ``build_snapshot_sources``,
+``build_backtest_deps`` (simulated broker only) and ``hedge-fund demo build`` build the adapters
+and ``clock`` is the only clock read.
 Tests replace them. Paper trading only.
 """
 
 from __future__ import annotations
 
 import hashlib
+import shutil
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated, NoReturn
 
@@ -25,7 +28,7 @@ from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.approval.auto import AutoApprovalGate
 from hedge_fund.adapters.attribution import JsonAttributionReportStore
 from hedge_fund.adapters.attribution.json_report import ATTRIBUTIONS_DIR
-from hedge_fund.adapters.backtest.report import save_backtest_report
+from hedge_fund.adapters.backtest.report import load_backtest_reports, save_backtest_report
 from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.broker.simulated import SimulatedBroker, SimulationError
 from hedge_fund.adapters.cost import PRICES_FILE, load_prices
@@ -43,6 +46,12 @@ from hedge_fund.adapters.data.frozen_store import (
 from hedge_fund.adapters.data.sec_sources import SecLookups
 from hedge_fund.adapters.data.yfinance_history import YFinanceHistory
 from hedge_fund.adapters.data.yfinance_provider import YFinanceProvider
+from hedge_fund.adapters.demo_marker import (
+    DEMO_MARKER,
+    demo_store_dir,
+    read_demo_marker,
+    write_demo_marker,
+)
 from hedge_fund.adapters.ledger import (
     JsonFillStore,
     JsonOpeningBalance,
@@ -54,6 +63,7 @@ from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import ResearchConfig, TradingAgentsResearcher
 from hedge_fund.adapters.verification import JsonVerificationReportStore
 from hedge_fund.adapters.verification.json_report import VERIFICATIONS_DIR
+from hedge_fund.demo import world
 from hedge_fund.domain.attribution import (
     DIVIDEND_NOTE,
     AttributeOutcome,
@@ -70,6 +80,7 @@ from hedge_fund.domain.backtest import (
 )
 from hedge_fund.domain.cost import BudgetPlan, Spend
 from hedge_fund.domain.cycle import CycleOptions, CycleReport
+from hedge_fund.domain.demo import DemoMarker
 from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import Fill, MarkedLot, SettlementReport, SettleOutcome
 from hedge_fund.domain.research import ResearchResult
@@ -109,6 +120,7 @@ MEMBERSHIP = "sp500_membership"
 FLAGGED_SPANS = "sp500_flagged_spans"
 DEFAULT_SNAPSHOT_START = date(2010, 1, 1)
 DEFAULT_BACKTEST_CASH = 100_000.0
+DEFAULT_DEMO_ROOT = Path("data", "demo")
 _FAILED_LEGS = frozenset({SubmitStatus.ERROR, SubmitStatus.REJECTED})
 _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
     SettleOutcome.CLEAN: 0,
@@ -130,6 +142,8 @@ _OVER_BUDGET: Mapping[bool | None, str] = {None: "n/a", True: "yes", False: "no"
 app = typer.Typer(add_completion=False)
 backtest_app = typer.Typer(add_completion=False, help="Offline backtest of the quant core.")
 app.add_typer(backtest_app, name="backtest")
+demo_app = typer.Typer(add_completion=False, help="The synthetic demo world.")
+app.add_typer(demo_app, name="demo")
 
 
 @app.callback()
@@ -549,6 +563,91 @@ def backtest_run(
     except Exception as exc:
         _fail(f"{type(exc).__name__}: {exc}", exc)
     typer.echo(_backtest_summary(report, data, path))
+
+
+@demo_app.command("build")
+def demo_build(
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root", help="Demo root; its frozen store goes to the sibling <root>.store."
+        ),
+    ] = DEFAULT_DEMO_ROOT,
+    seed: Annotated[
+        int,
+        typer.Option(
+            "--seed", min=1, help="Seed of the synthetic world (>= 1; the facts use seed - 1)."
+        ),
+    ] = world.DEFAULT_SEED,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Replace an existing demo: needs <root>/DEMO.json and <root>.store/manifest.json.",
+        ),
+    ] = False,
+) -> None:
+    """Build the synthetic demo world: a frozen store, a real backtest over it, a marker.
+
+    Writes the store to <root>.store, replays the unchanged cycle into <root> exactly as
+    `backtest run` does, then writes <root>/DEMO.json last. Refuses existing paths unless
+    --force, which deletes both directories only when they are a demo this command built. A
+    failed build leaves no marker: delete <root> and <root>.store by hand and retry.
+    """
+    root = root.resolve()
+    store = demo_store_dir(root)
+    try:
+        _clear_demo(root, store, force=force)
+    except (ValueError, OSError) as exc:
+        _fail(str(exc), exc)
+    try:
+        digest = write_store(store, world.make_golden_data(seed), created_at=world.FROZEN_AT)
+    except Exception as exc:
+        _fail(f"cannot write the demo store: {type(exc).__name__}: {exc}", exc)
+    backtest_run(
+        store=store,
+        root=root,
+        start=datetime.combine(world.RUN_START, time.min),
+        end=None,
+        cash=DEFAULT_BACKTEST_CASH,
+        slippage_bps=SimCosts.slippage_bps,
+        borrow_rate=SimCosts.borrow_rate,
+    )
+    try:
+        run_id = _demo_run_id(root)
+    except ValueError as exc:
+        _fail(str(exc), exc)
+    write_demo_marker(root, DemoMarker(seed=seed, store_digest=digest, run_id=run_id))
+    typer.echo(f"demo root {root}: seed {seed}, store {store}, run {run_id}")
+
+
+def _clear_demo(root: Path, store: Path, *, force: bool) -> None:
+    """Leave ``root`` and ``store`` absent, or raise ValueError without touching either.
+
+    Existing paths need ``force`` and must look like a demo: ``root/DEMO.json`` parses, and
+    the store has a manifest (or is absent). A live root or ``data/`` can never be wiped.
+    """
+    if not (root.exists() or store.exists()):
+        return
+    if not force:
+        raise ValueError(f"{root} or {store} already exists; use --force to replace a demo")
+    if read_demo_marker(root) is None:
+        raise ValueError(f"{root} has no {DEMO_MARKER}: not a demo root, refusing to delete it")
+    if store.exists() and not (store / MANIFEST).is_file():
+        raise ValueError(f"{store} has no {MANIFEST}: not a demo store, refusing to delete it")
+    shutil.rmtree(root)
+    if store.exists():
+        shutil.rmtree(store)
+
+
+def _demo_run_id(root: Path) -> str:
+    runs = load_backtest_reports(root)
+    if len(runs.items) != 1 or runs.unreadable:
+        raise ValueError(
+            f"expected exactly one readable backtest summary under {root}, found "
+            f"{len(runs.items)} and {len(runs.unreadable)} unreadable"
+        )
+    return runs.items[0].run_id
 
 
 def _refuse_root_in_store(root: Path, store: Path) -> None:

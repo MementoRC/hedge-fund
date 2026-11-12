@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -37,10 +37,9 @@ from hedge_fund.services.account import load_nav_history
 from hedge_fund.services.backtest import backtest_run_id, run_backtest
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 
-START, END = date(2024, 1, 10), date(2024, 3, 8)
+START, END = world.RUN_START, date(2024, 3, 8)
 FIRST, SECOND = date(2024, 2, 1), date(2024, 3, 1)  # the monthly rebalance days in START..END
 CASH = 100_000.0
-CREATED = datetime(2024, 6, 1, tzinfo=UTC)
 runner = CliRunner()
 
 # Regression goldens (generated once; see the module docstring).
@@ -105,7 +104,7 @@ class Replay:
 
 
 def _freeze(path: Path, data: FrozenData) -> Path:
-    write_store(path, data, created_at=CREATED)
+    write_store(path, data, created_at=world.FROZEN_AT)
     return path
 
 

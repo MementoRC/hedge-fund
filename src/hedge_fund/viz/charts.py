@@ -2,8 +2,8 @@
 
 Only the charts the first dashboard PR needs live here (NAV vs SPY, drawdown, exposure,
 sector exposure). A new chart lands in the PR that first needs it; the other track consumes
-it after that merges. Each builder returns a figure, with no traces' worth of data for an
-empty view: showing an empty state is the page's job.
+it after that merges. Each builder returns a figure whose traces are empty for an empty
+view: showing an empty state is the page's job.
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ import plotly.graph_objects as go
 
 from hedge_fund.viz.theme import Palette, plotly_template
 from hedge_fund.viz.views import Curve, PortfolioView
+
+PERCENT_TICKS = ".0%"
+PERCENT_HOVER = ".1%"
 
 
 def nav_vs_benchmark(view: PortfolioView, palette: Palette) -> go.Figure:
@@ -29,7 +32,7 @@ def drawdown_chart(view: PortfolioView, palette: Palette) -> go.Figure:
     trace = _line(view.drawdown, "Drawdown", palette.secondary)
     trace.update(fill="tozeroy")
     figure.add_trace(trace)
-    figure.update_yaxes(tickformat=".0%")
+    figure.update_yaxes(tickformat=PERCENT_TICKS, hoverformat=PERCENT_HOVER)
     return figure
 
 
@@ -49,7 +52,7 @@ def exposure_chart(view: PortfolioView, palette: Palette) -> go.Figure:
             markers=True,
         )
     )
-    figure.update_yaxes(tickformat=".0%")
+    figure.update_yaxes(tickformat=PERCENT_TICKS, hoverformat=PERCENT_HOVER)
     return figure
 
 
@@ -74,7 +77,7 @@ def sector_exposure_chart(view: PortfolioView, palette: Palette) -> go.Figure:
         )
     )
     figure.update_layout(barmode="relative")
-    figure.update_yaxes(tickformat=".0%")
+    figure.update_yaxes(tickformat=PERCENT_TICKS, hoverformat=PERCENT_HOVER)
     return figure
 
 

@@ -121,3 +121,5 @@ def test_the_plotly_template_carries_the_palette(palette: Palette) -> None:
     assert layout.font.color == palette.text
     assert tuple(layout.colorway) == palette.series
     assert layout.xaxis.gridcolor == palette.grid
+    assert layout.yaxis.gridcolor == palette.grid
+    assert layout.hoverlabel.bgcolor == palette.background

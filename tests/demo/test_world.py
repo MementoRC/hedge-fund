@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from fractions import Fraction
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,8 @@ import pandas.testing as pdt
 
 from hedge_fund.adapters.data.frozen_store import MANIFEST, write_store
 from hedge_fund.demo import facts, world
+from hedge_fund.domain.backtest import Dividend
+from hedge_fund.domain.ledger import Split
 from tests import factories
 
 GOLDEN_STORE_DIGEST = "6fa8739dad872645e7752901a53d601558d8919287e197171ee7dfba864d0bcd"
@@ -48,10 +51,26 @@ def test_every_seed_keeps_the_events() -> None:
     assert data.closes.loc[stopped, world.DELIST_TICKER].isna().all()
     assert data.closes.loc[~stopped, world.DELIST_TICKER].notna().all()
     assert {span.ticker for span in data.membership} == set(world.SECTORS)
+    assert data.splits == (Split(world.SPLIT_TICKER, world.SPLIT_EX, Fraction(2)),)
+    assert data.dividends == (Dividend(world.DIVIDEND_TICKER, world.DIVIDEND_EX, world.DIVIDEND),)
+    for ticker, filed, deficit in (
+        (world.POISON_TICKER, world.LATE_FILED, -1_000_000.0),
+        (world.BOUNDARY_TICKER, world.BOUNDARY_FILED, -2_000_000.0),
+    ):
+        rows = data.facts[
+            (data.facts["ticker"] == ticker)
+            & (data.facts["tag"] == world.POISONED_METRIC_TAG)
+            & (data.facts["filed"] == filed)
+        ]
+        assert deficit in set(rows["value"])
 
 
-def test_the_run_window_sits_inside_the_store() -> None:
-    assert world.FIRST_DAY < world.RUN_START < world.LAST_DAY
+def test_the_run_window_sits_inside_the_stores_price_dates() -> None:
+    closes = world.make_golden_data().closes
+    first, last = closes.index.min().date(), closes.index.max().date()
+
+    assert first <= world.RUN_START <= world.LAST_DAY <= last
+    assert first == world.FIRST_DAY
     assert world.FROZEN_AT.tzinfo is not None
 
 

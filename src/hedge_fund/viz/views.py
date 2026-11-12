@@ -8,6 +8,7 @@ module never imports ``viz.load`` or an adapter.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -196,7 +197,7 @@ def overview_view(
     ours = _performance(nav)
     _, shared = _shared(nav, benchmark)
     theirs = None if shared is None else _performance(shared)
-    last = cycles[-1] if cycles else None
+    last = max(cycles, key=lambda report: report.as_of, default=None)
     return OverviewView(
         as_of=nav[-1].date if nav else None,
         nav=nav[-1].nav if nav else None,
@@ -214,7 +215,10 @@ def portfolio_view(
     cycles: Sequence[CycleReport],
 ) -> PortfolioView:
     nav = _nav(snapshots)
-    targets = [report.target for report in cycles if report.target is not None]
+    targets = sorted(
+        (report.target for report in cycles if report.target is not None),
+        key=lambda target: target.as_of,
+    )
     latest = targets[-1] if targets else None
     nav_shared, benchmark_shared = _shared(nav, benchmark)
     return PortfolioView(
@@ -238,14 +242,19 @@ def research_view(
     verifications: Sequence[VerificationReport],
     attributions: Sequence[AttributionReport],
 ) -> ResearchView:
-    verified = next(
-        (r for r in reversed(verifications) if r.outcome is not VerifyOutcome.FAILED), None
+    verified = max(
+        (r for r in verifications if r.outcome is not VerifyOutcome.FAILED),
+        key=lambda r: r.started_at,
+        default=None,
     )
-    attributed = next(
-        (r for r in reversed(attributions) if r.outcome is not AttributeOutcome.FAILED), None
+    attributed = max(
+        (r for r in attributions if r.outcome is not AttributeOutcome.FAILED),
+        key=lambda r: r.started_at,
+        default=None,
     )
+    latest = max(research, key=lambda result: result.as_of, default=None)
     return ResearchView(
-        names=_names(research[-1]) if research else (),
+        names=() if latest is None else _names(latest),
         horizons=()
         if verified is None
         else tuple(
@@ -310,7 +319,7 @@ def _drawdown(nav: NavHistory) -> Curve:
     peak = 0.0
     for point in nav:
         peak = max(peak, point.nav)
-        curve.append((point.date, point.nav / peak - 1.0))
+        curve.append((point.date, point.nav / peak - 1.0 if peak > 0 else 0.0))
     return tuple(curve)
 
 
@@ -318,6 +327,8 @@ def _sectors(target: TargetPortfolio) -> tuple[SectorExposure, ...]:
     longs: dict[str, float] = {}
     shorts: dict[str, float] = {}
     for position in target.positions:
+        if position.weight == 0 or math.isnan(position.weight):
+            continue
         book = longs if position.weight > 0 else shorts
         book[position.sector] = book.get(position.sector, 0.0) + position.weight
     return tuple(

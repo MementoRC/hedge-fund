@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -26,6 +27,7 @@ from hedge_fund.viz.views import (
     NameRow,
     PositionRow,
     SectorExposure,
+    _drawdown,
     backtest_view,
     cycle_view,
     overview_view,
@@ -377,6 +379,108 @@ def test_backtest_view_without_reports_is_empty() -> None:
     assert view.runs == ()
     assert view.nav_index == ()
     assert view.benchmark_index is None
+
+
+def test_a_zero_first_nav_is_rejected_by_the_engine_not_divided_by() -> None:
+    with pytest.raises(ValueError, match="nav must be a finite number > 0"):
+        portfolio_view(make_snapshots(0.0, 10.0, 5.0), None, ())
+
+
+def test_drawdown_of_a_non_positive_peak_is_zero_until_the_peak_turns_positive() -> None:
+    curve = _drawdown(make_nav(0.0, 0.0, 10.0, 5.0))
+
+    assert [v for _, v in curve] == pytest.approx([0.0, 0.0, 0.0, -0.5])
+
+
+def test_zero_and_nan_sector_weights_are_skipped() -> None:
+    target = make_target(
+        DAY0,
+        make_position("AAA", "Tech", 0.10),
+        make_position("BBB", "Tech", 0.0),
+        make_position("CCC", "Energy", float("nan")),
+        make_position("DDD", "Health", -0.05),
+    )
+
+    view = portfolio_view((), None, (make_cycle(DAY0, target=target),))
+
+    assert view.sectors == (SectorExposure("Health", 0.0, -0.05), SectorExposure("Tech", 0.10, 0.0))
+
+
+def test_unsorted_cycles_pick_the_latest_target_by_date() -> None:
+    older = make_target(date(2024, 1, 2), make_position("AAA", "Tech", 0.10))
+    newer = make_target(date(2024, 2, 1), make_position("BBB", "Energy", 0.20))
+    cycles = (
+        make_cycle(date(2024, 2, 1), target=newer),
+        make_cycle(date(2024, 1, 2), target=older),
+    )
+
+    view = portfolio_view((), None, cycles)
+
+    assert view.target_as_of == date(2024, 2, 1)
+    assert [p.ticker for p in view.positions] == ["BBB"]
+    assert [p.as_of for p in view.exposure] == [date(2024, 1, 2), date(2024, 2, 1)]
+
+
+def test_unsorted_cycles_pick_the_latest_cycle_for_the_overview() -> None:
+    cycles = (
+        make_cycle(date(2024, 2, 1), outcome=CycleOutcome.BLOCKED),
+        make_cycle(date(2024, 1, 2), outcome=CycleOutcome.SUBMITTED),
+    )
+
+    view = overview_view((), None, cycles)
+
+    assert view.last_cycle_as_of == date(2024, 2, 1)
+    assert view.last_cycle_outcome is CycleOutcome.BLOCKED
+
+
+def test_unsorted_research_picks_the_latest_names_report_and_attribution_by_date() -> None:
+    candidate = Candidate("AAA", "Tech", Side.LONG, 1, 0.5)
+    name = NameResearch(candidate, (), 0, None, None, None, Verdict.INSUFFICIENT)
+    later = STARTED + timedelta(days=1)
+
+    view = research_view(
+        (ResearchResult(date(2024, 2, 1), (name,)), ResearchResult(DAY0, ())),
+        (),
+        (
+            dataclasses.replace(_verification(VerifyOutcome.CLEAN, 0.9), started_at=later),
+            _verification(VerifyOutcome.CLEAN, 0.5),
+        ),
+        (
+            dataclasses.replace(_attribution(AttributeOutcome.CLEAN, 9.0), started_at=later),
+            _attribution(AttributeOutcome.CLEAN, 7.0),
+        ),
+    )
+
+    assert [row.as_of for row in view.names] == [date(2024, 2, 1)]
+    assert view.horizons[0].hit_rate == 0.9
+    assert view.attribution is not None
+    assert view.attribution.total.market == 9.0
+
+
+def test_the_funnel_counts_researched_names_and_the_row_carries_halt_and_error() -> None:
+    candidate = Candidate("AAA", "Tech", Side.LONG, 1, 0.5)
+    name = NameResearch(candidate, (), 0, None, None, None, Verdict.INSUFFICIENT)
+    verdict = RiskVerdict(
+        as_of=DAY0,
+        approved=False,
+        halt=True,
+        violations=(),
+        breakdown=RiskBreakdown(0.0, 0.0, 0.0, 0.0, {}, {}, ()),
+        breakers=BreakerState(0.0, 0.0, True, False),
+    )
+    report = make_cycle(
+        DAY0,
+        outcome=CycleOutcome.ERROR,
+        research=ResearchResult(DAY0, (name, name)),
+        verdict=verdict,
+        error="RuntimeError: boom",
+    )
+
+    [row] = cycle_view((report,)).rows
+
+    assert row.funnel.researched == 2
+    assert row.halted is True
+    assert row.error == "RuntimeError: boom"
 
 
 def test_every_view_builds_from_the_demo_workspace(workspace: Workspace) -> None:

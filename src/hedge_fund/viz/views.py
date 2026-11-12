@@ -20,7 +20,7 @@ from hedge_fund.domain.backtest import BacktestReport, Performance
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.research import ResearchResult, Verdict
-from hedge_fund.domain.risk import NavHistory
+from hedge_fund.domain.risk import NavHistory, NavPoint
 from hedge_fund.domain.shortlist import Side
 from hedge_fund.domain.verification import VerificationReport, VerifyOutcome
 from hedge_fund.engine.account.history import nav_history
@@ -195,8 +195,8 @@ def overview_view(
 ) -> OverviewView:
     nav = _nav(snapshots)
     ours = _performance(nav)
-    _, shared = _shared(nav, benchmark)
-    theirs = None if shared is None else _performance(shared)
+    aligned = _aligned(nav, benchmark)
+    theirs = None if aligned is None else _performance(aligned)
     last = max(cycles, key=lambda report: report.as_of, default=None)
     return OverviewView(
         as_of=nav[-1].date if nav else None,
@@ -220,10 +220,10 @@ def portfolio_view(
         key=lambda target: target.as_of,
     )
     latest = targets[-1] if targets else None
-    nav_shared, benchmark_shared = _shared(nav, benchmark)
+    aligned = _aligned(nav, benchmark)
     return PortfolioView(
-        nav_index=_index(nav_shared),
-        benchmark_index=None if benchmark_shared is None else _index(benchmark_shared),
+        nav_index=_index(nav),
+        benchmark_index=None if aligned is None else _index(aligned),
         drawdown=_drawdown(nav),
         exposure=tuple(ExposurePoint(t.as_of, t.gross, t.net) for t in targets),
         sectors=() if latest is None else _sectors(latest),
@@ -279,11 +279,12 @@ def backtest_view(
     snapshots: Sequence[AccountSnapshot],
     benchmark: NavHistory | None,
 ) -> BacktestView:
-    nav_shared, benchmark_shared = _shared(_nav(snapshots), benchmark)
+    nav = _nav(snapshots)
+    aligned = _aligned(nav, benchmark)
     return BacktestView(
         runs=tuple(_run(report) for report in reports),
-        nav_index=_index(nav_shared),
-        benchmark_index=None if benchmark_shared is None else _index(benchmark_shared),
+        nav_index=_index(nav),
+        benchmark_index=None if aligned is None else _index(aligned),
     )
 
 
@@ -297,17 +298,16 @@ def _performance(nav: NavHistory) -> Performance | None:
     return performance(nav) if len(nav) >= MIN_CURVE_POINTS else None
 
 
-def _shared(nav: NavHistory, benchmark: NavHistory | None) -> tuple[NavHistory, NavHistory | None]:
-    """Both curves restricted to the dates they share; no shared date means no benchmark."""
-    if benchmark is None:
-        return nav, None
-    days = {p.date for p in nav} & {p.date for p in benchmark}
-    if not days:
-        return nav, None
-    return (
-        tuple(p for p in nav if p.date in days),
-        tuple(p for p in benchmark if p.date in days),
-    )
+def _aligned(nav: NavHistory, benchmark: NavHistory | None) -> NavHistory | None:
+    """The benchmark on exactly the NAV dates, in NAV order; None unless it covers every one
+    of them and starts above zero (it is indexed from its first value).
+    """
+    if benchmark is None or not nav:
+        return None
+    closes = {point.date: point.nav for point in benchmark}
+    if any(point.date not in closes for point in nav) or closes[nav[0].date] <= 0:
+        return None
+    return tuple(NavPoint(point.date, closes[point.date]) for point in nav)
 
 
 def _index(nav: NavHistory) -> Curve:

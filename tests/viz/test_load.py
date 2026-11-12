@@ -169,6 +169,27 @@ def test_a_marker_that_is_a_directory_is_refused(demo_root: Path, tmp_path: Path
         classify_root(root)
 
 
+def test_a_dangling_symlink_marker_is_refused(demo_root: Path, tmp_path: Path) -> None:
+    root = _copy(demo_root, tmp_path)
+    (root / DEMO_MARKER).unlink()
+    (root / DEMO_MARKER).symlink_to(tmp_path / "missing.json")
+
+    with pytest.raises(RootError, match="not a demo marker"):
+        classify_root(root)
+
+
+def test_a_marker_that_is_a_directory_loads_as_no_demo_with_a_warning(tmp_path: Path) -> None:
+    (tmp_path / DEMO_MARKER).mkdir()
+
+    ws = load_workspace(tmp_path)
+
+    assert ws.demo is None
+    assert ws.benchmark is None
+    assert len(ws.unreadable) == 1
+    assert ws.unreadable[0].startswith(f"{DEMO_MARKER}: ValueError: ")
+    assert "not a demo marker" in ws.unreadable[0]
+
+
 def test_a_marker_that_does_not_parse_is_refused(demo_root: Path, tmp_path: Path) -> None:
     root = _copy(demo_root, tmp_path)
     (root / DEMO_MARKER).write_text("{", encoding="utf-8")

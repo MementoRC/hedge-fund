@@ -59,7 +59,8 @@ class Workspace:
     ``benchmark`` is SPY on the strategy NAV dates, read from the frozen store; None when no
     store is known, it does not load, or its manifest digest is not the ``store_digest`` of a
     backtest report in the root (then there is a warning). ``unreadable`` holds one warning per bad file (or per
-    directory, for stores that fail as a whole): ``"<where>: <reason>"``.
+    directory, for stores that fail as a whole): ``"<where>: <reason>"``. ``demo`` is None for
+    both "no marker" and "invalid marker"; decide demo vs real only via ``classify_root``.
     """
 
     root: Path

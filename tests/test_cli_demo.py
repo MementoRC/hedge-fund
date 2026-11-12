@@ -198,6 +198,28 @@ def test_a_dangling_symlink_root_is_refused_and_left_alone(tmp_path: Path, force
     assert not (tmp_path / "missing").exists()
 
 
+@pytest.mark.parametrize("dangling", [True, False])
+@pytest.mark.parametrize("force", [False, True])
+def test_the_cli_refuses_a_symlinked_root_before_resolving_it(
+    tmp_path: Path, dangling: bool, force: bool
+) -> None:
+    target = tmp_path / "target"
+    if not dangling:
+        target.mkdir()
+        (target / "keep.txt").write_text("x", encoding="utf-8")
+    root = tmp_path / "demo"
+    root.symlink_to(target)
+
+    result = _build(root, *(["--force"] if force else []))
+
+    assert result.exit_code == 1
+    assert "symlink" in result.output
+    assert root.is_symlink()
+    assert not _store(root).exists()
+    assert target.exists() is not dangling
+    assert (target / "keep.txt").is_file() is not dangling
+
+
 def test_force_refuses_a_demo_whose_run_summary_is_gone(tmp_path: Path) -> None:
     root = tmp_path / "demo"
     assert _build(root).exit_code == 0

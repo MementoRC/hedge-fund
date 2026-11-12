@@ -599,6 +599,8 @@ def demo_build(
     --force, which deletes both directories only when they are a demo this command built. A
     failed build leaves no marker: delete <root> and <root>.store by hand and retry.
     """
+    if root.is_symlink():
+        _fail(f"{root} is a symlink: refusing to build a demo through it", ValueError(str(root)))
     root = root.resolve()
     store = demo_store_dir(root)
     try:

@@ -8,7 +8,12 @@ from datetime import UTC, date
 from pathlib import Path
 from typing import Any
 
-from hedge_fund.adapters._json import decode_float, decode_instant, jsonable
+from hedge_fund.adapters._json import (
+    decode_float,
+    decode_instant,
+    decode_int,
+    jsonable,
+)
 from hedge_fund.adapters._load import load_dir
 from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.adapters.ledger.fills import decode_fill
@@ -82,7 +87,7 @@ def decode_settlement(obj: Mapping[str, Any]) -> SettlementReport:
         broker_positions=(
             None
             if positions is None
-            else tuple(Holding(item["ticker"], item["shares"]) for item in positions)
+            else tuple(Holding(item["ticker"], decode_int(item["shares"])) for item in positions)
         ),
         open_lots=tuple(_marked_lot(item) for item in obj["open_lots"]),
         unmarked=tuple(_lot(item) for item in obj["unmarked"]),
@@ -97,15 +102,15 @@ def decode_break(item: Mapping[str, Any]) -> ReconciliationBreak:
     """A ReconciliationBreak from its JSON object (also used by the attribution reader)."""
     return ReconciliationBreak(
         ticker=item["ticker"],
-        ledger_shares=item["ledger_shares"],
-        broker_shares=item["broker_shares"],
+        ledger_shares=decode_int(item["ledger_shares"]),
+        broker_shares=decode_int(item["broker_shares"]),
     )
 
 
 def _lot(item: Mapping[str, Any]) -> Lot:
     return Lot(
         ticker=item["ticker"],
-        shares=item["shares"],
+        shares=decode_int(item["shares"]),
         entry_price=decode_float(item["entry_price"]),
         entered_at=decode_instant(item["entered_at"]),
         source=item["source"],
@@ -124,7 +129,7 @@ def _marked_lot(item: Mapping[str, Any]) -> MarkedLot:
 def _closed_lot(item: Mapping[str, Any]) -> ClosedLot:
     return ClosedLot(
         ticker=item["ticker"],
-        shares=item["shares"],
+        shares=decode_int(item["shares"]),
         entry_price=decode_float(item["entry_price"]),
         entered_at=decode_instant(item["entered_at"]),
         source=item["source"],

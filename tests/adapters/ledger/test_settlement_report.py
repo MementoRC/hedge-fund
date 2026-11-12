@@ -292,6 +292,40 @@ def test_a_file_missing_a_key_is_unreadable_and_the_good_report_still_loads(
     assert key in loaded.unreadable["gap.json"]
 
 
+@pytest.mark.parametrize("bad", [2.0, True], ids=["float", "bool"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("new_fills", 0, "requested_shares"),
+        ("new_fills", 0, "filled_shares"),
+        ("broker_positions", 0, "shares"),
+        ("open_lots", 0, "lot", "shares"),
+        ("unmarked", 0, "shares"),
+        ("closed_lots", 0, "shares"),
+        ("breaks", 0, "ledger_shares"),
+        ("breaks", 0, "broker_shares"),
+    ],
+    ids=lambda path: ".".join(map(str, path)),
+)
+def test_a_share_count_that_is_not_a_whole_number_makes_the_file_unreadable(
+    tmp_path: Path, path: tuple[str | int, ...], bad: object
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    target = body
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = bad
+    (tmp_path / "settlements" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
 def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
     loaded = JsonSettlementReportStore(tmp_path).load_all()
 

@@ -155,6 +155,7 @@ def test_load_all_round_trips_a_saved_report(tmp_path: Path) -> None:
     # NaN never compares equal (dataclass eq is field-wise on 3.13), so pin it explicitly.
     [got] = loaded.items
     assert math.isnan(got.total.total)
+    assert got.started_at.utcoffset() == REPORT.started_at.utcoffset() == timedelta(hours=-4)
     no_nan = AttributionTotals(market=15.0, sector=4.0, residual=math.inf, trading=2.0, total=0.0)
     assert dataclasses.replace(got, total=no_nan) == dataclasses.replace(REPORT, total=no_nan)
     assert loaded.unreadable == {}
@@ -206,6 +207,38 @@ def test_a_day_with_a_mistyped_field_is_unreadable_and_the_good_report_still_loa
 
     assert len(loaded.items) == 1
     assert list(loaded.unreadable) == ["bad.json"]
+
+
+def test_a_truncated_file_is_unreadable_and_the_good_report_still_loads(tmp_path: Path) -> None:
+    store = JsonAttributionReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    text = good.read_text(encoding="utf-8")
+    (tmp_path / "attributions" / "cut.json").write_text(text[: len(text) // 2], encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert loaded.items[0].outcome is AttributeOutcome.BREAK
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["cut.json"]
+
+
+@pytest.mark.parametrize("key", ["started_at", "total", "excluded"])
+def test_a_file_missing_a_key_is_unreadable_and_the_good_report_still_loads(
+    tmp_path: Path, key: str
+) -> None:
+    store = JsonAttributionReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    del body[key]
+    (tmp_path / "attributions" / "gap.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["gap.json"]
+    assert key in loaded.unreadable["gap.json"]
 
 
 def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:

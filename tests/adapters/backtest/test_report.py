@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date, timedelta
 from pathlib import Path
@@ -16,10 +17,22 @@ from hedge_fund.engine.backtest.metrics import backtest_metrics
 D0 = date(2024, 1, 1)
 
 
+def _curve(*values: float) -> tuple[NavPoint, ...]:
+    return tuple(NavPoint(date=D0 + timedelta(days=i), nav=v) for i, v in enumerate(values))
+
+
 def _report() -> BacktestReport:
-    curve = tuple(
-        NavPoint(date=D0 + timedelta(days=i), nav=v)
-        for i, v in enumerate((100.0, 120.0, 96.0, 115.2))
+    """Strategy and benchmark curves differ and the Honesty mappings are non-empty, so a
+    swapped or dropped field cannot round-trip by accident.
+    """
+    curve = _curve(100.0, 120.0, 96.0, 115.2)
+    benchmark = _curve(50.0, 51.0, 49.5, 52.0)
+    metrics = backtest_metrics(curve, benchmark, (), (), flagged=())
+    honesty = dataclasses.replace(
+        metrics.honesty,
+        price_unresolved={"no close": 2, "stale": 1},
+        rejects={"gross": 3},
+        outcomes={"submitted": 4, "blocked": 1},
     )
     return BacktestReport(
         run_id="2024-01-01_2024-01-04_0123456789ab",
@@ -30,7 +43,7 @@ def _report() -> BacktestReport:
         costs=SimCosts(),
         trading_days=4,
         rebalances=1,
-        metrics=backtest_metrics(curve, curve, (), (), flagged=()),
+        metrics=dataclasses.replace(metrics, honesty=honesty),
     )
 
 
@@ -63,6 +76,64 @@ def test_load_backtest_reports_round_trips_a_saved_summary(tmp_path: Path) -> No
 
     assert loaded.items == (report,)
     assert loaded.unreadable == {}
+
+
+def test_the_round_trip_keeps_distinct_curves_and_the_honesty_mappings(tmp_path: Path) -> None:
+    report = _report()
+    save_backtest_report(tmp_path, report)
+
+    [loaded] = load_backtest_reports(tmp_path).items
+
+    assert loaded.metrics.strategy != loaded.metrics.benchmark
+    assert loaded.metrics.honesty.price_unresolved == {"no close": 2, "stale": 1}
+    assert loaded.metrics.honesty.rejects == {"gross": 3}
+    assert loaded.metrics.honesty.outcomes == {"submitted": 4, "blocked": 1}
+    assert loaded == report
+
+
+def test_the_round_trip_keeps_a_missing_sharpe_and_beta(tmp_path: Path) -> None:
+    report = _report()
+    metrics = dataclasses.replace(
+        report.metrics,
+        strategy=dataclasses.replace(report.metrics.strategy, sharpe=None),
+        benchmark=dataclasses.replace(report.metrics.benchmark, sharpe=None),
+        beta=None,
+    )
+    report = dataclasses.replace(report, metrics=metrics)
+    save_backtest_report(tmp_path, report)
+
+    [loaded] = load_backtest_reports(tmp_path).items
+
+    assert loaded.metrics.strategy.sharpe is None
+    assert loaded.metrics.beta is None
+    assert loaded == report
+
+
+def test_a_truncated_summary_is_unreadable_and_the_good_one_still_loads(tmp_path: Path) -> None:
+    good = save_backtest_report(tmp_path, _report())
+    text = good.read_text(encoding="utf-8")
+    (tmp_path / "backtest" / "cut.json").write_text(text[: len(text) // 2], encoding="utf-8")
+
+    loaded = load_backtest_reports(tmp_path)
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["cut.json"]
+
+
+@pytest.mark.parametrize("key", ["run_id", "metrics", "biases"])
+def test_a_summary_missing_a_key_is_unreadable_and_the_good_one_still_loads(
+    tmp_path: Path, key: str
+) -> None:
+    good = save_backtest_report(tmp_path, _report())
+    body = json.loads(good.read_text(encoding="utf-8"))
+    del body[key]
+    (tmp_path / "backtest" / "gap.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = load_backtest_reports(tmp_path)
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["gap.json"]
+    assert key in loaded.unreadable["gap.json"]
 
 
 def test_load_backtest_reports_of_a_root_without_a_run_is_empty(tmp_path: Path) -> None:

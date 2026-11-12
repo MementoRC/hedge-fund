@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
 from typer.testing import CliRunner, Result
 
 from hedge_fund import cli
+from hedge_fund.adapters.backtest.report import BACKTEST_DIR
 from hedge_fund.adapters.data.frozen_store import MANIFEST
 from hedge_fund.adapters.demo_marker import DEMO_MARKER, read_demo_marker, write_demo_marker
 from hedge_fund.domain.demo import DemoMarker
@@ -171,7 +173,7 @@ def test_force_refuses_a_root_whose_marker_is_a_directory(tmp_path: Path) -> Non
 def test_force_refuses_a_store_without_a_manifest(tmp_path: Path) -> None:
     root = tmp_path / "demo"
     root.mkdir()
-    write_demo_marker(root, DemoMarker(1, "d", "r"))
+    write_demo_marker(root, DemoMarker(1, "d" * 64, "r"))
     store = _store(root)
     store.mkdir()
     (store / "keep.txt").write_text("x", encoding="utf-8")
@@ -182,6 +184,50 @@ def test_force_refuses_a_store_without_a_manifest(tmp_path: Path) -> None:
     assert MANIFEST in result.output
     assert (store / "keep.txt").is_file()
     assert (root / DEMO_MARKER).is_file()
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_a_dangling_symlink_root_is_refused_and_left_alone(tmp_path: Path, force: bool) -> None:
+    root = tmp_path / "demo"
+    root.symlink_to(tmp_path / "missing")
+
+    with pytest.raises(ValueError, match=r"already exists|has no DEMO\.json"):
+        cli._clear_demo(root, _store(root), force=force)
+
+    assert root.is_symlink()
+    assert not (tmp_path / "missing").exists()
+
+
+def test_force_refuses_a_demo_whose_run_summary_is_gone(tmp_path: Path) -> None:
+    root = tmp_path / "demo"
+    assert _build(root).exit_code == 0
+    (root / BACKTEST_DIR / f"{GOLDEN_RUN_ID}.json").unlink()
+
+    result = _build(root, "--force")
+
+    assert result.exit_code == 1
+    assert GOLDEN_RUN_ID in result.output
+    assert (root / DEMO_MARKER).is_file()
+    assert (_store(root) / MANIFEST).is_file()
+
+
+def test_a_summary_for_another_store_fails_the_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_write_store = cli.write_store
+
+    def wrong_digest(*args: Any, **kwargs: Any) -> str:
+        real_write_store(*args, **kwargs)
+        return "f" * 64
+
+    monkeypatch.setattr(cli, "write_store", wrong_digest)
+    root = tmp_path / "demo"
+
+    result = _build(root)
+
+    assert result.exit_code == 1
+    assert "store_digest" in result.output
+    assert not (root / DEMO_MARKER).exists()
 
 
 def test_force_never_wipes_a_store_whose_root_is_absent(tmp_path: Path) -> None:

@@ -15,6 +15,7 @@ Tests replace them. Paper trading only.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, time, timedelta
@@ -28,7 +29,11 @@ from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.approval.auto import AutoApprovalGate
 from hedge_fund.adapters.attribution import JsonAttributionReportStore
 from hedge_fund.adapters.attribution.json_report import ATTRIBUTIONS_DIR
-from hedge_fund.adapters.backtest.report import load_backtest_reports, save_backtest_report
+from hedge_fund.adapters.backtest.report import (
+    BACKTEST_DIR,
+    load_backtest_reports,
+    save_backtest_report,
+)
 from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.broker.simulated import SimulatedBroker, SimulationError
 from hedge_fund.adapters.cost import PRICES_FILE, load_prices
@@ -614,7 +619,7 @@ def demo_build(
         borrow_rate=SimCosts.borrow_rate,
     )
     try:
-        run_id = _demo_run_id(root)
+        run_id = _demo_run_id(root, digest)
     except ValueError as exc:
         _fail(str(exc), exc)
     write_demo_marker(root, DemoMarker(seed=seed, store_digest=digest, run_id=run_id))
@@ -627,27 +632,39 @@ def _clear_demo(root: Path, store: Path, *, force: bool) -> None:
     Existing paths need ``force`` and must look like a demo: ``root/DEMO.json`` parses, and
     the store has a manifest (or is absent). A live root or ``data/`` can never be wiped.
     """
-    if not (root.exists() or store.exists()):
+    if not (os.path.lexists(root) or os.path.lexists(store)):
         return
     if not force:
         raise ValueError(f"{root} or {store} already exists; use --force to replace a demo")
-    if read_demo_marker(root) is None:
+    marker = read_demo_marker(root)
+    if marker is None:
         raise ValueError(f"{root} has no {DEMO_MARKER}: not a demo root, refusing to delete it")
-    if store.exists() and not (store / MANIFEST).is_file():
+    if os.path.lexists(store) and not (store / MANIFEST).is_file():
         raise ValueError(f"{store} has no {MANIFEST}: not a demo store, refusing to delete it")
+    summary = root / BACKTEST_DIR / f"{marker.run_id}.json"
+    if not summary.is_file():
+        raise ValueError(
+            f"{summary} is missing: not the demo this command built, refusing to delete"
+        )
     shutil.rmtree(root)
     if store.exists():
         shutil.rmtree(store)
 
 
-def _demo_run_id(root: Path) -> str:
+def _demo_run_id(root: Path, store_digest: str) -> str:
     runs = load_backtest_reports(root)
     if len(runs.items) != 1 or runs.unreadable:
         raise ValueError(
             f"expected exactly one readable backtest summary under {root}, found "
             f"{len(runs.items)} and {len(runs.unreadable)} unreadable"
         )
-    return runs.items[0].run_id
+    report = runs.items[0]
+    if report.store_digest != store_digest:
+        raise ValueError(
+            f"the backtest summary's store_digest {report.store_digest!r} is not the store "
+            f"just written ({store_digest!r})"
+        )
+    return report.run_id
 
 
 def _refuse_root_in_store(root: Path, store: Path) -> None:

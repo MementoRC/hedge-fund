@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from hedge_fund.adapters import demo_marker
 from hedge_fund.adapters.demo_marker import (
     DEMO_MARKER,
     demo_store_dir,
@@ -86,12 +89,76 @@ def test_the_store_sits_beside_the_root() -> None:
     assert demo_store_dir(Path("data/demo")) == Path("data/demo.store")
 
 
-GOOD = {"kind": "demo", "format": 1, "seed": 1, "store_digest": "d", "run_id": "r"}
+def test_a_path_component_that_is_a_file_is_refused(tmp_path: Path) -> None:
+    not_a_dir = tmp_path / "file"
+    not_a_dir.write_text("x", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a demo marker"):
+        read_demo_marker(not_a_dir)
+
+
+def test_a_symlink_loop_marker_is_refused(tmp_path: Path) -> None:
+    (tmp_path / DEMO_MARKER).symlink_to(tmp_path / DEMO_MARKER)
+
+    with pytest.raises(ValueError, match="not a demo marker"):
+        read_demo_marker(tmp_path)
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this platform")
+def test_a_fifo_marker_is_refused_without_blocking(tmp_path: Path) -> None:
+    os.mkfifo(tmp_path / DEMO_MARKER)
+
+    with pytest.raises(ValueError, match="not a demo marker"):
+        read_demo_marker(tmp_path)
+
+
+def test_a_permission_error_while_examining_the_marker_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def denied(path: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(demo_marker, "os", SimpleNamespace(lstat=denied))
+
+    with pytest.raises(ValueError, match="not a demo marker"):
+        read_demo_marker(tmp_path)
+
+
+GOOD = {"kind": "demo", "format": 1, "seed": 1, "store_digest": "a" * 64, "run_id": "r"}
+
+
+def _marker(**fields: Any) -> DemoMarker:
+    return DemoMarker(**{"seed": 1, "store_digest": "a" * 64, "run_id": "r", **fields})
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        _marker(seed=True),
+        _marker(store_digest=5),
+        _marker(run_id=None),
+        _marker(store_digest="d"),
+        _marker(store_digest="A" * 64),
+        _marker(store_digest="a" * 64 + "\n"),
+        _marker(run_id=""),
+    ],
+)
+def test_the_writer_refuses_a_marker_the_reader_would_reject(
+    tmp_path: Path, marker: DemoMarker
+) -> None:
+    with pytest.raises(ValueError, match="demo marker"):
+        write_demo_marker(tmp_path, marker)
+
+    assert not (tmp_path / DEMO_MARKER).exists()
 
 
 @pytest.mark.parametrize(
     "body",
     [
+        json.dumps({**GOOD, "store_digest": "d"}),
+        json.dumps({**GOOD, "store_digest": "A" * 64}),
+        json.dumps({**GOOD, "store_digest": "a" * 63}),
+        json.dumps({**GOOD, "run_id": ""}),
         "{",
         "[]",
         json.dumps({**GOOD, "extra": 1}),

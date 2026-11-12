@@ -18,7 +18,9 @@ PERCENT_HOVER = ".1%"
 
 
 def nav_vs_benchmark(view: PortfolioView, palette: Palette) -> go.Figure:
-    """The strategy and SPY, both indexed to 100 at the first day; SPY is dashed."""
+    """The strategy indexed to 100 and SPY over the dates it covers, rebased to the strategy
+    there; SPY is dashed.
+    """
     figure = _figure("NAV vs SPY (indexed to 100)", palette, "Index")
     figure.add_trace(_line(view.nav_index, "Strategy", palette.strategy))
     if view.benchmark_index is not None:

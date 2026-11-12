@@ -72,6 +72,7 @@ def test_overview_of_a_two_point_curve_has_a_nav_but_no_statistics() -> None:
     assert view.nav == 101.0
     assert view.total_return is None
     assert view.benchmark_return is None
+    assert view.strategy_return_in_benchmark_window is None
     assert view.max_drawdown is None
 
 
@@ -117,13 +118,81 @@ def test_a_benchmark_covering_every_nav_date_is_indexed_from_the_first_nav_date(
         assert _days(view.benchmark_index) == _days(view.nav_index)
         assert _values(view.nav_index) == pytest.approx([100.0, 120.0, 90.0, 110.0])
         assert _values(view.benchmark_index) == pytest.approx([100.0, 102.0, 98.0, 104.0])
+    window = (_day(0), _day(3))
+    assert portfolio.benchmark_window == backtest.benchmark_window == window
+    assert overview.benchmark_window == window
+    assert not portfolio.benchmark_partial
+    assert not backtest.benchmark_partial
+    assert not overview.benchmark_partial
     assert overview.benchmark_return == pytest.approx(0.04)
+    assert overview.total_return == pytest.approx(0.1)
+    assert overview.strategy_return_in_benchmark_window == pytest.approx(0.1)
+    assert overview.strategy_return_in_benchmark_window == overview.total_return
+
+
+def test_a_benchmark_starting_late_is_drawn_from_its_first_date_at_the_nav_there() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(60.0, 54.0, 66.0, start=_day(1))
+
+    portfolio = portfolio_view(snapshots, benchmark, ())
+    backtest = backtest_view((), snapshots, benchmark)
+    overview = overview_view(snapshots, benchmark, ())
+
+    for view in (portfolio, backtest):
+        assert _days(view.benchmark_index) == [_day(1), _day(2), _day(3)]
+        assert _values(view.benchmark_index) == pytest.approx([120.0, 108.0, 132.0])
+        assert _values(view.nav_index) == pytest.approx([100.0, 120.0, 90.0, 110.0])
+        assert view.benchmark_partial
+    assert portfolio.benchmark_window == backtest.benchmark_window == (_day(1), _day(3))
+    assert overview.benchmark_window == (_day(1), _day(3))
+    assert overview.benchmark_partial
+    assert overview.benchmark_return == pytest.approx(0.1)
+    assert overview.strategy_return_in_benchmark_window == pytest.approx(110.0 / 120.0 - 1)
     assert overview.total_return == pytest.approx(0.1)
 
 
-def test_a_benchmark_missing_an_interior_nav_date_is_absent() -> None:
+def test_a_benchmark_ending_early_is_drawn_up_to_its_last_date() -> None:
     snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
-    benchmark = make_nav(50.0, 51.0, start=DAY0) + make_nav(52.0, 53.0, start=_day(3))
+    benchmark = make_nav(50.0, 55.0, 45.0)
+
+    portfolio = portfolio_view(snapshots, benchmark, ())
+    backtest = backtest_view((), snapshots, benchmark)
+    overview = overview_view(snapshots, benchmark, ())
+
+    for view in (portfolio, backtest):
+        assert _days(view.benchmark_index) == [_day(0), _day(1), _day(2)]
+        assert _values(view.benchmark_index) == pytest.approx([100.0, 110.0, 90.0])
+        assert view.benchmark_partial
+    assert portfolio.benchmark_window == backtest.benchmark_window == (_day(0), _day(2))
+    assert overview.benchmark_window == (_day(0), _day(2))
+    assert overview.benchmark_partial
+    assert overview.benchmark_return == pytest.approx(-0.1)
+    assert overview.strategy_return_in_benchmark_window == pytest.approx(-0.1)
+    assert overview.total_return == pytest.approx(0.1)
+
+
+def test_a_benchmark_missing_an_interior_nav_date_is_drawn_on_the_remaining_dates() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(50.0, 51.0, start=DAY0) + make_nav(52.0, start=_day(3))
+
+    portfolio = portfolio_view(snapshots, benchmark, ())
+    backtest = backtest_view((), snapshots, benchmark)
+    overview = overview_view(snapshots, benchmark, ())
+
+    for view in (portfolio, backtest):
+        assert _days(view.benchmark_index) == [_day(0), _day(1), _day(3)]
+        assert _values(view.benchmark_index) == pytest.approx([100.0, 102.0, 104.0])
+        assert view.benchmark_partial
+    assert portfolio.benchmark_window == backtest.benchmark_window == (_day(0), _day(3))
+    assert overview.benchmark_window == (_day(0), _day(3))
+    assert overview.benchmark_partial
+    assert overview.benchmark_return == pytest.approx(0.04)
+    assert overview.strategy_return_in_benchmark_window == pytest.approx(0.1)
+
+
+def test_a_benchmark_with_no_nav_date_in_common_is_absent() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(50.0, 51.0, 49.0, start=_day(10))
 
     portfolio = portfolio_view(snapshots, benchmark, ())
     backtest = backtest_view((), snapshots, benchmark)
@@ -131,26 +200,14 @@ def test_a_benchmark_missing_an_interior_nav_date_is_absent() -> None:
 
     assert portfolio.benchmark_index is None
     assert backtest.benchmark_index is None
+    assert portfolio.benchmark_window is None
+    assert backtest.benchmark_window is None
+    assert overview.benchmark_window is None
     assert overview.benchmark_return is None
-    assert _values(portfolio.nav_index) == pytest.approx([100.0, 120.0, 90.0, 110.0])
-    assert overview.total_return == pytest.approx(0.1)
-
-
-@pytest.mark.parametrize(
-    "benchmark",
-    [
-        make_nav(50.0, 51.0, 49.0, start=_day(10)),
-        make_nav(50.0, 51.0, 49.0, 52.0, start=_day(1)),
-        make_nav(50.0, 51.0, 49.0, 52.0, start=_day(-1))[:3],
-    ],
-    ids=["disjoint", "starts-late", "ends-early"],
-)
-def test_a_benchmark_not_spanning_the_nav_window_is_absent(benchmark: NavHistory) -> None:
-    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
-
-    assert portfolio_view(snapshots, benchmark, ()).benchmark_index is None
-    assert backtest_view((), snapshots, benchmark).benchmark_index is None
-    assert overview_view(snapshots, benchmark, ()).benchmark_return is None
+    assert overview.strategy_return_in_benchmark_window is None
+    assert not portfolio.benchmark_partial
+    assert not backtest.benchmark_partial
+    assert not overview.benchmark_partial
 
 
 def test_a_benchmark_with_interleaved_dates_is_used_when_it_covers_the_nav_dates() -> None:
@@ -169,14 +226,32 @@ def test_a_benchmark_with_interleaved_dates_is_used_when_it_covers_the_nav_dates
     assert overview.benchmark_return == pytest.approx(-0.1)
 
 
-@pytest.mark.parametrize("first", [0.0, -5.0])
-def test_a_benchmark_whose_first_close_is_not_positive_is_absent(first: float) -> None:
+@pytest.mark.parametrize(
+    "benchmark",
+    [
+        make_nav(0.0, 51.0, 49.0, 52.0),
+        make_nav(-5.0, 51.0, 49.0, 52.0),
+        make_nav(0.0, 51.0, 49.0, start=_day(1)),
+        make_nav(-5.0, 51.0, 49.0, start=_day(1)),
+    ],
+    ids=["zero", "negative", "zero-late", "negative-late"],
+)
+def test_a_benchmark_whose_first_covered_close_is_not_positive_is_absent(
+    benchmark: NavHistory,
+) -> None:
     snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
-    benchmark = make_nav(first, 51.0, 49.0, 52.0)
 
-    assert portfolio_view(snapshots, benchmark, ()).benchmark_index is None
-    assert backtest_view((), snapshots, benchmark).benchmark_index is None
-    assert overview_view(snapshots, benchmark, ()).benchmark_return is None
+    portfolio = portfolio_view(snapshots, benchmark, ())
+    backtest = backtest_view((), snapshots, benchmark)
+    overview = overview_view(snapshots, benchmark, ())
+
+    assert portfolio.benchmark_index is None
+    assert backtest.benchmark_index is None
+    assert portfolio.benchmark_window is None
+    assert backtest.benchmark_window is None
+    assert overview.benchmark_window is None
+    assert overview.benchmark_return is None
+    assert overview.strategy_return_in_benchmark_window is None
 
 
 def test_a_benchmark_without_any_nav_is_absent() -> None:
@@ -184,19 +259,22 @@ def test_a_benchmark_without_any_nav_is_absent() -> None:
 
     assert portfolio_view((), benchmark, ()).benchmark_index is None
     assert backtest_view((), (), benchmark).benchmark_index is None
+    assert overview_view((), benchmark, ()).benchmark_window is None
 
 
 def test_the_nav_figures_do_not_depend_on_the_benchmark() -> None:
     snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
     covering = make_nav(50.0, 51.0, 49.0, 52.0)
-    partial = make_nav(50.0, 51.0, 49.0)
+    late = make_nav(60.0, 54.0, 66.0, start=_day(1))
+    early = make_nav(50.0, 55.0, 45.0)
+    gap = make_nav(50.0, 51.0) + make_nav(52.0, start=_day(3))
 
     reference = (
         portfolio_view(snapshots, None, ()),
         overview_view(snapshots, None, ()),
         backtest_view((), snapshots, None),
     )
-    for benchmark in (covering, partial):
+    for benchmark in (covering, late, early, gap):
         portfolio = portfolio_view(snapshots, benchmark, ())
         overview = overview_view(snapshots, benchmark, ())
         backtest = backtest_view((), snapshots, benchmark)
@@ -204,6 +282,7 @@ def test_the_nav_figures_do_not_depend_on_the_benchmark() -> None:
         assert portfolio.drawdown == reference[0].drawdown
         assert overview.total_return == reference[1].total_return
         assert overview.max_drawdown == reference[1].max_drawdown
+        assert overview.nav == reference[1].nav
         assert backtest.nav_index == reference[2].nav_index
 
 

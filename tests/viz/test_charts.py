@@ -49,6 +49,20 @@ def test_nav_vs_benchmark_draws_the_strategy_and_a_dashed_spy() -> None:
     assert figure.layout.template.layout.paper_bgcolor == LIGHT.background
 
 
+def test_nav_vs_benchmark_plots_a_partial_benchmark_over_its_covered_dates() -> None:
+    view = portfolio_view(
+        make_snapshots(100.0, 120.0, 90.0, 110.0),
+        make_nav(60.0, 54.0, 66.0, start=date(2024, 1, 3)),
+        (),
+    )
+
+    strategy, spy = nav_vs_benchmark(view, LIGHT).data
+
+    assert list(strategy.x) == [date(2024, 1, d) for d in (2, 3, 4, 5)]
+    assert list(spy.x) == [date(2024, 1, d) for d in (3, 4, 5)]
+    assert list(spy.y) == pytest.approx([120.0, 108.0, 132.0])
+
+
 def test_nav_vs_benchmark_without_a_benchmark_has_one_trace() -> None:
     view = portfolio_view(make_snapshots(100.0, 101.0, 102.0), None, ())
 

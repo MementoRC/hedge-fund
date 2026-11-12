@@ -39,6 +39,9 @@ class OverviewView:
     nav: float | None
     total_return: float | None
     benchmark_return: float | None
+    strategy_return_in_benchmark_window: float | None
+    benchmark_window: tuple[date, date] | None
+    benchmark_partial: bool
     max_drawdown: float | None
     last_cycle_as_of: date | None
     last_cycle_outcome: CycleOutcome | None
@@ -72,10 +75,15 @@ class PositionRow:
 
 @dataclass(frozen=True)
 class PortfolioView:
-    """NAV and SPY indexed to 100, drawdown (<= 0), exposure per cycle, the latest book."""
+    """NAV indexed to 100, SPY over the NAV dates it covers rebased to the NAV there (with that
+    ``benchmark_window`` and whether it is ``benchmark_partial``), drawdown (<= 0), exposure
+    per cycle, the latest book.
+    """
 
     nav_index: Curve
     benchmark_index: Curve | None
+    benchmark_window: tuple[date, date] | None
+    benchmark_partial: bool
     drawdown: Curve
     exposure: tuple[ExposurePoint, ...]
     sectors: tuple[SectorExposure, ...]
@@ -187,6 +195,8 @@ class BacktestView:
     runs: tuple[BacktestRun, ...]
     nav_index: Curve
     benchmark_index: Curve | None
+    benchmark_window: tuple[date, date] | None
+    benchmark_partial: bool
 
 
 def overview_view(
@@ -197,13 +207,16 @@ def overview_view(
     nav = _nav(snapshots)
     ours = _performance(nav)
     aligned = _aligned(nav, benchmark)
-    theirs = None if aligned is None else _performance(aligned)
+    benchmark_return, strategy_return = _window_returns(aligned)
     last = _latest(cycles, key=lambda report: report.as_of)
     return OverviewView(
         as_of=nav[-1].date if nav else None,
         nav=nav[-1].nav if nav else None,
         total_return=None if ours is None else ours.total_return,
-        benchmark_return=None if theirs is None else theirs.total_return,
+        benchmark_return=benchmark_return,
+        strategy_return_in_benchmark_window=strategy_return,
+        benchmark_window=None if aligned is None else aligned.window,
+        benchmark_partial=aligned is not None and aligned.partial,
         max_drawdown=None if ours is None else ours.max_drawdown,
         last_cycle_as_of=None if last is None else last.as_of,
         last_cycle_outcome=None if last is None else last.outcome,
@@ -224,7 +237,9 @@ def portfolio_view(
     aligned = _aligned(nav, benchmark)
     return PortfolioView(
         nav_index=_index(nav),
-        benchmark_index=None if aligned is None else _index(aligned),
+        benchmark_index=None if aligned is None else aligned.line,
+        benchmark_window=None if aligned is None else aligned.window,
+        benchmark_partial=aligned is not None and aligned.partial,
         drawdown=_drawdown(nav),
         exposure=tuple(ExposurePoint(t.as_of, t.gross, t.net) for t in targets),
         sectors=() if latest is None else _sectors(latest),
@@ -283,7 +298,9 @@ def backtest_view(
     return BacktestView(
         runs=tuple(_run(report) for report in reports),
         nav_index=_index(nav),
-        benchmark_index=None if aligned is None else _index(aligned),
+        benchmark_index=None if aligned is None else aligned.line,
+        benchmark_window=None if aligned is None else aligned.window,
+        benchmark_partial=aligned is not None and aligned.partial,
     )
 
 
@@ -302,16 +319,47 @@ def _performance(nav: NavHistory) -> Performance | None:
     return performance(nav) if len(nav) >= MIN_CURVE_POINTS else None
 
 
-def _aligned(nav: NavHistory, benchmark: NavHistory | None) -> NavHistory | None:
-    """The benchmark on exactly the NAV dates, in NAV order; None unless it covers every one
-    of them and starts above zero (it is indexed from its first value).
+@dataclass(frozen=True)
+class _Benchmark:
+    """The benchmark over the NAV dates it covers: ``closes`` and the strategy's ``nav`` on
+    those dates, ``line`` rebased to the NAV index at the first covered date, and whether
+    some NAV date is uncovered.
     """
-    if benchmark is None or not nav:
+
+    closes: NavHistory
+    nav: NavHistory
+    line: Curve
+    partial: bool
+
+    @property
+    def window(self) -> tuple[date, date]:
+        return self.closes[0].date, self.closes[-1].date
+
+
+def _aligned(nav: NavHistory, benchmark: NavHistory | None) -> _Benchmark | None:
+    """The benchmark on the NAV dates it has a value for, in NAV order (dates outside the NAV
+    are ignored); None when there are none or its first covered value is not above zero.
+    """
+    if benchmark is None:
         return None
     closes = {point.date: point.nav for point in benchmark}
-    if any(point.date not in closes for point in nav) or closes[nav[0].date] <= 0:
+    nav_covered = tuple(point for point in nav if point.date in closes)
+    if not nav_covered or closes[nav_covered[0].date] <= 0:
         return None
-    return tuple(NavPoint(point.date, closes[point.date]) for point in nav)
+    covered = tuple(NavPoint(point.date, closes[point.date]) for point in nav_covered)
+    start = 100.0 * nav_covered[0].nav / nav[0].nav
+    line = tuple((point.date, start * point.nav / covered[0].nav) for point in covered)
+    return _Benchmark(covered, nav_covered, line, partial=len(nav_covered) < len(nav))
+
+
+def _window_returns(aligned: _Benchmark | None) -> tuple[float | None, float | None]:
+    """The benchmark's and the strategy's return from the first to the last covered date;
+    None for both when the benchmark is absent or has too few points for ``performance``.
+    """
+    theirs = None if aligned is None else _performance(aligned.closes)
+    if aligned is None or theirs is None:
+        return None, None
+    return theirs.total_return, aligned.nav[-1].nav / aligned.nav[0].nav - 1.0
 
 
 def _index(nav: NavHistory) -> Curve:

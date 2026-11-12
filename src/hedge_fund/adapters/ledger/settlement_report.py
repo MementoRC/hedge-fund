@@ -60,6 +60,9 @@ def decode_settlement(obj: Mapping[str, Any]) -> SettlementReport:
     ValueError if it is malformed.
     """
     positions = obj["broker_positions"]
+    unreadable = obj["unreadable_reports"]
+    if not isinstance(unreadable, Mapping):
+        raise TypeError(f"unreadable_reports must be an object, got {type(unreadable).__name__}")
     return SettlementReport(
         as_of=date.fromisoformat(obj["as_of"]),
         started_at=decode_instant(obj["started_at"]),
@@ -71,7 +74,7 @@ def decode_settlement(obj: Mapping[str, Any]) -> SettlementReport:
             PendingOrder(item["client_order_id"], item["ticker"], item["reason"])
             for item in obj["pending"]
         ),
-        unreadable_reports=dict(obj["unreadable_reports"]),
+        unreadable_reports=dict(unreadable),
         unsettled=tuple(
             UnsettledOrder(item["client_order_id"], item["ticker"], item["reason"])
             for item in obj["unsettled"]

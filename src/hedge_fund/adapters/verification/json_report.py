@@ -8,7 +8,14 @@ from datetime import UTC, date
 from pathlib import Path
 from typing import Any
 
-from hedge_fund.adapters._json import decode_float, decode_instant, decode_optional, jsonable
+from hedge_fund.adapters._json import (
+    decode_bool,
+    decode_float,
+    decode_instant,
+    decode_int,
+    decode_optional,
+    jsonable,
+)
 from hedge_fund.adapters._load import load_dir
 from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.domain.loaded import Loaded
@@ -90,15 +97,15 @@ def _observation(item: Mapping[str, Any]) -> Observation:
         mean=_optional_float(item["mean"]),
         std=_optional_float(item["std"]),
         agreement=_optional_float(item["agreement"]),
-        valid=item["valid"],
-        horizon=item["horizon"],
+        valid=decode_int(item["valid"]),
+        horizon=decode_int(item["horizon"]),
         base_date=_optional_day(item["base_date"]),
         end_date=_optional_day(item["end_date"]),
         name_return=_optional_float(item["name_return"]),
         spy_return=_optional_float(item["spy_return"]),
         aligned_excess=_optional_float(item["aligned_excess"]),
-        hit=item["hit"],
-        executed=item["executed"],
+        hit=decode_optional(item["hit"], decode_bool),
+        executed=decode_bool(item["executed"]),
         status=ObservationStatus(item["status"]),
         reason=decode_optional(item["reason"], ExclusionReason),
     )
@@ -107,8 +114,8 @@ def _observation(item: Mapping[str, Any]) -> Observation:
 def _bucket(item: Mapping[str, Any]) -> Bucket:
     return Bucket(
         key=item["key"],
-        n=item["n"],
-        hits=item["hits"],
+        n=decode_int(item["n"]),
+        hits=decode_int(item["hits"]),
         hit_rate=_optional_float(item["hit_rate"]),
         mean_excess=_optional_float(item["mean_excess"]),
         median_excess=_optional_float(item["median_excess"]),
@@ -121,10 +128,10 @@ def _buckets(obj: Mapping[str, Any]) -> dict[str, Bucket]:
 
 def _summary(item: Mapping[str, Any]) -> HorizonSummary:
     return HorizonSummary(
-        horizon=item["horizon"],
-        scored=item["scored"],
-        pending=item["pending"],
-        excluded=item["excluded"],
+        horizon=decode_int(item["horizon"]),
+        scored=decode_int(item["scored"]),
+        pending=decode_int(item["pending"]),
+        excluded=decode_int(item["excluded"]),
         overall=_bucket(item["overall"]),
         by_verdict=_buckets(item["by_verdict"]),
         by_score=_buckets(item["by_score"]),

@@ -48,6 +48,20 @@ def decode_float(value: Any) -> float:
     return float(value)
 
 
+def decode_int(value: Any) -> int:
+    """One int field: a JSON integer. TypeError for anything else (bools and floats included)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{value!r} is not an int")
+    return value
+
+
+def decode_bool(value: Any) -> bool:
+    """One bool field: a JSON ``true`` / ``false``. TypeError for anything else."""
+    if not isinstance(value, bool):
+        raise TypeError(f"{value!r} is not a bool")
+    return value
+
+
 def decode_instant(text: str) -> datetime:
     """Inverse of ``jsonable`` for one datetime: ISO 8601 with a UTC offset, else ValueError."""
     instant = datetime.fromisoformat(text)

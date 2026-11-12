@@ -170,6 +170,54 @@ def test_load_all_round_trips_an_excluded_observation_and_no_window(tmp_path: Pa
     assert store.load_all().items == (bare,)
 
 
+INT_FIELDS = [
+    ("observations", 0, "valid"),
+    ("observations", 0, "horizon"),
+    ("summaries", 0, "horizon"),
+    ("summaries", 0, "scored"),
+    ("summaries", 0, "pending"),
+    ("summaries", 0, "excluded"),
+    ("summaries", 0, "overall", "n"),
+    ("summaries", 0, "overall", "hits"),
+]
+BOOL_FIELDS = [("observations", 0, "hit"), ("observations", 0, "executed")]
+
+
+def _with_tampered_copy(tmp_path: Path, path: tuple[str | int, ...], bad: object) -> Any:
+    store = JsonVerificationReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    node = body
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = bad
+    (tmp_path / "verifications" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+    return store.load_all()
+
+
+@pytest.mark.parametrize("bad", [True, 1.5], ids=["bool", "float"])
+@pytest.mark.parametrize("path", INT_FIELDS, ids=lambda p: ".".join(map(str, p)))
+def test_an_int_field_that_is_not_an_int_makes_the_file_unreadable(
+    tmp_path: Path, path: tuple[str | int, ...], bad: object
+) -> None:
+    loaded = _with_tampered_copy(tmp_path, path, bad)
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
+@pytest.mark.parametrize("bad", [1, "yes"], ids=["int", "str"])
+@pytest.mark.parametrize("path", BOOL_FIELDS, ids=lambda p: ".".join(map(str, p)))
+def test_a_bool_field_that_is_not_a_bool_makes_the_file_unreadable(
+    tmp_path: Path, path: tuple[str | int, ...], bad: object
+) -> None:
+    loaded = _with_tampered_copy(tmp_path, path, bad)
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
 def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
     assert JsonVerificationReportStore(tmp_path).load_all().items == ()
 

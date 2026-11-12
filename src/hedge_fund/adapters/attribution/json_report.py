@@ -8,7 +8,14 @@ from datetime import UTC, date
 from pathlib import Path
 from typing import Any
 
-from hedge_fund.adapters._json import decode_float, decode_instant, decode_optional, jsonable
+from hedge_fund.adapters._json import (
+    decode_bool,
+    decode_float,
+    decode_instant,
+    decode_int,
+    decode_optional,
+    jsonable,
+)
 from hedge_fund.adapters._load import load_dir
 from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.adapters.ledger.settlement_report import decode_break
@@ -81,12 +88,12 @@ def _day(item: Mapping[str, Any]) -> DayAttribution:
         day=date.fromisoformat(item["day"]),
         ticker=item["ticker"],
         sector=item["sector"],
-        prior_shares=item["prior_shares"],
+        prior_shares=decode_int(item["prior_shares"]),
         market=decode_float(item["market"]),
         sector_pnl=decode_float(item["sector_pnl"]),
         residual=decode_float(item["residual"]),
         trading=decode_float(item["trading"]),
-        regressed=item["regressed"],
+        regressed=decode_bool(item["regressed"]),
     )
 
 

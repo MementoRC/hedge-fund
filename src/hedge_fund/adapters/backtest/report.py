@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from hedge_fund.adapters._json import decode_float, decode_optional, jsonable
+from hedge_fund.adapters._json import decode_float, decode_int, decode_optional, jsonable
 from hedge_fund.adapters._load import load_dir
 from hedge_fund.adapters.data._atomic import atomic_create
 from hedge_fund.domain.backtest import (
@@ -53,8 +53,8 @@ def decode_backtest_report(obj: Mapping[str, Any]) -> BacktestReport:
             slippage_bps=decode_float(costs["slippage_bps"]),
             borrow_rate=decode_float(costs["borrow_rate"]),
         ),
-        trading_days=obj["trading_days"],
-        rebalances=obj["rebalances"],
+        trading_days=decode_int(obj["trading_days"]),
+        rebalances=decode_int(obj["rebalances"]),
         metrics=_metrics(obj["metrics"]),
         biases=tuple(obj["biases"]),
     )
@@ -96,11 +96,11 @@ def _trading_costs(item: Mapping[str, Any]) -> TradingCosts:
 def _honesty(item: Mapping[str, Any]) -> Honesty:
     return Honesty(
         price_unresolved=dict(item["price_unresolved"]),
-        fundamentals_unresolved=item["fundamentals_unresolved"],
-        flagged_excluded=item["flagged_excluded"],
-        stopped_trading=item["stopped_trading"],
+        fundamentals_unresolved=decode_int(item["fundamentals_unresolved"]),
+        flagged_excluded=decode_int(item["flagged_excluded"]),
+        stopped_trading=decode_int(item["stopped_trading"]),
         rejects=dict(item["rejects"]),
-        daily_breaker_days=item["daily_breaker_days"],
-        drawdown_breaker_days=item["drawdown_breaker_days"],
+        daily_breaker_days=decode_int(item["daily_breaker_days"]),
+        drawdown_breaker_days=decode_int(item["drawdown_breaker_days"]),
         outcomes=dict(item["outcomes"]),
     )

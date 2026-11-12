@@ -183,5 +183,30 @@ def test_load_all_round_trips_a_failed_run_with_no_window(tmp_path: Path) -> Non
     assert store.load_all().items == (failed,)
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        pytest.param("prior_shares", True, id="prior_shares-bool"),
+        pytest.param("prior_shares", 1.5, id="prior_shares-float"),
+        pytest.param("regressed", 1, id="regressed-int"),
+        pytest.param("regressed", "true", id="regressed-str"),
+    ],
+)
+def test_a_day_with_a_mistyped_field_is_unreadable_and_the_good_report_still_loads(
+    tmp_path: Path, field: str, bad: object
+) -> None:
+    store = JsonAttributionReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    body["days"][0][field] = bad
+    (tmp_path / "attributions" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
 def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
     assert JsonAttributionReportStore(tmp_path).load_all().items == ()

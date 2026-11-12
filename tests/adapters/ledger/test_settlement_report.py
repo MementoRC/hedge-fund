@@ -240,6 +240,25 @@ def test_load_all_round_trips_a_failed_run_with_nothing_reached(tmp_path: Path) 
     assert store.load_all().items == (bare,)
 
 
+@pytest.mark.parametrize(
+    "bad", [[["bad.json", "x"]], ["ab"], 3], ids=["pairs", "two-char-strings", "int"]
+)
+def test_unreadable_reports_that_is_not_a_mapping_makes_the_file_unreadable(
+    tmp_path: Path, bad: object
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    body["unreadable_reports"] = bad
+    (tmp_path / "settlements" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
 def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
     loaded = JsonSettlementReportStore(tmp_path).load_all()
 

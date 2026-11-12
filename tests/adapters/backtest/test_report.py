@@ -72,6 +72,36 @@ def test_load_backtest_reports_of_a_root_without_a_run_is_empty(tmp_path: Path) 
     assert loaded.unreadable == {}
 
 
+INT_FIELDS = [
+    ("trading_days",),
+    ("rebalances",),
+    ("metrics", "honesty", "fundamentals_unresolved"),
+    ("metrics", "honesty", "flagged_excluded"),
+    ("metrics", "honesty", "stopped_trading"),
+    ("metrics", "honesty", "daily_breaker_days"),
+    ("metrics", "honesty", "drawdown_breaker_days"),
+]
+
+
+@pytest.mark.parametrize("bad", [True, 1.5], ids=["bool", "float"])
+@pytest.mark.parametrize("path", INT_FIELDS, ids=lambda p: ".".join(p))
+def test_an_int_field_that_is_not_an_int_makes_the_summary_unreadable(
+    tmp_path: Path, path: tuple[str, ...], bad: object
+) -> None:
+    good = save_backtest_report(tmp_path, _report())
+    body = json.loads(good.read_text(encoding="utf-8"))
+    node = body
+    for step in path[:-1]:
+        node = node[step]
+    node[path[-1]] = bad
+    (tmp_path / "backtest" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = load_backtest_reports(tmp_path)
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
 def test_load_backtest_reports_names_a_summary_that_does_not_decode(tmp_path: Path) -> None:
     (tmp_path / "backtest").mkdir()
     (tmp_path / "backtest" / "x.json").write_text('{"run_id": "x"}', encoding="utf-8")

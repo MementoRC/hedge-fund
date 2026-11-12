@@ -13,11 +13,30 @@ PURE_BANNED = (
     "hedge_fund.adapters",
     "hedge_fund.services",
     "hedge_fund.cli",
+    "hedge_fund.viz.load",
     "streamlit",
     "mkdocs",
 )
+CORE_LAYERS = ("engine", "domain", "services")
+# Only static ``import`` / ``from ... import`` statements are scanned: a dynamic import through
+# ``importlib`` or ``__import__`` is not detected by any rule in this file.
 IO_MODULES = frozenset(
-    {"subprocess", "socket", "requests", "urllib", "http", "shutil", "tempfile", "sqlite3"}
+    {
+        "subprocess",
+        "socket",
+        "requests",
+        "urllib",
+        "http",
+        "shutil",
+        "tempfile",
+        "sqlite3",
+        "httpx",
+        "aiohttp",
+        "openai",
+        "anthropic",
+        "langchain",
+        "langchain_core",
+    }
 )
 IO_CALLS = frozenset(
     {"open", "read_text", "write_text", "read_bytes", "write_bytes", "mkdir", "unlink", "rmtree"}
@@ -112,6 +131,10 @@ def test_viz_init_re_exports_nothing_from_viz_load() -> None:
     assert _importing(_files("viz/__init__.py"), "hedge_fund.viz.load") == []
 
 
+def test_core_layers_import_no_viz() -> None:
+    assert _importing(_files(*CORE_LAYERS), "hedge_fund.viz") == []
+
+
 def test_services_import_no_adapters() -> None:
     assert _importing(_files("services"), "hedge_fund.adapters") == []
 
@@ -168,4 +191,7 @@ def test_relative_imports_resolve_against_the_package() -> None:
     )
     assert _resolve(SRC / "viz" / "views.py", _from_import("from ..domain import x")) == (
         "hedge_fund.domain"
+    )
+    assert _resolve(SRC / "viz" / "views.py", _from_import("from ..adapters import x")) == (
+        "hedge_fund.adapters"
     )

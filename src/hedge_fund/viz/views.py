@@ -9,9 +9,10 @@ module never imports ``viz.load`` or an adapter.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalStatus
@@ -197,7 +198,7 @@ def overview_view(
     ours = _performance(nav)
     aligned = _aligned(nav, benchmark)
     theirs = None if aligned is None else _performance(aligned)
-    last = max(cycles, key=lambda report: report.as_of, default=None)
+    last = _latest(cycles, key=lambda report: report.as_of)
     return OverviewView(
         as_of=nav[-1].date if nav else None,
         nav=nav[-1].nav if nav else None,
@@ -242,17 +243,15 @@ def research_view(
     verifications: Sequence[VerificationReport],
     attributions: Sequence[AttributionReport],
 ) -> ResearchView:
-    verified = max(
-        (r for r in verifications if r.outcome is not VerifyOutcome.FAILED),
+    verified = _latest(
+        [r for r in verifications if r.outcome is not VerifyOutcome.FAILED],
         key=lambda r: r.started_at,
-        default=None,
     )
-    attributed = max(
-        (r for r in attributions if r.outcome is not AttributeOutcome.FAILED),
+    attributed = _latest(
+        [r for r in attributions if r.outcome is not AttributeOutcome.FAILED],
         key=lambda r: r.started_at,
-        default=None,
     )
-    latest = max(research, key=lambda result: result.as_of, default=None)
+    latest = _latest(research, key=lambda result: result.as_of)
     return ResearchView(
         names=() if latest is None else _names(latest),
         horizons=()
@@ -286,6 +285,11 @@ def backtest_view(
         nav_index=_index(nav),
         benchmark_index=None if aligned is None else _index(aligned),
     )
+
+
+def _latest[T](items: Sequence[T], key: Callable[[T], Any]) -> T | None:
+    """The item with the greatest key; the last one in input order when keys tie."""
+    return max(reversed(items), key=key, default=None)
 
 
 def _nav(snapshots: Sequence[AccountSnapshot]) -> NavHistory:

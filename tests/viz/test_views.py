@@ -484,6 +484,49 @@ def test_unsorted_research_picks_the_latest_names_report_and_attribution_by_date
     assert view.attribution.total.market == 9.0
 
 
+def test_tied_cycles_pick_the_last_one_for_the_overview() -> None:
+    cycles = (
+        make_cycle(DAY0, outcome=CycleOutcome.SUBMITTED),
+        make_cycle(DAY0, outcome=CycleOutcome.BLOCKED),
+    )
+
+    assert overview_view((), None, cycles).last_cycle_outcome is CycleOutcome.BLOCKED
+
+
+def test_tied_targets_pick_the_last_one_for_the_portfolio() -> None:
+    first = make_target(DAY0, make_position("AAA", "Tech", 0.10))
+    last = make_target(DAY0, make_position("BBB", "Energy", 0.20))
+    cycles = (make_cycle(DAY0, target=first), make_cycle(DAY0, target=last))
+
+    view = portfolio_view((), None, cycles)
+
+    assert [p.ticker for p in view.positions] == ["BBB"]
+
+
+def test_tied_research_reports_pick_the_last_one() -> None:
+    candidate = Candidate("AAA", "Tech", Side.LONG, 1, 0.5)
+    first = NameResearch(candidate, (), 0, None, None, None, Verdict.INSUFFICIENT)
+    last = NameResearch(candidate, (), 0, None, None, None, Verdict.CONFIRM)
+
+    view = research_view(
+        (ResearchResult(DAY0, (first,)), ResearchResult(DAY0, (last,))),
+        (),
+        (
+            _verification(VerifyOutcome.CLEAN, 0.5),
+            _verification(VerifyOutcome.CLEAN, 0.9),
+        ),
+        (
+            _attribution(AttributeOutcome.CLEAN, 7.0),
+            _attribution(AttributeOutcome.CLEAN, 9.0),
+        ),
+    )
+
+    assert [row.verdict for row in view.names] == [Verdict.CONFIRM]
+    assert view.horizons[0].hit_rate == 0.9
+    assert view.attribution is not None
+    assert view.attribution.total.market == 9.0
+
+
 def test_the_funnel_counts_researched_names_and_the_row_carries_halt_and_error() -> None:
     candidate = Candidate("AAA", "Tech", Side.LONG, 1, 0.5)
     name = NameResearch(candidate, (), 0, None, None, None, Verdict.INSUFFICIENT)

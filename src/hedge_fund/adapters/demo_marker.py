@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -37,15 +38,20 @@ def write_demo_marker(root: Path, marker: DemoMarker) -> Path:
 
 
 def read_demo_marker(root: Path) -> DemoMarker | None:
-    """The marker of ``root``; None when there is no ``DEMO.json``.
+    """The marker of ``root``; None only when nothing exists at ``DEMO.json``.
 
-    Raises ValueError ("not a demo marker") for a file that does not parse or is not exactly
-    a format-1 demo marker.
+    Fails closed: raises ValueError ("not a demo marker") for anything there that is not a
+    regular file (a directory, a dangling symlink), that cannot be examined, that does not
+    parse, or that is not exactly a format-1 demo marker.
     """
     path = root / DEMO_MARKER
-    if not path.is_file():
-        return None
     try:
+        try:
+            os.lstat(path)  # unlike os.path.lexists, a PermissionError is not "absent"
+        except FileNotFoundError:
+            return None
+        if not path.is_file():
+            raise ValueError("not a regular file")
         return _decode(json.loads(path.read_text(encoding="utf-8")))
     except (OSError, ValueError, TypeError) as exc:
         raise ValueError(f"{path}: not a demo marker: {exc}") from exc

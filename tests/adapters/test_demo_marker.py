@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,44 @@ def test_the_marker_round_trips_with_the_documented_shape(tmp_path: Path) -> Non
 
 def test_a_root_without_a_marker_reads_as_none(tmp_path: Path) -> None:
     assert read_demo_marker(tmp_path) is None
+
+
+def test_a_marker_that_is_a_directory_is_refused(tmp_path: Path) -> None:
+    (tmp_path / DEMO_MARKER).mkdir()
+
+    with pytest.raises(ValueError, match="not a demo marker"):
+        read_demo_marker(tmp_path)
+
+
+def test_a_dangling_symlink_marker_is_refused(tmp_path: Path) -> None:
+    (tmp_path / DEMO_MARKER).symlink_to(tmp_path / "missing.json")
+
+    with pytest.raises(ValueError, match="not a demo marker"):
+        read_demo_marker(tmp_path)
+
+
+def test_a_symlink_to_a_valid_marker_parses(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    write_demo_marker(real, MARKER)
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / DEMO_MARKER).symlink_to(real / DEMO_MARKER)
+
+    assert read_demo_marker(root) == MARKER
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_an_unsearchable_parent_is_a_value_error(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    write_demo_marker(root, MARKER)
+    root.chmod(0o000)
+    try:
+        with pytest.raises(ValueError, match="not a demo marker"):
+            read_demo_marker(root)
+    finally:
+        root.chmod(0o700)
 
 
 def test_the_marker_is_never_overwritten(tmp_path: Path) -> None:

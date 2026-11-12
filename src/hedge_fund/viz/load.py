@@ -108,10 +108,12 @@ def load_workspace(root: Path, *, store: Path | None = None) -> Workspace:
 def classify_root(root: Path) -> RootKind:
     """DEMO or BACKTEST, else RootError (fail closed).
 
-    DEMO: ``DEMO.json`` parses and its ``run_id`` is the single backtest summary's.
+    DEMO: ``DEMO.json`` parses and its ``run_id`` and ``store_digest`` are the single backtest
+    summary's.
     BACKTEST: exactly one summary that decodes, whose file name is ``<run_id>.json``, and no
     ``DEMO.json``. Anything else, a live root included, raises.
     """
+    root = Path(root)
     try:
         marker = read_demo_marker(root)
     except ValueError as exc:
@@ -131,6 +133,11 @@ def classify_root(root: Path) -> RootKind:
         raise RootError(
             f"{root}: {DEMO_MARKER} names run {marker.run_id!r}, the summary is "
             f"{runs.items[0].run_id!r}"
+        )
+    if marker.store_digest != runs.items[0].store_digest:
+        raise RootError(
+            f"{root}: {DEMO_MARKER} store_digest {marker.store_digest!r} is not the summary's "
+            f"{runs.items[0].store_digest!r}"
         )
     return RootKind.DEMO
 

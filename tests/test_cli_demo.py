@@ -157,6 +157,17 @@ def test_force_refuses_a_root_whose_marker_does_not_parse(tmp_path: Path) -> Non
     assert (root / DEMO_MARKER).is_file()
 
 
+def test_force_refuses_a_root_whose_marker_is_a_directory(tmp_path: Path) -> None:
+    root = tmp_path / "demo"
+    (root / DEMO_MARKER).mkdir(parents=True)
+
+    result = _build(root, "--force")
+
+    assert result.exit_code == 1
+    assert "not a demo marker" in result.output
+    assert (root / DEMO_MARKER).is_dir()
+
+
 def test_force_refuses_a_store_without_a_manifest(tmp_path: Path) -> None:
     root = tmp_path / "demo"
     root.mkdir()

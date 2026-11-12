@@ -146,6 +146,29 @@ def test_a_marker_for_another_run_is_refused(demo_root: Path, tmp_path: Path) ->
         classify_root(root)
 
 
+def test_a_marker_for_another_store_is_refused(demo_root: Path, tmp_path: Path) -> None:
+    root = _copy(demo_root, tmp_path)
+    marker = json.loads((root / DEMO_MARKER).read_text(encoding="utf-8"))
+    marker["store_digest"] = "0" * 64
+    (root / DEMO_MARKER).write_text(json.dumps(marker), encoding="utf-8")
+
+    with pytest.raises(RootError, match="store_digest"):
+        classify_root(root)
+
+
+def test_a_str_root_classifies_like_a_path(demo_root: Path) -> None:
+    assert classify_root(str(demo_root)) is classify_root(demo_root)  # type: ignore[arg-type]
+
+
+def test_a_marker_that_is_a_directory_is_refused(demo_root: Path, tmp_path: Path) -> None:
+    root = _copy(demo_root, tmp_path)
+    (root / DEMO_MARKER).unlink()
+    (root / DEMO_MARKER).mkdir()
+
+    with pytest.raises(RootError, match="not a demo marker"):
+        classify_root(root)
+
+
 def test_a_marker_that_does_not_parse_is_refused(demo_root: Path, tmp_path: Path) -> None:
     root = _copy(demo_root, tmp_path)
     (root / DEMO_MARKER).write_text("{", encoding="utf-8")

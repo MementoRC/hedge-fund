@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hedge_fund.adapters.backtest.report import save_backtest_report
+from hedge_fund.adapters.backtest.report import load_backtest_reports, save_backtest_report
 from hedge_fund.domain.backtest import RESIDUAL_BIASES, BacktestReport, SimCosts
 from hedge_fund.domain.risk import NavPoint
 from hedge_fund.engine.backtest.metrics import backtest_metrics
@@ -53,3 +53,30 @@ def test_a_second_save_of_the_same_run_raises(tmp_path: Path) -> None:
 
     with pytest.raises(FileExistsError, match=report.run_id):
         save_backtest_report(tmp_path, report)
+
+
+def test_load_backtest_reports_round_trips_a_saved_summary(tmp_path: Path) -> None:
+    report = _report()
+    save_backtest_report(tmp_path, report)
+
+    loaded = load_backtest_reports(tmp_path)
+
+    assert loaded.items == (report,)
+    assert loaded.unreadable == {}
+
+
+def test_load_backtest_reports_of_a_root_without_a_run_is_empty(tmp_path: Path) -> None:
+    loaded = load_backtest_reports(tmp_path)
+
+    assert loaded.items == ()
+    assert loaded.unreadable == {}
+
+
+def test_load_backtest_reports_names_a_summary_that_does_not_decode(tmp_path: Path) -> None:
+    (tmp_path / "backtest").mkdir()
+    (tmp_path / "backtest" / "x.json").write_text('{"run_id": "x"}', encoding="utf-8")
+
+    loaded = load_backtest_reports(tmp_path)
+
+    assert loaded.items == ()
+    assert list(loaded.unreadable) == ["x.json"]

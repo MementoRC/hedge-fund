@@ -15,7 +15,9 @@ from hedge_fund.adapters._json import jsonable
 from hedge_fund.adapters.verification.json_report import JsonVerificationReportStore
 from hedge_fund.domain.verification import (
     Bucket,
+    ExclusionReason,
     HorizonSummary,
+    ObservationStatus,
     VerificationReport,
     VerifyOutcome,
 )
@@ -119,6 +121,57 @@ def test_a_failed_write_leaves_no_file(tmp_path: Path, monkeypatch: pytest.Monke
     with pytest.raises(OSError, match="disk full"):
         JsonVerificationReportStore(tmp_path).save(REPORT)
     assert _files(tmp_path) == []
+
+
+def _without_nan_ic(report: VerificationReport) -> VerificationReport:
+    summaries = tuple(dataclasses.replace(s, ic=None) for s in report.summaries)
+    return dataclasses.replace(report, summaries=summaries)
+
+
+def test_load_all_round_trips_a_saved_report(tmp_path: Path) -> None:
+    store = JsonVerificationReportStore(tmp_path)
+    store.save(REPORT)
+
+    loaded = store.load_all()
+
+    [item] = loaded.items
+    assert math.isnan(item.summaries[0].ic)  # type: ignore[arg-type]
+    assert _without_nan_ic(item) == _without_nan_ic(REPORT)
+    assert loaded.unreadable == {}
+
+
+def test_load_all_round_trips_an_excluded_observation_and_no_window(tmp_path: Path) -> None:
+    excluded = make_observation(
+        mean=None,
+        std=None,
+        agreement=None,
+        base_date=None,
+        end_date=None,
+        name_return=None,
+        spy_return=None,
+        aligned_excess=None,
+        hit=None,
+        status=ObservationStatus.EXCLUDED,
+        reason=ExclusionReason.INSUFFICIENT_RESEARCH,
+    )
+    bare = dataclasses.replace(
+        REPORT,
+        start=None,
+        end=None,
+        outcome=VerifyOutcome.FAILED,
+        failed_stage="load",
+        error="ValueError: x",
+        observations=(excluded,),
+        summaries=(),
+    )
+    store = JsonVerificationReportStore(tmp_path)
+    store.save(bare)
+
+    assert store.load_all().items == (bare,)
+
+
+def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
+    assert JsonVerificationReportStore(tmp_path).load_all().items == ()
 
 
 def test_package_exports() -> None:

@@ -13,6 +13,7 @@ import pytest
 
 from hedge_fund.adapters.attribution.json_report import JsonAttributionReportStore
 from hedge_fund.domain.attribution import (
+    NO_PNL,
     AttributeOutcome,
     AttributionReport,
     AttributionTotals,
@@ -143,3 +144,44 @@ def test_package_exports() -> None:
 
     assert attribution.__all__ == ["JsonAttributionReportStore"]
     assert attribution.JsonAttributionReportStore is JsonAttributionReportStore
+
+
+def test_load_all_round_trips_a_saved_report(tmp_path: Path) -> None:
+    store = JsonAttributionReportStore(tmp_path)
+    store.save(REPORT)
+
+    loaded = store.load_all()
+
+    # NaN never compares equal (dataclass eq is field-wise on 3.13), so pin it explicitly.
+    [got] = loaded.items
+    assert math.isnan(got.total.total)
+    no_nan = AttributionTotals(market=15.0, sector=4.0, residual=math.inf, trading=2.0, total=0.0)
+    assert dataclasses.replace(got, total=no_nan) == dataclasses.replace(REPORT, total=no_nan)
+    assert loaded.unreadable == {}
+
+
+def test_load_all_round_trips_a_failed_run_with_no_window(tmp_path: Path) -> None:
+    failed = dataclasses.replace(
+        REPORT,
+        start=None,
+        end=None,
+        outcome=AttributeOutcome.FAILED,
+        failed_stage="load",
+        error="ValueError: x",
+        days=(),
+        by_ticker={},
+        by_sector={},
+        total=NO_PNL,
+        breaks=(),
+        no_beta={},
+        unregressed_days=(),
+        excluded={},
+    )
+    store = JsonAttributionReportStore(tmp_path)
+    store.save(failed)
+
+    assert store.load_all().items == (failed,)
+
+
+def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
+    assert JsonAttributionReportStore(tmp_path).load_all().items == ()

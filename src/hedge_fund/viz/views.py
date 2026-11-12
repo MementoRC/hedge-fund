@@ -194,7 +194,8 @@ def overview_view(
 ) -> OverviewView:
     nav = _nav(snapshots)
     ours = _performance(nav)
-    theirs = None if benchmark is None else _performance(benchmark)
+    _, shared = _shared(nav, benchmark)
+    theirs = None if shared is None else _performance(shared)
     last = cycles[-1] if cycles else None
     return OverviewView(
         as_of=nav[-1].date if nav else None,
@@ -215,9 +216,10 @@ def portfolio_view(
     nav = _nav(snapshots)
     targets = [report.target for report in cycles if report.target is not None]
     latest = targets[-1] if targets else None
+    nav_shared, benchmark_shared = _shared(nav, benchmark)
     return PortfolioView(
-        nav_index=_index(nav),
-        benchmark_index=None if benchmark is None else _index(benchmark),
+        nav_index=_index(nav_shared),
+        benchmark_index=None if benchmark_shared is None else _index(benchmark_shared),
         drawdown=_drawdown(nav),
         exposure=tuple(ExposurePoint(t.as_of, t.gross, t.net) for t in targets),
         sectors=() if latest is None else _sectors(latest),
@@ -268,10 +270,11 @@ def backtest_view(
     snapshots: Sequence[AccountSnapshot],
     benchmark: NavHistory | None,
 ) -> BacktestView:
+    nav_shared, benchmark_shared = _shared(_nav(snapshots), benchmark)
     return BacktestView(
         runs=tuple(_run(report) for report in reports),
-        nav_index=_index(_nav(snapshots)),
-        benchmark_index=None if benchmark is None else _index(benchmark),
+        nav_index=_index(nav_shared),
+        benchmark_index=None if benchmark_shared is None else _index(benchmark_shared),
     )
 
 
@@ -283,6 +286,19 @@ def _nav(snapshots: Sequence[AccountSnapshot]) -> NavHistory:
 
 def _performance(nav: NavHistory) -> Performance | None:
     return performance(nav) if len(nav) >= MIN_CURVE_POINTS else None
+
+
+def _shared(nav: NavHistory, benchmark: NavHistory | None) -> tuple[NavHistory, NavHistory | None]:
+    """Both curves restricted to the dates they share; no shared date means no benchmark."""
+    if benchmark is None:
+        return nav, None
+    days = {p.date for p in nav} & {p.date for p in benchmark}
+    if not days:
+        return nav, None
+    return (
+        tuple(p for p in nav if p.date in days),
+        tuple(p for p in benchmark if p.date in days),
+    )
 
 
 def _index(nav: NavHistory) -> Curve:

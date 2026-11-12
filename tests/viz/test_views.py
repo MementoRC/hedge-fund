@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
@@ -87,6 +87,96 @@ def test_portfolio_indexes_both_curves_to_100_and_measures_drawdown() -> None:
     assert [v for _, v in view.benchmark_index] == pytest.approx([100.0, 102.0, 98.0, 104.0])
     assert [v for _, v in view.drawdown] == pytest.approx([0.0, 0.0, -0.25, 110 / 120 - 1])
     assert -min(v for _, v in view.drawdown) == pytest.approx(performance(nav).max_drawdown)
+
+
+def _days(curve: tuple[tuple[date, float], ...] | None) -> list[date]:
+    assert curve is not None
+    return [day for day, _ in curve]
+
+
+def _values(curve: tuple[tuple[date, float], ...] | None) -> list[float]:
+    assert curve is not None
+    return [value for _, value in curve]
+
+
+def test_portfolio_benchmark_starting_before_the_nav_is_indexed_from_the_first_shared_date() -> (
+    None
+):
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(40.0, 45.0, 50.0, 51.0, 49.0, 52.0, start=DAY0 - timedelta(days=2))
+
+    view = portfolio_view(snapshots, benchmark, ())
+
+    assert _days(view.benchmark_index) == _days(view.nav_index)
+    assert _values(view.benchmark_index) == pytest.approx([100.0, 102.0, 98.0, 104.0])
+    assert _values(view.nav_index) == pytest.approx([100.0, 120.0, 90.0, 110.0])
+
+
+def test_portfolio_benchmark_starting_after_the_nav_shares_the_later_start_date() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(50.0, 60.0, 55.0, start=DAY0 + timedelta(days=1))
+
+    view = portfolio_view(snapshots, benchmark, ())
+
+    assert _days(view.nav_index) == [DAY0 + timedelta(days=i) for i in (1, 2, 3)]
+    assert _days(view.benchmark_index) == _days(view.nav_index)
+    assert _values(view.nav_index) == pytest.approx([100.0, 75.0, 110 / 120 * 100.0])
+    assert _values(view.benchmark_index) == pytest.approx([100.0, 120.0, 110.0])
+
+
+def test_portfolio_benchmark_ending_after_the_nav_is_trimmed_to_the_nav_window() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(50.0, 51.0, 49.0, 52.0, 60.0, 70.0)
+
+    view = portfolio_view(snapshots, benchmark, ())
+
+    assert _days(view.benchmark_index) == [DAY0 + timedelta(days=i) for i in range(4)]
+    assert _values(view.benchmark_index) == pytest.approx([100.0, 102.0, 98.0, 104.0])
+
+
+def test_portfolio_benchmark_with_no_shared_date_is_absent() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(50.0, 51.0, 49.0, start=DAY0 + timedelta(days=10))
+
+    view = portfolio_view(snapshots, benchmark, ())
+
+    assert view.benchmark_index is None
+    assert _values(view.nav_index) == pytest.approx([100.0, 120.0, 90.0, 110.0])
+
+
+def test_overview_benchmark_return_uses_only_the_dates_shared_with_the_nav() -> None:
+    snapshots = make_snapshots(100.0, 110.0, 99.0)
+    benchmark = make_nav(10.0, 20.0, 50.0, 60.0, 70.0, start=DAY0 - timedelta(days=2))
+
+    view = overview_view(snapshots, benchmark, ())
+
+    assert view.benchmark_return == pytest.approx(0.4)
+
+
+def test_overview_benchmark_with_no_shared_date_has_no_return() -> None:
+    benchmark = make_nav(50.0, 51.0, 49.0, start=DAY0 + timedelta(days=10))
+
+    view = overview_view(make_snapshots(100.0, 110.0, 99.0), benchmark, ())
+
+    assert view.benchmark_return is None
+    assert view.total_return == pytest.approx(-0.01)
+
+
+def test_backtest_benchmark_is_trimmed_and_indexed_over_the_shared_dates() -> None:
+    benchmark = make_nav(10.0, 50.0, 55.0, 60.0, 99.0, start=DAY0 - timedelta(days=1))
+
+    view = backtest_view((), make_snapshots(100.0, 110.0, 120.0), benchmark)
+
+    assert _days(view.benchmark_index) == _days(view.nav_index)
+    assert _values(view.benchmark_index) == pytest.approx([100.0, 110.0, 120.0])
+
+
+def test_backtest_benchmark_with_no_shared_date_is_absent() -> None:
+    benchmark = make_nav(50.0, 51.0, start=DAY0 + timedelta(days=10))
+
+    view = backtest_view((), make_snapshots(100.0, 110.0, 120.0), benchmark)
+
+    assert view.benchmark_index is None
 
 
 def test_portfolio_exposure_follows_each_cycle_target_and_sectors_sum_the_latest_book() -> None:

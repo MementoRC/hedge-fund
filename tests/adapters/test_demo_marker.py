@@ -178,7 +178,7 @@ def test_a_marker_that_is_not_exactly_a_demo_marker_is_refused(tmp_path: Path, b
         read_demo_marker(tmp_path)
 
 
-@pytest.mark.parametrize("run_id", ["../x", "a/b", "..", ".", "/abs"])
+@pytest.mark.parametrize("run_id", ["../x", "a/b", "..", ".", "/abs", "a\\b", "..\\x"])
 def test_a_run_id_that_is_not_a_plain_file_name_is_refused_by_reader_and_writer(
     tmp_path: Path, run_id: str
 ) -> None:

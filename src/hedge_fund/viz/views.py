@@ -338,13 +338,13 @@ class _Benchmark:
 
 def _aligned(nav: NavHistory, benchmark: NavHistory | None) -> _Benchmark | None:
     """The benchmark on the NAV dates it has a value for, in NAV order (dates outside the NAV
-    are ignored); None when there are none or its first covered value is not above zero.
+    are ignored); None when there are none or any covered value is not finite and above zero.
     """
     if benchmark is None:
         return None
     closes = {point.date: point.nav for point in benchmark}
     nav_covered = tuple(point for point in nav if point.date in closes)
-    if not nav_covered or closes[nav_covered[0].date] <= 0:
+    if not nav_covered or not all(0 < closes[p.date] < math.inf for p in nav_covered):
         return None
     covered = tuple(NavPoint(point.date, closes[point.date]) for point in nav_covered)
     start = 100.0 * nav_covered[0].nav / nav[0].nav

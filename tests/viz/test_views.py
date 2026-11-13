@@ -254,6 +254,51 @@ def test_a_benchmark_whose_first_covered_close_is_not_positive_is_absent(
     assert overview.strategy_return_in_benchmark_window is None
 
 
+@pytest.mark.parametrize(
+    "benchmark",
+    [
+        make_nav(50.0, 0.0, 49.0, 52.0),
+        make_nav(50.0, 51.0, -5.0, 52.0),
+        make_nav(50.0, 51.0, 49.0, float("nan")),
+        make_nav(50.0, float("inf"), 49.0, 52.0),
+        make_nav(50.0, 51.0, float("-inf"), 52.0),
+    ],
+    ids=["zero-later", "negative-later", "nan-later", "inf-later", "neg-inf-later"],
+)
+def test_a_benchmark_with_a_later_covered_close_not_positive_and_finite_is_absent(
+    benchmark: NavHistory,
+) -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+
+    portfolio = portfolio_view(snapshots, benchmark, ())
+    backtest = backtest_view((), snapshots, benchmark)
+    overview = overview_view(snapshots, benchmark, ())
+
+    assert portfolio.benchmark_index is None
+    assert backtest.benchmark_index is None
+    assert portfolio.benchmark_window is None
+    assert backtest.benchmark_window is None
+    assert overview.benchmark_window is None
+    assert overview.benchmark_return is None
+    assert overview.strategy_return_in_benchmark_window is None
+    assert not portfolio.benchmark_partial
+    assert not overview.benchmark_partial
+
+
+def test_a_bad_close_outside_the_covered_nav_dates_does_not_make_the_benchmark_absent() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = (
+        make_nav(0.0, float("nan"), start=_day(-2))
+        + make_nav(50.0, 51.0, 49.0, 52.0)
+        + make_nav(-1.0, float("inf"), start=_day(4))
+    )
+
+    portfolio = portfolio_view(snapshots, benchmark, ())
+
+    assert _values(portfolio.benchmark_index) == pytest.approx([100.0, 102.0, 98.0, 104.0])
+    assert portfolio.benchmark_window == (_day(0), _day(3))
+
+
 def test_a_benchmark_without_any_nav_is_absent() -> None:
     benchmark = make_nav(50.0, 51.0, 49.0)
 

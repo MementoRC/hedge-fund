@@ -34,3 +34,4 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Architecture: architecture.md
+  - A cycle, step by step: cycle.md

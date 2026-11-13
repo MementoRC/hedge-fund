@@ -1,0 +1,63 @@
+name: Pages
+
+# Builds the MkDocs site and deploys it to GitHub Pages. CI is the only deployer.
+# One-time repo setting: Settings > Pages > Source = "GitHub Actions".
+# The first deploy happens on the first push to main after that setting exists.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.9.0
+        with:
+          pixi-version: v0.74.0
+          environments: site
+
+      # S1: the site has hand-written pages only, so there is nothing to generate and no demo
+      # to build. TODO(S2): before the build step, run the test suite with
+      #   --cov-report=json:coverage.json --junitxml=junit.xml
+      # (for the stats page) and `pixi run -e site demo` (the demo root the site renders);
+      # the `site` task will then also run the sitegen builder ahead of mkdocs. The site env
+      # will need hedge_fund installed (setup-dev, which needs the ../TradingAgents sibling
+      # clone), so S2 adds that checkout too. Also for the S2 plan:
+      #   - NaN/inf metrics render as "n/a" in the page layer (formatter + tests), not in viz/views.py;
+      #   - pages showing benchmark_return/excess_return show benchmark_window/benchmark_partial
+      #     or label them "full window", and never assume a return exists on a too-short window;
+      #   - `site export` requires --store and checks the DEMO.json marker digest against the
+      #     store manifest;
+      #   - any golden hashing serialized floats rounds them at the source (demo prices are 6 dp);
+      #   - round-trip tests on NaN fields assert math.isnan, not ==;
+      #   - demo vs real is decided only via viz classify_root.
+      - name: Build the site
+        run: pixi run -e site site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

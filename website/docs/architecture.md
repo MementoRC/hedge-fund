@@ -30,7 +30,7 @@ flowchart TD
 
 **4. Portfolio construction.** A constrained optimiser turns scores and conviction into target weights. The limits include gross exposure, a cap on any single name, a beta band around zero, net and gross limits per sector, and a minimum number of names on each side.
 
-**5. Risk engine.** Deterministic checks on the whole target book, with veto power: exposure limits, risk limits from a factor risk model, and circuit breakers on daily loss and drawdown. See the Design rules page.
+**5. Risk engine.** Deterministic checks on the whole target book, with veto power: exposure limits, risk limits from a factor risk model, and circuit breakers on daily loss and drawdown. See [Design rules](design-rules.md).
 
 **6. Approval and execution.** A plan that the risk engine has not blocked is shown to an approval gate. Only an explicit yes sends orders, to a paper broker.
 

@@ -35,3 +35,4 @@ nav:
   - Home: index.md
   - Architecture: architecture.md
   - A cycle, step by step: cycle.md
+  - Design rules: design-rules.md

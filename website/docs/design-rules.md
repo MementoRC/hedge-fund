@@ -10,7 +10,7 @@ The domain types and the engine do no I/O, no network calls and no LLM calls. In
 
 The risk engine is deterministic code and it is not advisory. It runs on every target portfolio, including one derived from LLM research, and returns one verdict.
 
-It rejects the book if any of these breach their limits (defaults shown, as fractions of net asset value):
+It rejects the book if any of these breach their limits (defaults shown, as fractions):
 
 - gross exposure (sum of absolute weights) above 2.0, and net exposure beyond 10%;
 - any single name above 10%;
@@ -20,7 +20,7 @@ It rejects the book if any of these breach their limits (defaults shown, as frac
 - any one name contributing more than 15% of total variance, or factor risk above 50% of total variance;
 - a name the risk model cannot assess.
 
-Two circuit breakers also act: a one-day loss of 2.5% or more, or a drawdown of 8% or more, trips a halt, and a halt always rejects. All violations are listed in the verdict. The engine never repairs a book; it only approves or rejects it.
+Two circuit breakers also act: a one-day loss of 2.5% or more, or a drawdown of 8% or more, trips a halt, and a halt always rejects. All exposure violations, and either the risk-limit violations or the unassessable names, are listed in the verdict. The engine never repairs a book; it only approves or rejects it.
 
 A rejected plan is blocked before it reaches the approval gate. The gate is never asked, so a human answer cannot override the veto.
 

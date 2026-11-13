@@ -19,3 +19,7 @@ The risk engine has the last word. It is deterministic code, not a model, and it
 - Live-money trading.
 - Intraday strategies.
 - Non-US markets.
+
+## Where to go next
+
+- [Architecture](architecture.md): the layers, 0 to 8.

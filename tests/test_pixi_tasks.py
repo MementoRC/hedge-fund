@@ -29,7 +29,7 @@ def _manifest() -> dict:
 def test_the_site_feature_adds_mkdocs_material() -> None:
     deps = _manifest()["feature"]["site"]["dependencies"]
 
-    assert "mkdocs-material" in deps
+    assert deps["mkdocs-material"] == ">=9.5"
 
 
 def test_the_site_environment_is_ci_dev_and_site_in_the_default_solve_group() -> None:
@@ -47,6 +47,6 @@ def test_the_site_task_builds_the_site_strictly_into_the_repo_root() -> None:
 def test_dev_and_ci_stay_free_of_mkdocs() -> None:
     features = _manifest()["feature"]
 
-    for name in ("dev", "ci"):
+    for name in ("dev", "ci", "py312"):
         assert not any("mkdocs" in dep for dep in features[name].get("dependencies", {}))
     assert not any("mkdocs" in dep for dep in _manifest()["dependencies"])

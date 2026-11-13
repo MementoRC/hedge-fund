@@ -32,7 +32,7 @@ flowchart TD
 
 **5. Risk engine.** Deterministic checks on the whole target book, with veto power: exposure limits, risk limits from a factor risk model, and circuit breakers on daily loss and drawdown. See [Design rules](design-rules.md).
 
-**6. Approval and execution.** A plan that the risk engine has not blocked is shown to an approval gate. Only an explicit yes sends orders, to a paper broker.
+**6. Approval and execution.** A plan that is neither blocked nor empty is shown to an approval gate. Only an explicit yes sends orders, to a paper broker.
 
 **7. Ledger and evaluation.** What was decided, what filled, and what it cost. Settlement reconciles fills; attribution splits profit and loss by name, sector and factor; thesis verification checks, after the holding period, whether the research claims held up; LLM spend is recorded per cycle.
 

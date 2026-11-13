@@ -26,7 +26,7 @@ A rejected plan is blocked before it reaches the approval gate. The gate is neve
 
 ## Paper trading only
 
-The system executes against a paper broker. There is no live-money path, and none is planned for v1. The backtest has its own composition root that builds only a simulated broker.
+The system executes against a paper broker. There is no live-money path, and none is planned for v1. The backtest wiring, built in the same command-line module, builds only a simulated broker.
 
 ## Point-in-time honesty
 

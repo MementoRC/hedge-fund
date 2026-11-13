@@ -23,7 +23,7 @@ The cycle first checks its inputs. The date must be today or the previous weekda
 | 11 | `submission_window` | Outside a dry run, refuse to continue inside the weekday session window, 09:25 to 16:15 New York time, unless explicitly overridden. Orders are meant to be sent before 09:25 or after 16:15. |
 | 12 | `pending_orders` | For a plan that would send orders, refuse if orders from an earlier cycle are still open at the broker, so the book is not sized against holdings that are about to change. |
 | 13 | `approval` | Offer the plan to the approval gate (below). |
-| 14 | `execution` | If approved, check the window again and send the orders, reducing orders first. If any reducing order fails, the opening orders are skipped, and the opening leg of a flip is deferred. |
+| 14 | `execution` | If approved, check the window again and send the orders: reducing orders first; flip opening legs are always deferred; if any reducing order fails, all opening orders are skipped. |
 
 After the stages the report is saved. A dry run stops after `orders` and never reaches the approval; it also does not save the account snapshot.
 

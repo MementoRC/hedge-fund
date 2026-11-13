@@ -6,6 +6,7 @@ import hashlib
 from fractions import Fraction
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pandas.testing as pdt
 
@@ -15,7 +16,9 @@ from hedge_fund.domain.backtest import Dividend
 from hedge_fund.domain.ledger import Split
 from tests import factories
 
-GOLDEN_STORE_DIGEST = "6fa8739dad872645e7752901a53d601558d8919287e197171ee7dfba864d0bcd"
+SAMPLE_SPY_FIRST_CLOSE = 404.264766
+SAMPLE_AE1_FIRST_OPEN = 102.187122
+GOLDEN_STORE_DIGEST = "aee232327b0a9d2e27573fb5b06ce89d9f2ac9ba933d4fdb149a41dd2dcb36a7"
 
 
 def test_the_default_seed_is_the_one_the_golden_test_uses() -> None:
@@ -23,6 +26,18 @@ def test_the_default_seed_is_the_one_the_golden_test_uses() -> None:
     default, explicit = world.make_golden_data(), world.make_golden_data(1)
     pdt.assert_frame_equal(default.closes, explicit.closes)
     pdt.assert_frame_equal(default.opens, explicit.opens)
+
+
+def test_prices_are_quantized_to_six_decimals() -> None:
+    # last-bit exp/cumsum differences across numpy builds must not reach the store's bytes
+    data = world.make_golden_data()
+    for frame in (data.opens, data.closes):
+        values = frame.to_numpy().ravel()
+        values = values[~np.isnan(values)]
+        assert (values == np.round(values, 6)).all()
+        assert (values > 0).all()
+    assert data.closes.loc["2023-02-01", "SPY"] == SAMPLE_SPY_FIRST_CLOSE
+    assert data.opens.loc["2023-02-01", "AE1"] == SAMPLE_AE1_FIRST_OPEN
 
 
 def test_the_same_seed_gives_the_same_store() -> None:

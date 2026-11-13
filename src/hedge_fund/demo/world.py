@@ -58,6 +58,7 @@ BOUNDARY_TICKER = "CH2"
 BOUNDARY_FILED = pd.Timestamp("2024-03-01")  # filed ON the second rebalance day: not yet visible
 SHIFT_TO_2023 = pd.Timedelta(days=-1004)  # E 2026-06-30 -> 2023-09-30, filed 2023-11-01
 POISONED_METRIC_TAG = "us-gaap:RetainedEarningsAccumulatedDeficit"
+_PRICE_DECIMALS = 6
 
 
 def _prices(days: pd.DatetimeIndex, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -69,11 +70,12 @@ def _prices(days: pd.DatetimeIndex, seed: int) -> tuple[pd.DataFrame, pd.DataFra
         drift, vol = rng.uniform(-0.0015, 0.0015), rng.uniform(0.008, 0.016)
         noise = np.array([rng.gauss(drift, vol) for _ in days])
         closes[ticker] = 100.0 * np.exp(np.cumsum(market + noise))
-    frame = pd.DataFrame(closes, index=days, dtype="float64")
+    # quantized: exp/cumsum differ in the last bit across numpy builds, and the store keeps bytes
+    frame = pd.DataFrame(closes, index=days, dtype="float64").round(_PRICE_DECIMALS)
     gaps = pd.DataFrame(
         {t: [rng.uniform(-0.004, 0.004) for _ in days] for t in frame.columns}, index=days
     )
-    opens = frame * (1.0 + gaps)
+    opens = (frame * (1.0 + gaps)).round(_PRICE_DECIMALS)
     stopped = days > pd.Timestamp(LAST_TRADED)
     frame.loc[stopped, DELIST_TICKER] = np.nan
     opens.loc[stopped, DELIST_TICKER] = np.nan

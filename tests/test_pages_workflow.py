@@ -25,11 +25,12 @@ def _uses(job: dict[str, Any]) -> list[str]:
     return [step["uses"].split("@")[0] for step in job["steps"] if "uses" in step]
 
 
-def test_it_runs_on_a_push_to_main_and_by_hand() -> None:
+def test_it_runs_on_a_push_to_development_and_by_hand() -> None:
     triggers = _triggers(_load("pages.yml"))
 
-    assert triggers["push"] == {"branches": ["main"]}
+    assert triggers["push"] == {"branches": ["development"]}
     assert "workflow_dispatch" in triggers
+    assert "pull_request" not in triggers
 
 
 def test_it_asks_for_only_the_pages_permissions() -> None:

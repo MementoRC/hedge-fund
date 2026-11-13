@@ -2,10 +2,10 @@ name: Pages
 
 # Builds the MkDocs site and deploys it to GitHub Pages. CI is the only deployer.
 # One-time repo setting: Settings > Pages > Source = "GitHub Actions".
-# The first deploy happens on the first push to main after that setting exists.
+# The first deploy happens on the first push to development after that setting exists.
 on:
   push:
-    branches: [main]
+    branches: [development]
   workflow_dispatch:
 
 permissions:

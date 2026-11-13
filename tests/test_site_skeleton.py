@@ -99,7 +99,9 @@ def test_the_nav_lists_the_five_prose_pages_in_order() -> None:
     ]
 
 
-def test_the_methodology_page_lists_every_residual_bias_verbatim() -> None:
+def test_the_methodology_page_bias_list_equals_the_residual_biases() -> None:
     page = (DOCS / "backtest-methodology.md").read_text(encoding="utf-8")
+    section = page.split("## Residual biases", 1)[1].split("\n## ", 1)[0]
+    bullets = [line[2:] for line in section.splitlines() if line.startswith("- ")]
 
-    assert [bias for bias in RESIDUAL_BIASES if bias not in page] == []
+    assert bullets == list(RESIDUAL_BIASES)

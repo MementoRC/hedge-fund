@@ -56,6 +56,6 @@ These remain after the rules above, and every report prints them:
 
 ## Honesty counts
 
-Next to the performance metrics (return against SPY, volatility, Sharpe ratio, maximum drawdown, turnover, trading costs and beta), the report gives counts of the unpriced members by reason (one reason is having no sector), members with no fundamentals, flagged tickers that were excluded, names that stopped trading, rejected orders, would-trip breaker days, and cycle outcomes such as blocked and halted. They show how much of the universe and how many cycles the result actually rests on.
+Next to the performance metrics (return against SPY, volatility, Sharpe ratio, maximum drawdown, turnover, trading costs and beta), the report gives counts of the unpriced members by reason (one reason is having no sector), members with no fundamentals, distinct flagged tickers excluded from a rebalance-day universe, held names that were closed out because they stopped trading, rejected orders, would-trip breaker days, and cycle outcomes such as blocked and halted. They show how much of the universe and how many cycles the result actually rests on.
 
-In the dashboard charts, the SPY benchmark may cover only part of the NAV window. It is then drawn over the dates it covers. The reported benchmark and excess returns are full-window figures. The benchmark is left out when it does not overlap the NAV dates, or when any covered close is not positive and finite.
+In the dashboard charts, the SPY benchmark may cover only part of the NAV window. It is then drawn over the dates it covers. The backtest report's benchmark and excess returns are full-window figures. The benchmark is left out when it does not overlap the NAV dates, or when any covered close is not positive and finite.

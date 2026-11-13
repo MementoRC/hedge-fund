@@ -54,6 +54,8 @@ agents/
 
 # Local data and caches
 /data/
+# Generated site pages (written by the site builder from S2; never committed)
+website/docs/generated/
 .tradingagents/
 tradingagents_cache/
 eval_results/

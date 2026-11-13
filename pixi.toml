@@ -71,6 +71,14 @@ build = "python -m build"
 app = "streamlit run app.py"
 demo = "hedge-fund demo build --root data/demo"
 
+[feature.site.dependencies]
+mkdocs-material = ">=9.5"
+
+[feature.site.tasks]
+# S1: only the MkDocs build. S2 adds the sitegen builder (renders the demo root's pages into
+# website/docs/generated/) in front of it. The path after -d is relative to website/mkdocs.yml.
+site = "mkdocs build --strict -f website/mkdocs.yml -d ../_site"
+
 [feature.py312.dependencies]
 python = "3.12.*"
 
@@ -78,6 +86,7 @@ python = "3.12.*"
 default = { solve-group = "default" }
 dev = { features = ["ci", "dev"], solve-group = "default" }
 ci = { features = ["ci"], solve-group = "default" }
+site = { features = ["ci", "dev", "site"], solve-group = "default" }
 py312 = { features = ["py312", "ci"], solve-group = "py312" }
 quality-extended = { features = ["ci"], solve-group = "default" }
 quality-ci = { features = ["ci"], solve-group = "default" }

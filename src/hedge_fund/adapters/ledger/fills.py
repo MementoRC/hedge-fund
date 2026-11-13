@@ -60,7 +60,7 @@ def _checked(client_order_id: str) -> str:
 def _load(path: Path) -> Fill:
     _checked(path.name.removesuffix(".json"))
     try:
-        fill = _decode(json.loads(path.read_text(encoding="utf-8")))
+        fill = decode_fill(json.loads(path.read_text(encoding="utf-8")))
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"{path.name}: malformed fill record: {exc}") from exc
     if f"{fill.client_order_id}.json" != path.name:
@@ -68,7 +68,7 @@ def _load(path: Path) -> Fill:
     return fill
 
 
-def _decode(obj: Any) -> Fill:
+def decode_fill(obj: Any) -> Fill:
     if not isinstance(obj, dict) or set(obj) != _KEYS:
         raise ValueError(f"expected an object with keys {', '.join(sorted(_KEYS))}")
     avg_price, filled_at = obj["avg_price"], obj["filled_at"]

@@ -2,7 +2,7 @@
 
 ``write_store`` -> ``load_store`` -> ``build_backtest_deps`` -> ``run_backtest`` (the real
 ``plan_shortlist`` and ``run_cycle``, default ``CycleParams``) and, on a fresh root, the CLI
-``backtest run``. The store is tests/backtest_world.py. The golden numbers below were generated
+``backtest run``. The store is hedge_fund.demo.world. The golden numbers below were generated
 once from this code and pasted in, so they are regression goldens, not recomputed here; they
 are pinned to 1e-9 relative (shares are whole numbers, so only float noise could move them).
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +27,7 @@ from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.frozen_providers import FrozenFundamentalsProvider
 from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
 from hedge_fund.adapters.research.store import load_research
+from hedge_fund.demo import world
 from hedge_fund.domain.backtest import BacktestReport, FrozenData, SimCosts
 from hedge_fund.domain.cycle import CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
@@ -35,25 +36,23 @@ from hedge_fund.domain.shortlist import Side
 from hedge_fund.services.account import load_nav_history
 from hedge_fund.services.backtest import backtest_run_id, run_backtest
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
-from tests import backtest_world as world
 
-START, END = date(2024, 1, 10), date(2024, 3, 8)
+START, END = world.RUN_START, date(2024, 3, 8)
 FIRST, SECOND = date(2024, 2, 1), date(2024, 3, 1)  # the monthly rebalance days in START..END
 CASH = 100_000.0
-CREATED = datetime(2024, 6, 1, tzinfo=UTC)
 runner = CliRunner()
 
 # Regression goldens (generated once; see the module docstring).
-GOLDEN_NAV_SECOND = 100311.70163555838
-GOLDEN_FINAL_EQUITY = 101549.58782493576
-GOLDEN_FINAL_CASH = 97824.68106394626
-GOLDEN_TOTAL_RETURN = 0.01549587824935772
-GOLDEN_BENCHMARK_RETURN = 0.1412692374887463
-GOLDEN_TRADED_NOTIONAL = 250780.70164808145
-GOLDEN_SLIPPAGE = 125.3926837892853
-GOLDEN_BORROW = 34.90168829395957
-GOLDEN_STORE_DIGEST = "6fa8739dad872645e7752901a53d601558d8919287e197171ee7dfba864d0bcd"
-GOLDEN_RUN_ID = "2024-01-10_2024-03-08_da376fb95d23"
+GOLDEN_NAV_SECOND = 100311.7017793553
+GOLDEN_FINAL_EQUITY = 101549.5880368189
+GOLDEN_FINAL_CASH = 97824.6812868189
+GOLDEN_TOTAL_RETURN = 0.015495880368189052
+GOLDEN_BENCHMARK_RETURN = 0.14126923607428887
+GOLDEN_TRADED_NOTIONAL = 250780.701827352
+GOLDEN_SLIPPAGE = 125.392683879
+GOLDEN_BORROW = 34.90168830220548
+GOLDEN_STORE_DIGEST = "aee232327b0a9d2e27573fb5b06ce89d9f2ac9ba933d4fdb149a41dd2dcb36a7"
+GOLDEN_RUN_ID = "2024-01-10_2024-03-08_e3b233b1a598"
 GOLDEN_FIRST_ORDERS = {
     "AE1": ("sell_short", 20),
     "AE2": ("sell_short", 56),
@@ -105,7 +104,7 @@ class Replay:
 
 
 def _freeze(path: Path, data: FrozenData) -> Path:
-    write_store(path, data, created_at=CREATED)
+    write_store(path, data, created_at=world.FROZEN_AT)
     return path
 
 

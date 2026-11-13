@@ -59,7 +59,7 @@ format = "ruff format ."
 format-check = "ruff format --check ."
 type-check = "mypy src/"
 quality = { depends-on = ["lint", "format-check", "type-check"] }
-test = "pytest tests/ --cov=hedge_fund --cov-report=term-missing"
+test = "pytest tests/ --cov=hedge_fund --cov-report=term-missing --cov-fail-under=100"
 # Targeted run for TDD loops: `pixi run -e dev test-file tests/path/test_x.py`
 test-file = "pytest -q"
 security = "bandit -c pyproject.toml -r src/"
@@ -69,6 +69,7 @@ build = "python -m build"
 
 [feature.dev.tasks]
 app = "streamlit run app.py"
+demo = "hedge-fund demo build --root data/demo"
 
 [feature.py312.dependencies]
 python = "3.12.*"

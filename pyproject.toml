@@ -36,7 +36,7 @@ warn_unused_configs = true
 mypy_path = "src"
 
 [[tool.mypy.overrides]]
-module = ["pandas", "yfinance", "scipy.*"]
+module = ["pandas", "yfinance", "scipy.*", "plotly", "plotly.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

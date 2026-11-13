@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Callable, Mapping
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
@@ -46,3 +46,30 @@ def decode_float(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError(f"{value!r} is not a float")
     return float(value)
+
+
+def decode_int(value: Any) -> int:
+    """One int field: a JSON integer. TypeError for anything else (bools and floats included)."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{value!r} is not an int")
+    return value
+
+
+def decode_bool(value: Any) -> bool:
+    """One bool field: a JSON ``true`` / ``false``. TypeError for anything else."""
+    if not isinstance(value, bool):
+        raise TypeError(f"{value!r} is not a bool")
+    return value
+
+
+def decode_instant(text: str) -> datetime:
+    """Inverse of ``jsonable`` for one datetime: ISO 8601 with a UTC offset, else ValueError."""
+    instant = datetime.fromisoformat(text)
+    if instant.utcoffset() is None:
+        raise ValueError(f"{text!r} has no UTC offset")
+    return instant
+
+
+def decode_optional[T](value: Any, decode: Callable[[Any], T]) -> T | None:
+    """``None`` stays ``None``; anything else goes through ``decode``."""
+    return None if value is None else decode(value)

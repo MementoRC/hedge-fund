@@ -201,3 +201,133 @@ def test_package_exports() -> None:
     assert ledger.JsonFillStore is JsonFillStore
     assert ledger.JsonOpeningBalance is JsonOpeningBalance
     assert ledger.JsonSettlementReportStore is JsonSettlementReportStore
+
+
+def test_load_all_round_trips_a_saved_report(tmp_path: Path) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+
+    loaded = store.load_all()
+
+    # Python 3.13 dataclass equality compares field by field, so NaN != NaN: check it apart.
+    (report,) = loaded.items
+    assert math.isnan(report.unrealised_total)
+    assert report.started_at.utcoffset() == REPORT.started_at.utcoffset() == timedelta(hours=-4)
+    assert dataclasses.replace(report, unrealised_total=0.0) == dataclasses.replace(
+        REPORT, unrealised_total=0.0
+    )
+    assert loaded.unreadable == {}
+
+
+def test_load_all_round_trips_a_failed_run_with_nothing_reached(tmp_path: Path) -> None:
+    bare = dataclasses.replace(
+        REPORT,
+        outcome=SettleOutcome.ERROR,
+        new_fills=(),
+        pending=(),
+        unreadable_reports={},
+        unsettled=(),
+        broker_positions=None,
+        open_lots=(),
+        unmarked=(),
+        closed_lots=(),
+        breaks=(),
+        realised_total=0.0,
+        unrealised_total=0.0,
+    )
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(bare)
+
+    assert store.load_all().items == (bare,)
+
+
+@pytest.mark.parametrize(
+    "bad", [[["bad.json", "x"]], ["ab"], 3], ids=["pairs", "two-char-strings", "int"]
+)
+def test_unreadable_reports_that_is_not_a_mapping_makes_the_file_unreadable(
+    tmp_path: Path, bad: object
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    body["unreadable_reports"] = bad
+    (tmp_path / "settlements" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
+def test_a_truncated_file_is_unreadable_and_the_good_report_still_loads(tmp_path: Path) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    text = good.read_text(encoding="utf-8")
+    (tmp_path / "settlements" / "cut.json").write_text(text[: len(text) // 2], encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert loaded.items[0].outcome is SettleOutcome.BREAK
+    assert list(loaded.unreadable) == ["cut.json"]
+
+
+@pytest.mark.parametrize("key", ["started_at", "breaks", "realised_total"])
+def test_a_file_missing_a_key_is_unreadable_and_the_good_report_still_loads(
+    tmp_path: Path, key: str
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    del body[key]
+    (tmp_path / "settlements" / "gap.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["gap.json"]
+    assert key in loaded.unreadable["gap.json"]
+
+
+@pytest.mark.parametrize("bad", [2.0, True], ids=["float", "bool"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("new_fills", 0, "requested_shares"),
+        ("new_fills", 0, "filled_shares"),
+        ("broker_positions", 0, "shares"),
+        ("open_lots", 0, "lot", "shares"),
+        ("unmarked", 0, "shares"),
+        ("closed_lots", 0, "shares"),
+        ("breaks", 0, "ledger_shares"),
+        ("breaks", 0, "broker_shares"),
+    ],
+    ids=lambda path: ".".join(map(str, path)),
+)
+def test_a_share_count_that_is_not_a_whole_number_makes_the_file_unreadable(
+    tmp_path: Path, path: tuple[str | int, ...], bad: object
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    target = body
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = bad
+    (tmp_path / "settlements" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
+def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
+    loaded = JsonSettlementReportStore(tmp_path).load_all()
+
+    assert loaded.items == ()
+    assert loaded.unreadable == {}

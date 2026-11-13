@@ -186,6 +186,26 @@ def test_the_budget_and_spend_decode_to_their_types() -> None:
             lambda body: body["account"].update(equity="lots"), ValueError, id="bad-float"
         ),
         pytest.param(
+            lambda body: body["account"]["holdings"][0].update(shares=5.0),
+            TypeError,
+            id="holding-float-shares",
+        ),
+        pytest.param(
+            lambda body: body["account"]["holdings"][0].update(shares=True),
+            TypeError,
+            id="holding-bool-shares",
+        ),
+        pytest.param(
+            lambda body: body["plan"]["orders"][0].update(shares=10.0),
+            TypeError,
+            id="order-float-shares",
+        ),
+        pytest.param(
+            lambda body: body["plan"]["orders"][0].update(shares=True),
+            TypeError,
+            id="order-bool-shares",
+        ),
+        pytest.param(
             lambda body: body["budget"].pop("estimate"), KeyError, id="budget-missing-estimate"
         ),
         pytest.param(

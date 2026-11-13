@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime
 from typing import Any
 
-from hedge_fund.adapters._json import decode_float
+from hedge_fund.adapters._json import decode_float, decode_int
 from hedge_fund.adapters.research.store import decode_candidate, decode_name, decode_usage
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.approval import ApprovalDecision, ApprovalStatus
@@ -75,7 +75,8 @@ def _account(obj: Mapping[str, Any]) -> AccountSnapshot:
         observed_at=_instant(obj["observed_at"]),
         equity=decode_float(obj["equity"]),
         holdings=tuple(
-            Holding(ticker=item["ticker"], shares=item["shares"]) for item in obj["holdings"]
+            Holding(ticker=item["ticker"], shares=decode_int(item["shares"]))
+            for item in obj["holdings"]
         ),
     )
 
@@ -161,7 +162,7 @@ def _order(obj: Mapping[str, Any]) -> Order:
     return Order(
         ticker=obj["ticker"],
         action=OrderAction(obj["action"]),
-        shares=obj["shares"],
+        shares=decode_int(obj["shares"]),
         ref_price=decode_float(obj["ref_price"]),
         notional=decode_float(obj["notional"]),
     )

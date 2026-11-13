@@ -1,6 +1,6 @@
 # A cycle, step by step
 
-A cycle is one paper-trading run, from reading the account to sending orders. It runs over injected interfaces: a data provider, a fundamentals provider, a researcher, a broker, an approval gate and stores. Whatever happens, exactly one report is saved at the end. The stage names below are the ones the report records, so a failed cycle says where it stopped.
+A cycle is one paper-trading run, from reading the account to sending orders. It runs over injected interfaces: a data provider, a fundamentals provider, a researcher, a broker, an approval gate and stores. Whatever happens, the cycle tries to save exactly one report at the end. The stage names below are the ones the report records, so a failed cycle says where it stopped. The recorded stage can also be `inputs` (the checks before the first stage) or `budget` (the cost estimate in the research stage).
 
 ## Before the stages
 
@@ -23,13 +23,13 @@ The cycle first checks its inputs. The date must be today or the previous weekda
 | 11 | `submission_window` | Outside a dry run, refuse to continue inside the weekday session window, 09:25 to 16:15 New York time, unless explicitly overridden. Orders are meant to be sent before 09:25 or after 16:15. |
 | 12 | `pending_orders` | For a plan that would send orders, refuse if orders from an earlier cycle are still open at the broker, so the book is not sized against holdings that are about to change. |
 | 13 | `approval` | Offer the plan to the approval gate (below). |
-| 14 | `execution` | If approved, check the window again and send the orders, reducing orders before opening ones. |
+| 14 | `execution` | If approved, check the window again and send the orders, reducing orders first. If any reducing order fails, the opening orders are skipped, and the opening leg of a flip is deferred. |
 
 After the stages the report is saved. A dry run stops after `orders` and never reaches the approval; it also does not save the account snapshot.
 
 ## The research stage
 
-If research for the same date is already stored and fits the shortlist, it is reused unless fresh research is asked for. Otherwise, when a budget is set, a `budget` step first estimates the cost of a run from earlier cycles (or a fallback price) and cuts the runs per name first, then the number of names. A budget that fits no name ends the cycle as `nothing-to-do` with no portfolio, no orders and no broker write. Without a budget, the whole shortlist is researched. The result is stored, and the spend is recorded in the report.
+If research for the same date is already stored, has no failed runs and fits the shortlist, it is reused unless fresh research is asked for. Otherwise, when a budget is set, a `budget` step first estimates the cost of a run from earlier cycles (or a fallback price) and cuts the runs per name first, down to the minimum that makes a verdict possible, then drops names from the end of the shortlist. A budget that fits no name ends the cycle as `nothing-to-do` with no portfolio, no orders and no broker write. Without a budget, the whole shortlist is researched. The result is stored, and the spend is recorded in the report.
 
 ## The approval stage
 

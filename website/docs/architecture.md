@@ -1,6 +1,6 @@
 # Architecture
 
-The system is built in layers, numbered 0 to 8. Layers 0 to 7 run in order inside every cycle; layer 8 replays that cycle over history.
+The system is built in layers, numbered 0 to 8. Layers 0 to 6 run in order inside every cycle, which also records the LLM spend. Layer 7 settles, attributes and verifies afterwards, as separate commands. Layer 8 replays the cycle over history.
 
 ```mermaid
 flowchart TD
@@ -13,7 +13,8 @@ flowchart TD
     L6["6 Approval and execution<br>human gate, paper broker"]
     L7["7 Ledger and evaluation<br>settlement, attribution, verification, cost"]
     L8["8 Backtest harness<br>offline replay"]
-    L0 --> L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7
+    L0 --> L1 --> L2 --> L3 --> L4 --> L5 --> L6
+    L6 -. "after the cycle" .-> L7
     L8 -. "replays the cycle on frozen data" .-> L1
 ```
 
@@ -21,7 +22,7 @@ flowchart TD
 
 **0. Data.** Prices, company fundamentals and universe membership, read through interfaces (ports) so a real provider, a frozen store or a test double can stand behind them. Fundamentals are filtered to what had been filed on the date being modelled.
 
-**1. Factor engine.** Eight factors, scored sector by sector so a name is compared with its own sector. Four use prices: 12-month momentum skipping the latest month, low volatility, one-month reversal and proximity to the 52-month high. Four use fundamentals: earnings yield, gross profitability, revenue growth and size. Quality gates (Piotroski and Altman) exclude names before scoring. The result is a composite score per name.
+**1. Factor engine.** Eight factors, scored sector by sector so a name is compared with its own sector. Four use prices: 12-month momentum skipping the latest month, low volatility, one-month reversal and proximity to the 52-week high. Four use fundamentals: earnings yield, gross profitability, revenue growth and size. Quality gates (Piotroski and Altman) exclude names before scoring. The result is a composite score per name.
 
 **2. Shortlist.** From the scores, up to three long and three short candidates per sector, capped at 40 names in total by default. Longs need a positive composite, shorts a negative one.
 
@@ -39,4 +40,4 @@ flowchart TD
 
 ## How the code is arranged
 
-Pure logic (domain types and the engine) is separate from everything that touches the outside world. Services orchestrate the engine over injected ports. Adapters implement the ports for real systems. The command-line module is the composition root: it wires the adapters together and is the only place that builds a broker.
+Pure logic (domain types and the engine) is separate from everything that touches the outside world. Services orchestrate the engine over injected ports. Adapters implement the ports for real systems. The command-line module is the composition root: it wires the adapters into the services and is the only place that builds a broker. The dashboard loader also imports adapters, but only to read stored reports.

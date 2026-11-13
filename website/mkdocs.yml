@@ -36,3 +36,4 @@ nav:
   - Architecture: architecture.md
   - A cycle, step by step: cycle.md
   - Design rules: design-rules.md
+  - Backtest methodology: backtest-methodology.md

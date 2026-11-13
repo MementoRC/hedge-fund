@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from hedge_fund.domain.backtest import RESIDUAL_BIASES
+
 ROOT = Path(__file__).resolve().parents[1]
 WEBSITE = ROOT / "website"
 MKDOCS = WEBSITE / "mkdocs.yml"
@@ -85,3 +87,19 @@ def test_the_generated_directory_is_gitignored() -> None:
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
     assert "website/docs/generated/" in ignored
+
+
+def test_the_nav_lists_the_five_prose_pages_in_order() -> None:
+    assert _nav_files(_config()["nav"]) == [
+        "index.md",
+        "architecture.md",
+        "cycle.md",
+        "design-rules.md",
+        "backtest-methodology.md",
+    ]
+
+
+def test_the_methodology_page_lists_every_residual_bias_verbatim() -> None:
+    page = (DOCS / "backtest-methodology.md").read_text(encoding="utf-8")
+
+    assert [bias for bias in RESIDUAL_BIASES if bias not in page] == []

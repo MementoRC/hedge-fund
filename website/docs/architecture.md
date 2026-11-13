@@ -36,7 +36,7 @@ flowchart TD
 
 **7. Ledger and evaluation.** What was decided, what filled, and what it cost. Settlement reconciles fills; attribution splits profit and loss by name, sector and factor; thesis verification checks, after the holding period, whether the research claims held up; LLM spend is recorded per cycle.
 
-**8. Backtest harness.** An offline replay of the deterministic core over frozen, point-in-time data, net of simulated trading costs. The LLM layer is replaced by a neutral stand-in. See the Backtest methodology page.
+**8. Backtest harness.** An offline replay of the deterministic core over frozen, point-in-time data, net of simulated trading costs. The LLM layer is replaced by a neutral stand-in. See [Backtest methodology](backtest-methodology.md).
 
 ## How the code is arranged
 

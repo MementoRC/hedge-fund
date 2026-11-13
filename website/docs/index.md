@@ -25,3 +25,4 @@ The risk engine has the last word. It is deterministic code, not a model, and it
 - [Architecture](architecture.md): the layers, 0 to 8.
 - [A cycle, step by step](cycle.md): what one run does, in order.
 - [Design rules](design-rules.md): the constraints the code is built to keep.
+- [Backtest methodology](backtest-methodology.md): how the replay works and what it cannot tell you.

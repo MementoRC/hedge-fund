@@ -36,7 +36,7 @@ An evaluation is only worth something if the model cannot see the future. So:
 - fundamentals count only when they were filed before the modelled date, and a restatement replaces the original only after its own filing date;
 - universe membership comes from a dated file, per date;
 - backtests run on a frozen, content-hashed store, never on live vendor data;
-- when something cannot be made point-in-time, the report lists it as a residual bias rather than hiding it. See the Backtest methodology page.
+- when something cannot be made point-in-time, the report lists it as a residual bias rather than hiding it. See [Backtest methodology](backtest-methodology.md).
 
 The LLM layer cannot meet these rules: its models have seen the past, and its tools fetch live data. For that reason it is left out of the backtest.
 

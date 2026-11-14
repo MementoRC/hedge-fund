@@ -60,6 +60,13 @@ def portfolio_of_root() -> None:
     render(current_state())
 
 
+def portfolio_page_with_sidebar() -> None:
+    from hedge_fund.dashboard.shell import portfolio_page, render_sidebar
+
+    render_sidebar()
+    portfolio_page()
+
+
 def portfolio_with_targets(*closes: float) -> None:
     from hedge_fund.dashboard.portfolio import render
     from tests.dashboard.builders import targeted_state

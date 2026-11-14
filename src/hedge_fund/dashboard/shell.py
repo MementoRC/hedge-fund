@@ -1,9 +1,11 @@
-"""The dashboard shell: the sidebar every page shows and the current root."""
+"""The dashboard shell: the sidebar every page shows, the current root, the page list
+and the entry point."""
 
 from __future__ import annotations
 
 import streamlit as st
 
+from hedge_fund.dashboard import overview, portfolio
 from hedge_fund.dashboard.data import DEFAULT_ROOT, RootState, load_state
 from hedge_fund.viz.load import RootKind
 
@@ -55,3 +57,24 @@ def _show_unreadable(state: RootState) -> None:
     st.sidebar.warning(
         f"{count} unreadable {noun}; pages show what could be read.\n\n" + "\n".join(lines)
     )
+
+
+def overview_page() -> None:
+    overview.render(current_state())
+
+
+def portfolio_page() -> None:
+    portfolio.render(current_state())
+
+
+def main() -> None:
+    """Entry point of ``app.py``: navigation over the pages, the sidebar, then the page."""
+    st.set_page_config(page_title="Hedge Fund", layout="wide")
+    page = st.navigation(
+        [
+            st.Page(overview_page, title="Overview", url_path="overview", default=True),
+            st.Page(portfolio_page, title="Portfolio & NAV", url_path="portfolio"),
+        ]
+    )
+    render_sidebar()
+    page.run()

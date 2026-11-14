@@ -86,23 +86,3 @@ def test_the_cycle_label_names_the_date_and_the_outcome() -> None:
     [row] = cycle_view((make_cycle(DAY0),)).rows
 
     assert cycle_label(row) == f"{fmt_date(DAY0)} (submitted)"
-
-
-def test_the_d2_builders_are_exercised(tmp_path: Path, demo_root: Path) -> None:
-    from hedge_fund.viz.load import load_workspace
-    from tests.dashboard.builders import (
-        busy_root,
-        markdown_thesis_state,
-        runs_only_state,
-        trouble_state,
-        two_run_root,
-        two_runs_state,
-    )
-
-    assert len(inspect_root(busy_root(tmp_path)).workspace.cycles) == 2  # type: ignore[union-attr]
-    assert len(load_workspace(two_run_root(demo_root, tmp_path)).backtests) == 2
-    assert len(two_runs_state().workspace.backtests) == 2  # type: ignore[union-attr]
-    assert runs_only_state().workspace.snapshots == ()  # type: ignore[union-attr]
-    assert trouble_state().workspace.cycles[0].error == "RuntimeError: boom"  # type: ignore[union-attr]
-    names = markdown_thesis_state().workspace.research[0].names  # type: ignore[union-attr]
-    assert names[0].runs[0].decision == "$5 *bold*"

@@ -8,7 +8,15 @@ from pathlib import Path
 import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "hedge_fund"
-PURE = ("domain", "engine", "demo", "viz/views.py", "viz/charts.py", "viz/theme.py")
+PURE = (
+    "domain",
+    "engine",
+    "demo",
+    "viz/views.py",
+    "viz/charts.py",
+    "viz/theme.py",
+    "dashboard/format.py",
+)
 PURE_BANNED = (
     "hedge_fund.adapters",
     "hedge_fund.services",
@@ -195,3 +203,16 @@ def test_relative_imports_resolve_against_the_package() -> None:
     assert _resolve(SRC / "viz" / "views.py", _from_import("from ..adapters import x")) == (
         "hedge_fund.adapters"
     )
+
+
+def test_the_dashboard_imports_no_adapters() -> None:
+    files = _files("dashboard")
+
+    assert files
+    assert _importing(files, "hedge_fund.adapters") == []
+
+
+def test_nothing_below_the_dashboard_imports_it() -> None:
+    lower = _files("domain", "engine", "services", "viz", "demo", "adapters")
+
+    assert _importing(lower, "hedge_fund.dashboard") == []

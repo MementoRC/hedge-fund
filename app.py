@@ -1,7 +1,5 @@
-"""Streamlit entry point (placeholder)."""
+"""Streamlit entry point: ``pixi run -e dev app``. All logic lives in ``hedge_fund.dashboard``."""
 
-import streamlit as st
+from hedge_fund.dashboard.shell import main
 
-st.set_page_config(page_title="Hedge Fund", layout="wide")
-st.title("Hedge Fund")
-st.caption("Paper trading only. Dashboard under construction.")
+main()

@@ -50,3 +50,9 @@ def test_dev_and_ci_stay_free_of_mkdocs() -> None:
     for name in ("dev", "ci", "py312"):
         assert not any("mkdocs" in dep for dep in features[name].get("dependencies", {}))
     assert not any("mkdocs" in dep for dep in _manifest()["dependencies"])
+
+
+def test_the_app_task_launches_the_dashboard_entry_point() -> None:
+    tasks = _manifest()["feature"]["dev"]["tasks"]
+
+    assert tasks["app"] == "streamlit run app.py"

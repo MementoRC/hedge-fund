@@ -111,6 +111,47 @@ def sidebar_with_state(case: str) -> None:
         shell.render_sidebar()
 
 
+def page_of_root(page: str) -> None:
+    import importlib
+
+    from hedge_fund.dashboard.shell import current_state, render_sidebar
+
+    render_sidebar()
+    importlib.import_module(f"hedge_fund.dashboard.{page}").render(current_state())
+
+
+def page_of_builder(page: str, builder: str, *closes: float) -> None:
+    import importlib
+
+    from tests.dashboard import builders
+
+    state = getattr(builders, builder)(*closes)
+    importlib.import_module(f"hedge_fund.dashboard.{page}").render(state)
+
+
+def page_in_state(page: str, case: str) -> None:
+    """``rich_state`` with SPY on three dates, flagged by hand as ``case``, shown with the
+    sidebar: "read_error", "live" (``kind_error`` and ``is_live``) or "refused" (``kind_error``).
+    """
+    import dataclasses
+    import importlib
+    from unittest.mock import patch
+
+    from hedge_fund.dashboard import shell
+    from tests.dashboard.builders import LIVE_REFUSAL, rich_state
+
+    state = rich_state(60.0, 54.0, 66.0)
+    if case == "read_error":
+        state = dataclasses.replace(state, read_error="denied")
+    elif case == "live":
+        state = dataclasses.replace(state, kind_error=LIVE_REFUSAL, is_live=True)
+    elif case == "refused":
+        state = dataclasses.replace(state, kind_error=LIVE_REFUSAL)
+    with patch.object(shell, "current_state", lambda: state):
+        shell.render_sidebar()
+        importlib.import_module(f"hedge_fund.dashboard.{page}").render(state)
+
+
 def readable_probe(case: str) -> None:
     import dataclasses
 

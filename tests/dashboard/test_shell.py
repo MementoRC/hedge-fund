@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
+from hedge_fund.dashboard import shell
 from tests.dashboard.builders import backtest_root, mismatched_root, open_page
 from tests.dashboard.scripts import sidebar_only, sidebar_with_state
 
@@ -97,6 +98,14 @@ def test_a_root_that_could_not_be_read_shows_the_reason_as_a_warning() -> None:
     [warning] = _bodies(at.sidebar.warning)
     assert "denied" in warning
     assert len(at.sidebar.caption) == 0
+
+
+def test_the_state_probe_restores_current_state() -> None:
+    original = shell.current_state
+
+    open_page(sidebar_with_state, None, "plain")
+
+    assert shell.current_state is original
 
 
 def test_an_unclassified_root_with_no_error_prints_no_none() -> None:

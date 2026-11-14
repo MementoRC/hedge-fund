@@ -30,6 +30,7 @@ def sidebar_only() -> None:
 
 def sidebar_with_state(case: str) -> None:
     import dataclasses
+    from unittest.mock import patch
 
     from hedge_fund.dashboard import shell
     from tests.dashboard.builders import make_state
@@ -37,5 +38,5 @@ def sidebar_with_state(case: str) -> None:
     state = make_state()
     if case == "read_error":
         state = dataclasses.replace(state, read_error="denied")
-    shell.current_state = lambda: state
-    shell.render_sidebar()
+    with patch.object(shell, "current_state", lambda: state):
+        shell.render_sidebar()

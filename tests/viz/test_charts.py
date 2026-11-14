@@ -1,4 +1,4 @@
-"""The D1 charts: figure traces from a view, themed by a palette."""
+"""The charts: figure traces from a view, themed by a palette."""
 
 from __future__ import annotations
 
@@ -11,14 +11,17 @@ import plotly.graph_objects as go
 import pytest
 
 from hedge_fund.viz.charts import (
+    FUNNEL_STAGES,
     drawdown_chart,
     exposure_chart,
+    funnel_chart,
+    llm_cost_chart,
     nav_vs_benchmark,
     sector_exposure_chart,
 )
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.theme import DARK, LIGHT, Palette
-from hedge_fund.viz.views import PortfolioView, portfolio_view
+from hedge_fund.viz.views import CostRow, Funnel, PortfolioView, backtest_view, portfolio_view
 from tests.viz.builders import make_cycle, make_nav, make_position, make_snapshots, make_target
 
 
@@ -152,3 +155,67 @@ def test_the_demo_workspace_draws_every_chart(workspace: Workspace) -> None:
     ):
         assert len(figure.data) >= 1
         assert len(figure.data[0].x) >= 2
+
+
+def test_nav_vs_benchmark_draws_a_backtest_view_like_a_portfolio_view() -> None:
+    snapshots = make_snapshots(100.0, 120.0, 90.0, 110.0)
+    benchmark = make_nav(50.0, 51.0, 49.0, 52.0)
+
+    portfolio = nav_vs_benchmark(portfolio_view(snapshots, benchmark, ()), LIGHT)
+    backtest = nav_vs_benchmark(backtest_view((), snapshots, benchmark), LIGHT)
+
+    assert [trace.name for trace in backtest.data] == ["Strategy", "SPY"]
+    assert [list(t.y) for t in backtest.data] == [list(t.y) for t in portfolio.data]
+
+
+def test_a_partial_backtest_benchmark_is_drawn_over_its_dates_rebased_to_the_nav_there() -> None:
+    view = backtest_view(
+        (),
+        make_snapshots(100.0, 120.0, 90.0, 110.0),
+        make_nav(60.0, 54.0, start=date(2024, 1, 3)),  # two covered dates: no window return
+    )
+
+    strategy, spy = nav_vs_benchmark(view, LIGHT).data
+
+    assert view.benchmark_window == (date(2024, 1, 3), date(2024, 1, 4))
+    assert view.benchmark_partial is True
+    assert list(strategy.x) == [date(2024, 1, d) for d in (2, 3, 4, 5)]
+    assert list(spy.x) == [date(2024, 1, 3), date(2024, 1, 4)]
+    assert list(spy.y) == pytest.approx([120.0, 108.0])  # starts at the strategy index there
+
+
+def test_the_funnel_starts_at_the_shortlist() -> None:
+    figure = funnel_chart(Funnel(shortlist=8, researched=6, portfolio=4, orders=3), LIGHT)
+
+    [trace] = figure.data
+    assert FUNNEL_STAGES == ("Shortlist", "Researched", "Target positions", "Orders")
+    assert trace.type == "funnel"
+    assert list(trace.y) == list(FUNNEL_STAGES)
+    assert list(trace.x) == [8, 6, 4, 3]
+    assert trace.marker.color == LIGHT.strategy
+    assert figure.layout.title.text == "Cycle funnel (from the shortlist)"
+
+
+def test_the_llm_cost_chart_has_budget_and_spend_bars_with_gaps_for_missing_values() -> None:
+    costs = (
+        CostRow(date(2024, 1, 2), 1.0, 0.12),
+        CostRow(date(2024, 1, 3), None, math.nan),
+    )
+
+    figure = llm_cost_chart(costs, DARK)
+
+    budget, spent = figure.data
+    assert (budget.name, spent.name) == ("Budget", "Spent")
+    assert tuple(budget.x) == (date(2024, 1, 2), date(2024, 1, 3))
+    assert list(budget.y) == [1.0, None]
+    assert spent.y[0] == 0.12
+    assert math.isnan(spent.y[1])  # NaN passes through; the chart leaves a gap
+    assert (budget.marker.color, spent.marker.color) == (DARK.benchmark, DARK.strategy)
+    assert figure.layout.barmode == "group"
+    assert figure.layout.yaxis.title.text == "USD"
+    assert figure.layout.yaxis.tickprefix == "$"
+
+
+def test_the_new_charts_of_nothing_build_without_points() -> None:
+    assert all(len(trace.x or ()) == 0 for trace in llm_cost_chart((), LIGHT).data)
+    assert list(funnel_chart(Funnel(0, 0, 0, 0), LIGHT).data[0].x) == [0, 0, 0, 0]

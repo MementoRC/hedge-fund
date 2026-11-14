@@ -52,6 +52,44 @@ def overview_read_error() -> None:
     render(dataclasses.replace(benchmark_state(60.0, 54.0, 66.0), read_error="denied"))
 
 
+def portfolio_of_root() -> None:
+    from hedge_fund.dashboard.portfolio import render
+    from hedge_fund.dashboard.shell import current_state, render_sidebar
+
+    render_sidebar()
+    render(current_state())
+
+
+def portfolio_with_targets(*closes: float) -> None:
+    from hedge_fund.dashboard.portfolio import render
+    from tests.dashboard.builders import targeted_state
+
+    render(targeted_state(*closes))
+
+
+def portfolio_without_target() -> None:
+    from hedge_fund.dashboard.portfolio import render
+    from tests.dashboard.builders import benchmark_state
+
+    render(benchmark_state())
+
+
+def portfolio_with_flat_target() -> None:
+    from hedge_fund.dashboard.portfolio import render
+    from tests.dashboard.builders import flat_state
+
+    render(flat_state())
+
+
+def portfolio_read_error() -> None:
+    import dataclasses
+
+    from hedge_fund.dashboard.portfolio import render
+    from tests.dashboard.builders import targeted_state
+
+    render(dataclasses.replace(targeted_state(60.0, 54.0, 66.0), read_error="denied"))
+
+
 def sidebar_with_state(case: str) -> None:
     import dataclasses
     from unittest.mock import patch

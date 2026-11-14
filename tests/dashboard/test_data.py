@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from hedge_fund.adapters.account import JsonSnapshotStore
+from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.dashboard import data
 from hedge_fund.dashboard.data import (
     DEFAULT_ROOT,
@@ -17,6 +19,31 @@ from hedge_fund.dashboard.data import (
 from hedge_fund.viz import load as viz_load
 from hedge_fund.viz.load import RootKind
 from tests.dashboard.builders import backtest_root, mismatched_root
+from tests.viz.builders import make_snapshots
+
+
+def _root_with_snapshots(tmp_path: Path) -> Path:
+    root = tmp_path / "live"
+    store = JsonSnapshotStore(root)
+    for snapshot in make_snapshots(100.0, 101.0):
+        store.save(snapshot)
+    return root
+
+
+def test_a_root_with_snapshots_and_nothing_else_is_live(tmp_path: Path) -> None:
+    assert inspect_root(_root_with_snapshots(tmp_path)).is_live is True
+
+
+def test_an_empty_directory_is_not_live(tmp_path: Path) -> None:
+    assert inspect_root(tmp_path).is_live is False
+
+
+def test_snapshots_with_an_unreadable_entry_are_not_live(tmp_path: Path) -> None:
+    root = _root_with_snapshots(tmp_path)
+    (root / RUNS_DIR).mkdir()
+    (root / RUNS_DIR / "bad.json").write_text("{", encoding="utf-8")
+
+    assert inspect_root(root).is_live is False
 
 
 def test_the_default_root_is_the_demo_directory() -> None:

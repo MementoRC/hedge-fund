@@ -58,11 +58,18 @@ def store_fingerprint(root: Path) -> Fingerprint:
 
 
 def _is_live(workspace: Workspace) -> bool:
-    """A plain live/paper root: no valid marker, no backtest summary, and nothing unreadable
-    (an unreadable marker or summary would also be an unreadable entry), so the refusal is just
-    "this is not a backtest root". Any other refusal stays an oddity worth showing.
+    """A plain live/paper root: it holds snapshots, no valid marker, no backtest summary, and
+    nothing unreadable (an unreadable marker or summary would also be an unreadable entry), so
+    the refusal is just "this is not a backtest root". Any other refusal stays an oddity worth
+    showing, an empty directory included.
     """
-    return workspace.demo is None and not workspace.backtests and not workspace.unreadable
+    # workspace.demo only labels the caption here; it never drives the DEMO badge (kind does).
+    return (
+        bool(workspace.snapshots)
+        and workspace.demo is None
+        and not workspace.backtests
+        and not workspace.unreadable
+    )
 
 
 def inspect_root(root: Path) -> RootState:
@@ -90,5 +97,9 @@ def load_state(text: str) -> RootState:
 
     The value is shared across reruns and sessions: callers must not mutate it.
     """
-    root = Path(text.strip() or DEFAULT_ROOT).expanduser()
+    root = Path(text.strip() or DEFAULT_ROOT)
+    try:
+        root = root.expanduser()
+    except RuntimeError:  # "~user" with no resolvable home directory
+        return RootState(root, None, None, None)
     return _cached(str(root), store_fingerprint(root))

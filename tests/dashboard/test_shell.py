@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.dashboard import shell
 from tests.dashboard.builders import backtest_root, mismatched_root, open_page
 from tests.dashboard.scripts import sidebar_only, sidebar_with_state
+from tests.viz.builders import make_snapshots
 
 
 def _bodies(elements: object) -> list[str]:
@@ -40,15 +42,30 @@ def test_a_directory_that_does_not_exist_is_named() -> None:
 
 def test_a_tilde_in_the_root_is_expanded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / "r").mkdir()
+    _live_root(tmp_path).rename(tmp_path / "r")
 
     at = open_page(sidebar_only, Path("~/r"))
 
     assert _bodies(at.sidebar.caption) == ["Live root"]
 
 
+def test_a_malformed_home_reference_is_no_such_directory() -> None:
+    at = open_page(sidebar_only, Path("~no_such_user_zz/r"))
+
+    assert len(at.exception) == 0
+    assert _bodies(at.sidebar.caption) == ["No such directory."]
+
+
+def _live_root(tmp_path: Path) -> Path:
+    root = tmp_path / "live"
+    store = JsonSnapshotStore(root)
+    for snapshot in make_snapshots(100.0, 101.0):
+        store.save(snapshot)
+    return root
+
+
 def test_a_live_root_is_neutral_with_the_detail_in_the_tooltip(tmp_path: Path) -> None:
-    at = open_page(sidebar_only, tmp_path)
+    at = open_page(sidebar_only, _live_root(tmp_path))
 
     [caption] = at.sidebar.caption
     assert caption.value == "Live root"
@@ -82,10 +99,11 @@ def test_a_marker_for_another_run_gets_no_badge_although_the_loader_read_it(
     assert "other-run" in caption
 
 
-def test_an_empty_directory_is_a_live_root(tmp_path: Path) -> None:
+def test_an_empty_directory_is_named_as_unclassified(tmp_path: Path) -> None:
     at = open_page(sidebar_only, tmp_path)
 
-    assert _bodies(at.sidebar.caption) == ["Live root"]
+    [caption] = _bodies(at.sidebar.caption)
+    assert caption.startswith("Not a demo or backtest root: ")
     assert len(at.sidebar.warning) == 0
 
 

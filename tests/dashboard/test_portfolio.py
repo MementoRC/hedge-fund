@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+from datetime import timedelta
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from hedge_fund.dashboard.format import WHOLE_HISTORY
+from hedge_fund.dashboard.format import WHOLE_HISTORY, fmt_date
 from hedge_fund.dashboard.portfolio import EXPOSURE_NOTE, positions_table
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import portfolio_view
@@ -114,11 +115,10 @@ def test_a_partial_benchmark_is_labelled_under_the_nav_chart() -> None:
 
     assert len(at.exception) == 0
     assert _charts(at) == 4
-    assert any(
-        "partial window" in caption and "2024-01-03 to 2024-01-05" in caption
-        for caption in _captions(at)
-    )
-    assert any("Target weights of the cycle of 2024-01-04" in c for c in _captions(at))
+    window = f"{fmt_date(DAY0 + timedelta(days=1))} to {fmt_date(DAY0 + timedelta(days=3))}"
+    latest_cycle = f"Target weights of the cycle of {fmt_date(DAY0 + timedelta(days=2))}"
+    assert any("partial window" in caption and window in caption for caption in _captions(at))
+    assert any(latest_cycle in caption for caption in _captions(at))
     assert EXPOSURE_NOTE in _captions(at)
 
 

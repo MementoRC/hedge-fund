@@ -35,6 +35,7 @@ NO_TARGET_MESSAGE = (
 
 def positions_table(view: PortfolioView) -> pd.DataFrame:
     """The latest target book, one formatted row per position."""
+    # Pre-formatted strings (NaN reads "n/a"), so column sorting is lexical; rows keep target order.
     return pd.DataFrame(
         [
             {

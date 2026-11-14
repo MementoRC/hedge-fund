@@ -14,6 +14,7 @@ from hedge_fund.dashboard.data import (
     load_state,
     store_fingerprint,
 )
+from hedge_fund.viz import load as viz_load
 from hedge_fund.viz.load import RootKind
 from tests.dashboard.builders import backtest_root, mismatched_root
 
@@ -53,6 +54,23 @@ def test_an_empty_directory_exists_but_is_not_classified(tmp_path: Path) -> None
     assert "expected exactly one readable backtest summary" in state.kind_error
     assert state.workspace is not None
     assert state.workspace.snapshots == ()
+
+
+@pytest.mark.parametrize("reader", ["read_demo_marker", "load_backtest_reports"])
+def test_an_unreadable_file_is_a_refused_root_not_a_crash(
+    demo_root: Path, monkeypatch: pytest.MonkeyPatch, reader: str
+) -> None:
+    def deny(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(viz_load, reader, deny)
+
+    state = inspect_root(demo_root)
+
+    assert state.kind is None
+    assert state.kind_error is not None
+    assert "denied" in state.kind_error
+    assert state.workspace is not None
 
 
 def test_a_marker_for_another_run_is_no_demo_even_though_the_workspace_read_it(

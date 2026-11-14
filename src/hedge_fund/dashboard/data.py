@@ -38,7 +38,8 @@ class RootState:
 def store_fingerprint(root: Path) -> Fingerprint:
     """``(relative name, mtime_ns, size)`` of every regular file under ``root``, sorted.
 
-    The sibling ``<root>.store`` is not included.
+    The sibling ``<root>.store`` is not included. This walks the whole root on every rerun, and
+    ``rglob`` silently skips subdirectories it cannot read.
     """
     if not root.is_dir():
         return ()
@@ -59,7 +60,7 @@ def inspect_root(root: Path) -> RootState:
     workspace = load_workspace(root)
     try:
         kind = classify_root(root)
-    except RootError as exc:
+    except (RootError, OSError) as exc:  # classify_root maps only ValueError; I/O errors escape
         return RootState(root, workspace, None, str(exc))
     return RootState(root, workspace, kind, None)
 
@@ -73,6 +74,8 @@ def _cached(root: str, fingerprint: Fingerprint) -> RootState:
 def load_state(text: str) -> RootState:
     """The state of the root typed in the sidebar (blank means the default), cached per root
     and invalidated when any file under it changes (not the sibling ``.store``).
+
+    The value is shared across reruns and sessions: callers must not mutate it.
     """
     root = Path(text.strip() or DEFAULT_ROOT)
     return _cached(str(root), store_fingerprint(root))

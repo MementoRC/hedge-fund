@@ -16,7 +16,8 @@ def current_state() -> RootState:
 
 def render_sidebar() -> RootState:
     """The root picker, what kind of root this is, and what could not be read."""
-    st.sidebar.text_input("Store root", value=DEFAULT_ROOT, key="root")
+    st.session_state.setdefault("root", str(DEFAULT_ROOT))
+    st.sidebar.text_input("Store root", key="root")
     state = current_state()
     _show_kind(state)
     _show_read_error(state)
@@ -25,10 +26,14 @@ def render_sidebar() -> RootState:
 
 
 def _show_kind(state: RootState) -> None:
-    if state.kind is RootKind.DEMO:
+    if state.workspace is None and state.read_error is None:
+        st.sidebar.caption("No such directory.")
+    elif state.kind is RootKind.DEMO:
         st.sidebar.markdown(":orange-badge[DEMO] Synthetic data, not a real result.")
     elif state.kind is RootKind.BACKTEST:
         st.sidebar.caption("Backtest root.")
+    elif state.is_live:
+        st.sidebar.caption("Live root", help=state.kind_error)
     elif state.kind_error is not None:
         st.sidebar.caption(f"Not a demo or backtest root: {state.kind_error}")
 

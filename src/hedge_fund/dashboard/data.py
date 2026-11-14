@@ -35,6 +35,7 @@ class RootState:
     kind: RootKind | None
     kind_error: str | None
     read_error: str | None = None
+    is_live: bool = False
 
 
 def store_fingerprint(root: Path) -> Fingerprint:
@@ -56,6 +57,14 @@ def store_fingerprint(root: Path) -> Fingerprint:
     return tuple(entries)
 
 
+def _is_live(workspace: Workspace) -> bool:
+    """A plain live/paper root: no valid marker, no backtest summary, and nothing unreadable
+    (an unreadable marker or summary would also be an unreadable entry), so the refusal is just
+    "this is not a backtest root". Any other refusal stays an oddity worth showing.
+    """
+    return workspace.demo is None and not workspace.backtests and not workspace.unreadable
+
+
 def inspect_root(root: Path) -> RootState:
     if not root.is_dir():
         return RootState(root, None, None, None)
@@ -63,7 +72,7 @@ def inspect_root(root: Path) -> RootState:
     try:
         kind = classify_root(root)
     except RootError as exc:
-        return RootState(root, workspace, None, str(exc))
+        return RootState(root, workspace, None, str(exc), is_live=_is_live(workspace))
     except OSError as exc:  # classify_root maps only ValueError; I/O errors escape it
         return RootState(root, workspace, None, None, read_error=str(exc))
     return RootState(root, workspace, kind, None)
@@ -81,5 +90,5 @@ def load_state(text: str) -> RootState:
 
     The value is shared across reruns and sessions: callers must not mutate it.
     """
-    root = Path(text.strip() or DEFAULT_ROOT)
+    root = Path(text.strip() or DEFAULT_ROOT).expanduser()
     return _cached(str(root), store_fingerprint(root))

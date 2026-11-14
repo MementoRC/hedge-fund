@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.dashboard import shell
 from tests.dashboard.builders import backtest_root, mismatched_root, open_page
@@ -27,8 +29,30 @@ def test_the_default_sidebar_offers_the_demo_root() -> None:
     assert at.sidebar.text_input(key="root").value == "data/demo"
     assert len(at.sidebar.radio) == 0
     assert len(at.sidebar.warning) == 0
-    assert len(at.sidebar.caption) == 0
     assert not any("DEMO" in body for body in _bodies(at.sidebar.markdown))
+
+
+def test_a_directory_that_does_not_exist_is_named() -> None:
+    at = open_page(sidebar_only)
+
+    assert _bodies(at.sidebar.caption) == ["No such directory."]
+
+
+def test_a_tilde_in_the_root_is_expanded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "r").mkdir()
+
+    at = open_page(sidebar_only, Path("~/r"))
+
+    assert _bodies(at.sidebar.caption) == ["Live root"]
+
+
+def test_a_live_root_is_neutral_with_the_detail_in_the_tooltip(tmp_path: Path) -> None:
+    at = open_page(sidebar_only, tmp_path)
+
+    [caption] = at.sidebar.caption
+    assert caption.value == "Live root"
+    assert "expected exactly one readable backtest summary" in caption.help
 
 
 def test_the_demo_world_gets_the_demo_badge(demo_root: Path) -> None:
@@ -58,11 +82,10 @@ def test_a_marker_for_another_run_gets_no_badge_although_the_loader_read_it(
     assert "other-run" in caption
 
 
-def test_an_empty_directory_is_named_as_unclassified(tmp_path: Path) -> None:
+def test_an_empty_directory_is_a_live_root(tmp_path: Path) -> None:
     at = open_page(sidebar_only, tmp_path)
 
-    [caption] = _bodies(at.sidebar.caption)
-    assert caption.startswith("Not a demo or backtest root: ")
+    assert _bodies(at.sidebar.caption) == ["Live root"]
     assert len(at.sidebar.warning) == 0
 
 

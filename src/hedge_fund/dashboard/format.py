@@ -13,6 +13,7 @@ from hedge_fund.viz.views import MIN_CURVE_POINTS
 
 NOT_AVAILABLE = "n/a"
 Window = tuple[date, date]
+WHOLE_HISTORY = "SPY covers the whole NAV history"
 NO_SPY = (
     "No SPY series for this root. A demo root takes SPY from its sibling `<root>.store`; "
     "a problem loading it is listed in the sidebar."
@@ -65,7 +66,7 @@ def chart_note(window: Window | None, partial: bool) -> str:
             f"SPY covers only {fmt_window(window)} (partial window): the chart rebases it to "
             f"the strategy at {fmt_date(window[0])} while the strategy line stays full length."
         )
-    return f"SPY covers the whole NAV history, {fmt_window(window)}."
+    return f"{WHOLE_HISTORY}, {fmt_window(window)}."
 
 
 def return_note(window: Window | None, partial: bool, *, has_return: bool) -> str:

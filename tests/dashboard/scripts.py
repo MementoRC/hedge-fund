@@ -43,6 +43,15 @@ def overview_with_benchmark(*closes: float) -> None:
     render(benchmark_state(*closes))
 
 
+def overview_read_error() -> None:
+    import dataclasses
+
+    from hedge_fund.dashboard.overview import render
+    from tests.dashboard.builders import benchmark_state
+
+    render(dataclasses.replace(benchmark_state(60.0, 54.0, 66.0), read_error="denied"))
+
+
 def sidebar_with_state(case: str) -> None:
     import dataclasses
     from unittest.mock import patch

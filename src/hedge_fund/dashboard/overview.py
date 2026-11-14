@@ -58,6 +58,7 @@ def headlines(view: OverviewView) -> tuple[Headline, ...]:
 
 def run_table(runs: Sequence[BacktestRun]) -> pd.DataFrame:
     """One formatted row per run; the three return columns are full-window figures."""
+    # Pre-formatted strings: raw floats would show NaN as blank, not "n/a", so sorting is lexical.
     return pd.DataFrame(
         [
             {

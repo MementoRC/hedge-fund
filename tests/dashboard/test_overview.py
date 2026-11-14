@@ -10,13 +10,17 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from hedge_fund.dashboard.format import fmt_money, fmt_percent
+from hedge_fund.dashboard.format import WHOLE_HISTORY, fmt_money, fmt_percent
 from hedge_fund.dashboard.overview import RUN_NOTE, Headline, headlines, run_table
 from hedge_fund.domain.cycle import CycleOutcome
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import overview_view
 from tests.dashboard.builders import make_run, open_page
-from tests.dashboard.scripts import overview_of_root, overview_with_benchmark
+from tests.dashboard.scripts import (
+    overview_of_root,
+    overview_read_error,
+    overview_with_benchmark,
+)
 from tests.viz.builders import make_cycle, make_nav, make_snapshots
 
 SNAPSHOTS = make_snapshots(100.0, 120.0, 90.0, 115.0)  # full history +15%, max drawdown 25%
@@ -137,9 +141,22 @@ def test_the_run_table_shows_n_a_for_nan_infinite_and_missing_ratios() -> None:
     assert nan_row["Return (full window)"] == none_row["Return (full window)"] == "10.0%"
 
 
-def test_the_run_note_says_the_run_figures_are_full_window() -> None:
+def test_the_run_note_says_the_run_figures_are_full_window(demo_root: Path) -> None:
     assert "whole window" in RUN_NOTE
     assert "SPY" in RUN_NOTE
+
+    at = open_page(overview_of_root, demo_root)
+
+    assert [caption.value for caption in at.caption].count(RUN_NOTE) == 1
+
+
+def test_an_unreadable_root_fails_closed_on_the_overview() -> None:
+    at = open_page(overview_read_error)
+
+    assert len(at.exception) == 0
+    assert len(at.metric) == 0
+    assert len(at.dataframe) == 0
+    assert "denied" in at.error[0].value
 
 
 def test_the_demo_overview_shows_the_headlines_and_the_run(
@@ -158,7 +175,7 @@ def test_the_demo_overview_shows_the_headlines_and_the_run(
     assert table.value.iloc[0]["Run"] == workspace.backtests[0].run_id
     assert "Return (full window)" in table.value.columns
     assert RUN_NOTE in [caption.value for caption in at.caption]
-    assert any("whole NAV history" in caption.value for caption in at.caption)
+    assert any(WHOLE_HISTORY in caption.value for caption in at.caption)
 
 
 def test_an_empty_root_explains_how_to_fill_it() -> None:

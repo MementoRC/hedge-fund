@@ -28,6 +28,21 @@ def sidebar_only() -> None:
     render_sidebar()
 
 
+def overview_of_root() -> None:
+    from hedge_fund.dashboard.overview import render
+    from hedge_fund.dashboard.shell import current_state, render_sidebar
+
+    render_sidebar()
+    render(current_state())
+
+
+def overview_with_benchmark(*closes: float) -> None:
+    from hedge_fund.dashboard.overview import render
+    from tests.dashboard.builders import benchmark_state
+
+    render(benchmark_state(*closes))
+
+
 def sidebar_with_state(case: str) -> None:
     import dataclasses
     from unittest.mock import patch

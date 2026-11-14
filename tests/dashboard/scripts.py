@@ -152,6 +152,12 @@ def page_in_state(page: str, case: str) -> None:
         importlib.import_module(f"hedge_fund.dashboard.{page}").render(state)
 
 
+def headline_cards(count: int, per_row: int) -> None:
+    from hedge_fund.dashboard.overview import Headline, show_headlines
+
+    show_headlines([Headline(f"card {i}", str(i), f"hint {i}") for i in range(count)], per_row)
+
+
 def readable_probe(case: str) -> None:
     import dataclasses
 

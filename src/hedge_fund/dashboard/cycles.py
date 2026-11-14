@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import NOT_AVAILABLE, fmt_date, fmt_money
+from hedge_fund.dashboard.format import NOT_AVAILABLE, escape_markdown, fmt_date, fmt_money
 from hedge_fund.dashboard.portfolio import PALETTE
 from hedge_fund.dashboard.states import nothing_message, readable_workspace
 from hedge_fund.viz.charts import funnel_chart
@@ -112,7 +112,7 @@ def _detail(row: CycleRow) -> None:
     spent.metric("LLM spent", fmt_money(row.spent))
     st.markdown("**Risk vetoes**")
     if row.vetoes:
-        st.markdown("\n".join(f"- {veto}" for veto in row.vetoes))
+        st.markdown("\n".join(f"- {escape_markdown(veto)}" for veto in row.vetoes))
     else:
         st.caption("No risk veto.")
     if row.halted:
@@ -120,4 +120,4 @@ def _detail(row: CycleRow) -> None:
     if row.unresolved:
         st.caption(f"Unresolved tickers (no price or fundamentals): {row.unresolved}.")
     if row.error is not None:
-        st.markdown(f"**Cycle error:** `{row.error}`")
+        st.markdown(f"**Cycle error:** {escape_markdown(row.error)}")

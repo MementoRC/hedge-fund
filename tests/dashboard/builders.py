@@ -278,6 +278,17 @@ def trouble_state() -> RootState:
     return make_state(cycles=(cycle,))
 
 
+def escaped_text_state() -> RootState:
+    """One cycle whose veto reason holds ``$5 limit`` and whose error holds a backtick."""
+    cycle = make_cycle(
+        DAY0,
+        outcome=CycleOutcome.ERROR,
+        verdict=_verdict(halt=False, violations=(Violation("gross", 1.7, 1.6, "$5 limit"),)),
+        error="RuntimeError: `boom`",
+    )
+    return make_state(cycles=(cycle,))
+
+
 def runs_only_state() -> RootState:
     """A backtest summary but no account snapshots."""
     return make_state(backtests=(make_backtest_report(),))

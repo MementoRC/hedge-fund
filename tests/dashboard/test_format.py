@@ -11,6 +11,7 @@ import pytest
 from hedge_fund.dashboard.format import (
     NOT_AVAILABLE,
     chart_note,
+    escape_markdown,
     fmt_date,
     fmt_money,
     fmt_number,
@@ -26,6 +27,13 @@ NON_FINITE = [math.nan, math.inf, -math.inf, None]
 
 def test_the_placeholder_is_n_a() -> None:
     assert NOT_AVAILABLE == "n/a"
+
+
+def test_escape_markdown_makes_llm_text_literal() -> None:
+    assert escape_markdown("$5 *bold*") == r"\$5 \*bold\*"
+    assert escape_markdown(r"a\b [x](y) `z` _u_ # h") == r"a\\b \[x\]\(y\) \`z\` \_u\_ \# h"
+    assert escape_markdown("Buy: wide moat") == "Buy: wide moat"
+    assert escape_markdown("AT&amp;T") == r"AT\&amp;T"  # no HTML entity is decoded
 
 
 @pytest.mark.parametrize("value", NON_FINITE)

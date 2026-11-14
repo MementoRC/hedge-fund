@@ -205,7 +205,7 @@ def test_relative_imports_resolve_against_the_package() -> None:
     )
 
 
-def test_the_dashboard_reads_stores_only_through_viz_load() -> None:
+def test_the_dashboard_imports_no_adapters() -> None:
     files = _files("dashboard")
 
     assert files

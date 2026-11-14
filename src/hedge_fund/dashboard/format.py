@@ -20,28 +20,39 @@ NO_SPY = (
 
 
 def fmt_number(value: float | None, spec: str = ",.2f") -> str:
-    """``value`` formatted with ``spec``; "n/a" for None, NaN, +inf and -inf."""
+    """``value`` formatted with ``spec``; "n/a" for None, NaN, +inf and -inf.
+
+    A value that rounds to zero at ``spec``'s precision shows no minus sign. ``bool`` is not
+    a supported input.
+    """
     if value is None or not math.isfinite(value):
         return NOT_AVAILABLE
-    return format(value, spec)
+    text = format(value, spec)
+    if text.startswith("-") and not any(char in "123456789" for char in text):
+        return text[1:]
+    return text
 
 
 def fmt_percent(value: float | None, digits: int = 1) -> str:
+    """``value`` as a percentage with ``digits`` decimals; "n/a" when not finite."""
     return fmt_number(value, f".{digits}%")
 
 
 def fmt_money(value: float | None) -> str:
     """Dollars with thousands separators; a negative sign leads the dollar sign."""
-    if value is None or not math.isfinite(value):
-        return NOT_AVAILABLE
-    return f"-${-value:,.2f}" if value < 0 else f"${value:,.2f}"
+    text = fmt_number(value)
+    if text == NOT_AVAILABLE:
+        return text
+    return f"-${text[1:]}" if text.startswith("-") else f"${text}"
 
 
 def fmt_date(day: date | None) -> str:
+    """ISO date; "n/a" for None."""
     return NOT_AVAILABLE if day is None else day.isoformat()
 
 
 def fmt_window(window: Window | None) -> str:
+    """``start to end`` for a ``(start, end)`` window; "n/a" for None."""
     return NOT_AVAILABLE if window is None else f"{fmt_date(window[0])} to {fmt_date(window[1])}"
 
 

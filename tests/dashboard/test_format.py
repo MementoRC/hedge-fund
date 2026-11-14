@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from datetime import date
 
+import numpy as np
 import pytest
 
 from hedge_fund.dashboard.format import (
@@ -17,6 +18,7 @@ from hedge_fund.dashboard.format import (
     fmt_window,
     return_note,
 )
+from hedge_fund.viz.views import MIN_CURVE_POINTS
 
 WINDOW = (date(2024, 1, 3), date(2024, 1, 5))
 NON_FINITE = [math.nan, math.inf, -math.inf, None]
@@ -61,6 +63,31 @@ def test_fmt_money_puts_the_sign_before_the_dollar_sign() -> None:
     assert fmt_money(0.0) == "$0.00"
 
 
+@pytest.mark.parametrize(
+    ("value", "number", "percent", "money"),
+    [
+        (-0.0, "0.00", "0.0%", "$0.00"),
+        (-0.001, "0.00", "-0.1%", "$0.00"),
+        (-0.0001, "0.00", "0.0%", "$0.00"),
+        (-0.004, "0.00", "-0.4%", "$0.00"),
+        (-0.006, "-0.01", "-0.6%", "-$0.01"),
+        (1e300, f"{1e300:,.2f}", f"{1e300:.1%}", f"${1e300:,.2f}"),
+        (-1e300, f"{-1e300:,.2f}", f"{-1e300:.1%}", f"-${1e300:,.2f}"),
+        (np.float64(-0.0), "0.00", "0.0%", "$0.00"),
+        (np.float64(-0.006), "-0.01", "-0.6%", "-$0.01"),
+        (np.float64(1234.5), "1,234.50", "123450.0%", "$1,234.50"),
+        (np.float64("nan"), "n/a", "n/a", "n/a"),
+        (np.float64("-inf"), "n/a", "n/a", "n/a"),
+    ],
+)
+def test_rounding_to_zero_drops_the_sign_and_exotic_floats_format(
+    value: float, number: str, percent: str, money: str
+) -> None:
+    assert fmt_number(value) == number
+    assert fmt_percent(value) == percent
+    assert fmt_money(value) == money
+
+
 def test_fmt_date_and_window() -> None:
     assert fmt_date(date(2024, 1, 3)) == "2024-01-03"
     assert fmt_date(None) == "n/a"
@@ -100,7 +127,7 @@ def test_return_note_with_a_window_but_no_return_says_fewer_than_three_dates() -
     note = return_note(WINDOW, partial=True, has_return=False)
 
     assert "partial window" in note
-    assert "fewer than 3 dates" in note
+    assert f"fewer than {MIN_CURVE_POINTS} dates" in note
     assert "no SPY return is computed" in note
 
 

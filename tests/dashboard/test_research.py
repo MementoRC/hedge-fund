@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import fmt_date
+from hedge_fund.dashboard.format import escape_markdown, fmt_date
 from hedge_fund.dashboard.research import (
     ATTRIBUTION_COLUMNS,
+    ATTRIBUTION_NOTE,
     COST_COLUMNS,
     HORIZON_COLUMNS,
     NAME_COLUMNS,
+    NO_COSTS,
+    NO_THESIS,
     attribution_table,
     cost_table,
     gap_message,
@@ -19,15 +26,19 @@ from hedge_fund.dashboard.research import (
     names_table,
 )
 from hedge_fund.domain.research import ResearchResult
-from hedge_fund.viz.load import RootKind
+from hedge_fund.viz.load import RootKind, Workspace
 from hedge_fund.viz.views import HorizonRow, ResearchView, research_view
 from tests.dashboard.builders import (
     LATER,
+    backtest_root,
+    live_root,
     make_attribution,
     make_name,
     make_verification,
+    open_page,
     rich_state,
 )
+from tests.dashboard.scripts import page_in_state, page_of_builder, page_of_root
 from tests.viz.builders import DAY0
 
 
@@ -162,3 +173,127 @@ def test_a_gap_on_any_other_root_names_the_command() -> None:
     assert "No completed thesis verification in this root yet" in message
     assert "`hedge-fund verify`" in message
     assert "pixi run -e dev demo" not in message  # the demo has no verification (Decision 9)
+
+
+def _charts(at: AppTest) -> int:
+    return len(at.get("plotly_chart"))
+
+
+def _infos(at: AppTest) -> list[str]:
+    return [info.value for info in at.info]
+
+
+def test_the_demo_research_shows_names_and_explains_the_backtest_gaps(
+    demo_root: Path, workspace: Workspace
+) -> None:
+    view = research_view(
+        workspace.research, workspace.cycles, workspace.verifications, workspace.attributions
+    )
+
+    at = open_page(page_of_root, demo_root, "research")
+
+    assert len(at.exception) == 0
+    assert len(at.error) == 0
+    assert [title.value for title in at.title] == ["Research & attribution"]
+    names, costs = at.dataframe
+    assert len(names.value) == len(view.names)
+    assert len(costs.value) == len(view.costs)
+    assert len(at.expander) == len(view.names)
+    infos = _infos(at)
+    assert len(infos) == 2  # verification and attribution
+    assert all("this is a demo root" in info and "cannot run on it" in info for info in infos)
+    assert _charts(at) == 1
+
+
+def test_a_backtest_root_names_itself_in_the_gaps(demo_root: Path, tmp_path: Path) -> None:
+    at = open_page(page_of_root, backtest_root(demo_root, tmp_path), "research")
+
+    assert len(at.exception) == 0
+    assert all("this is a backtest root" in info for info in _infos(at))
+
+
+def test_a_root_with_everything_shows_every_section() -> None:
+    at = open_page(page_of_builder, None, "research", "rich_state")
+
+    assert len(at.exception) == 0
+    assert len(at.info) == 0
+    assert len(at.dataframe) == 6  # names, horizons, by name, by sector, book, cost
+    assert at.dataframe[1].value.iloc[0]["IC (rank correlation)"] == "0.20"
+    assert len(at.expander) == 2
+    markdown = [m.value for m in at.main.markdown]
+    assert "Buy: wide moat" in markdown
+    assert NO_THESIS in markdown  # BBB has no valid run
+    assert ATTRIBUTION_NOTE in [c.value for c in at.main.caption]
+    assert _charts(at) == 1
+
+
+def test_an_empty_root_explains_every_section() -> None:
+    at = open_page(page_of_builder, None, "research", "make_state")
+
+    assert len(at.exception) == 0
+    names, verification, attribution = _infos(at)
+    assert "holds no research" in names
+    assert "`pixi run -e dev demo`" in names
+    assert "`hedge-fund verify`" in verification
+    assert "`hedge-fund attribute`" in attribution
+    assert len(at.dataframe) == 0
+    assert _charts(at) == 0
+    assert NO_COSTS in [c.value for c in at.main.caption]
+    assert "No cycle reports, so there is no LLM cost to show." in NO_COSTS
+    assert "`pixi run -e dev demo`" in NO_COSTS
+
+
+def test_a_thesis_with_markdown_characters_is_shown_literally() -> None:
+    at = open_page(page_of_builder, None, "research", "markdown_thesis_state")
+
+    assert len(at.exception) == 0
+    markdown = [m.value for m in at.main.markdown]
+    assert escape_markdown("$5 *bold*") in markdown  # sent escaped: renders "$5 *bold*"
+    assert "$5 *bold*" not in markdown
+
+
+def test_a_missing_root_names_the_demo_command() -> None:
+    at = open_page(page_of_root, None, "research")
+
+    assert len(at.exception) == 0
+    [info] = _infos(at)
+    assert "pixi run -e dev demo" in info
+    assert len(at.dataframe) == 0
+
+
+def test_a_real_live_root_names_the_commands_under_a_neutral_caption(tmp_path: Path) -> None:
+    at = open_page(page_of_root, live_root(tmp_path), "research")
+
+    assert len(at.exception) == 0
+    assert len(at.error) == 0
+    assert [caption.value for caption in at.sidebar.caption] == ["Live root"]
+    _, verification, attribution = _infos(at)
+    assert "`hedge-fund verify`" in verification
+    assert "`hedge-fund attribute`" in attribution
+    [costs] = at.dataframe
+    assert len(costs.value) == 1
+
+
+@pytest.mark.parametrize(
+    ("case", "caption"),
+    [("live", "Live root"), ("refused", "Not a demo or backtest root: ")],
+)
+def test_a_classify_root_refusal_still_shows_the_research(case: str, caption: str) -> None:
+    at = open_page(page_in_state, None, "research", case)
+
+    assert len(at.exception) == 0
+    assert len(at.error) == 0
+    [shown] = [c.value for c in at.sidebar.caption]
+    assert shown.startswith(caption)
+    assert len(at.dataframe) == 6
+    assert _charts(at) == 1
+
+
+def test_a_root_that_could_not_be_read_fails_closed_on_the_research() -> None:
+    at = open_page(page_in_state, None, "research", "read_error")
+
+    assert len(at.exception) == 0
+    assert "denied" in at.error[0].value
+    assert len(at.dataframe) == 0
+    assert len(at.expander) == 0
+    assert _charts(at) == 0

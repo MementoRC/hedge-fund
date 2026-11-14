@@ -109,3 +109,22 @@ def sidebar_with_state(case: str) -> None:
         state = dataclasses.replace(state, read_error="denied")
     with patch.object(shell, "current_state", lambda: state):
         shell.render_sidebar()
+
+
+def readable_probe(case: str) -> None:
+    import dataclasses
+
+    import streamlit as st
+
+    from hedge_fund.dashboard.states import readable_workspace
+    from tests.dashboard.builders import benchmark_state, make_state, missing_state
+
+    states = {
+        "missing": missing_state(),
+        "empty": make_state(),
+        "refused": dataclasses.replace(make_state(), kind_error="not a demo"),
+        "live": dataclasses.replace(benchmark_state(), kind_error="not a demo", is_live=True),
+        "read_error": dataclasses.replace(benchmark_state(), read_error="denied"),
+    }
+    workspace = readable_workspace(states[case])
+    st.caption("readable" if workspace is not None else "unreadable")

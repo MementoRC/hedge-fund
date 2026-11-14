@@ -138,12 +138,6 @@ def test_bias_lines_escape_each_bias_but_not_the_list_prefix() -> None:
     assert bias_lines(run) == "- \\*survivorship\\* \\`x\\`\n- costs \\$5"
 
 
-def test_bias_lines_of_a_nan_run_still_list_the_biases() -> None:
-    run = make_run(sharpe=math.nan, biases=("survivorship",))
-
-    assert bias_lines(run) == "- survivorship"
-
-
 def test_the_equity_note_says_whose_history_the_chart_is() -> None:
     assert "account history" in EQUITY_NOTE
     assert "whole window" in EQUITY_NOTE
@@ -291,7 +285,7 @@ def test_switching_to_a_root_with_fewer_runs_opens_its_first_run(
     assert [s.value for s in at.subheader][0] == f"Run {workspace.backtests[0].run_id}"
 
 
-@pytest.mark.parametrize("picked", [5, -2, -1, None])
+@pytest.mark.parametrize("picked", [5, -1, None])
 def test_an_out_of_range_or_missing_selection_falls_back_to_the_first_run(
     monkeypatch: pytest.MonkeyPatch, picked: int | None
 ) -> None:

@@ -26,13 +26,15 @@ Fingerprint = tuple[tuple[str, int, int], ...]
 class RootState:
     """``workspace`` is None when ``root`` is not a directory. ``kind`` is None for a root that
     ``classify_root`` refuses (a live root, an empty directory, a bad marker), with the reason
-    in ``kind_error``.
+    in ``kind_error``. ``read_error`` is set when ``classify_root`` could not read the root at all
+    (an OSError, such as a permission failure); the kind is then None and ``kind_error`` is None.
     """
 
     root: Path
     workspace: Workspace | None
     kind: RootKind | None
     kind_error: str | None
+    read_error: str | None = None
 
 
 def store_fingerprint(root: Path) -> Fingerprint:
@@ -60,8 +62,10 @@ def inspect_root(root: Path) -> RootState:
     workspace = load_workspace(root)
     try:
         kind = classify_root(root)
-    except (RootError, OSError) as exc:  # classify_root maps only ValueError; I/O errors escape
+    except RootError as exc:
         return RootState(root, workspace, None, str(exc))
+    except OSError as exc:  # classify_root maps only ValueError; I/O errors escape it
+        return RootState(root, workspace, None, None, read_error=str(exc))
     return RootState(root, workspace, kind, None)
 
 

@@ -32,8 +32,12 @@ def empty_message(root: Path) -> str:
 
 def usable_workspace(state: RootState) -> Workspace | None:
     """The workspace when it has an account history to show; otherwise the explained empty
-    state is drawn and None is returned.
+    state is drawn and None is returned. A root that could not be read is refused outright:
+    an error is drawn and no data is shown from it.
     """
+    if state.read_error is not None:
+        st.error(f"Could not read `{state.root}`: {state.read_error}. No data is shown from it.")
+        return None
     if state.workspace is None:
         st.info(missing_message(state.root))
         return None

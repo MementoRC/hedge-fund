@@ -68,8 +68,9 @@ def test_an_unreadable_file_is_a_refused_root_not_a_crash(
     state = inspect_root(demo_root)
 
     assert state.kind is None
-    assert state.kind_error is not None
-    assert "denied" in state.kind_error
+    assert state.kind_error is None
+    assert state.read_error is not None
+    assert "denied" in state.read_error
     assert state.workspace is not None
 
 
@@ -83,6 +84,7 @@ def test_a_marker_for_another_run_is_no_demo_even_though_the_workspace_read_it(
     assert state.kind is None  # ... but only classify_root decides demo vs real
     assert state.kind_error is not None
     assert "other-run" in state.kind_error
+    assert state.read_error is None  # a RootError is a refusal, not a read failure
 
 
 def test_the_fingerprint_lists_regular_files_by_relative_name(tmp_path: Path) -> None:

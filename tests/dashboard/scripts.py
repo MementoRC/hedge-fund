@@ -175,3 +175,10 @@ def readable_probe(case: str) -> None:
     }
     workspace = readable_workspace(states[case])
     st.caption("readable" if workspace is not None else "unreadable")
+
+
+def page_wrapper(name: str) -> None:
+    from hedge_fund.dashboard import shell
+
+    shell.render_sidebar()
+    getattr(shell, f"{name}_page")()

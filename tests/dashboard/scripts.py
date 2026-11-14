@@ -20,3 +20,22 @@ def usable_probe(case: str) -> None:
     }
     workspace = usable_workspace(states[case])
     st.caption("usable" if workspace is not None else "unusable")
+
+
+def sidebar_only() -> None:
+    from hedge_fund.dashboard.shell import render_sidebar
+
+    render_sidebar()
+
+
+def sidebar_with_state(case: str) -> None:
+    import dataclasses
+
+    from hedge_fund.dashboard import shell
+    from tests.dashboard.builders import make_state
+
+    state = make_state()
+    if case == "read_error":
+        state = dataclasses.replace(state, read_error="denied")
+    shell.current_state = lambda: state
+    shell.render_sidebar()

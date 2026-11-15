@@ -13,7 +13,7 @@ import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
 from hedge_fund.dashboard.format import NOT_AVAILABLE, escape_markdown, fmt_date, fmt_money
-from hedge_fund.dashboard.portfolio import PALETTE
+from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import nothing_message, readable_workspace
 from hedge_fund.viz.charts import funnel_chart
 from hedge_fund.viz.views import CycleRow, CycleView, cycle_view

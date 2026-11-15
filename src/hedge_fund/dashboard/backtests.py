@@ -20,7 +20,7 @@ from hedge_fund.dashboard.format import (
     fmt_percent,
 )
 from hedge_fund.dashboard.overview import RUN_NOTE, Headline, run_table, show_headlines
-from hedge_fund.dashboard.portfolio import PALETTE
+from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import DEMO_COMMAND, nothing_message, readable_workspace
 from hedge_fund.viz.charts import nav_vs_benchmark
 from hedge_fund.viz.views import BacktestRun, BacktestView, backtest_view

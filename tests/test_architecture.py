@@ -16,6 +16,7 @@ PURE = (
     "viz/charts.py",
     "viz/theme.py",
     "dashboard/format.py",
+    "dashboard/palette.py",
 )
 PURE_BANNED = (
     "hedge_fund.adapters",
@@ -216,3 +217,7 @@ def test_nothing_below_the_dashboard_imports_it() -> None:
     lower = _files("domain", "engine", "services", "viz", "demo", "adapters")
 
     assert _importing(lower, "hedge_fund.dashboard") == []
+
+
+def test_only_the_dashboard_palette_module_imports_the_theme() -> None:
+    assert _importing(_files("dashboard"), "hedge_fund.viz.theme") == ["dashboard/palette.py"]

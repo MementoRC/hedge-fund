@@ -21,7 +21,7 @@ from hedge_fund.dashboard.format import (
     fmt_number,
     fmt_percent,
 )
-from hedge_fund.dashboard.portfolio import PALETTE
+from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import DEMO_COMMAND, nothing_message, readable_workspace
 from hedge_fund.domain.attribution import AttributionTotals
 from hedge_fund.viz.charts import llm_cost_chart

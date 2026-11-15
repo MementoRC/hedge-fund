@@ -252,6 +252,13 @@ def test_a_thesis_with_markdown_characters_is_shown_literally() -> None:
     assert "$5 *bold*" not in markdown
 
 
+def test_the_thesis_label_shows_the_ticker_literally() -> None:
+    at = open_page(page_of_builder, None, "research", "markdown_ticker_state")
+
+    assert len(at.exception) == 0
+    assert [expander.label for expander in at.expander] == [r"Thesis: T\`boom\` costs \$5"]
+
+
 def test_a_missing_root_names_the_demo_command() -> None:
     at = open_page(page_of_root, None, "research")
 

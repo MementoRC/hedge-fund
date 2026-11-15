@@ -157,7 +157,7 @@ def _names(view: ResearchView, root: Path) -> None:
     st.caption(f"Research of {fmt_date(view.names[0].as_of)}.")
     st.dataframe(names_table(view), hide_index=True)
     for row in view.names:
-        with st.expander(f"Thesis: {row.ticker}"):
+        with st.expander(f"Thesis: {escape_markdown(row.ticker)}"):  # stored text, literal
             # LLM output: escaped so markdown and "$" LaTeX render literally (Decision 10).
             st.markdown(escape_markdown(row.thesis) if row.thesis else NO_THESIS)
 

@@ -313,6 +313,11 @@ def markdown_thesis_state() -> RootState:
     return make_state(research=(ResearchResult(DAY0, (make_name(thesis="$5 *bold*"),)),))
 
 
+def markdown_ticker_state() -> RootState:
+    """Research on DAY0 for one name whose ticker holds ``MARKDOWN_TEXT``."""
+    return make_state(research=(ResearchResult(DAY0, (make_name(f"T{MARKDOWN_TEXT}"),)),))
+
+
 def live_root(tmp_path: Path, name: str = "live") -> Path:
     """A real paper root on disk: four snapshots and ``full_cycle``, no backtest summary, so
     ``classify_root`` refuses it and ``inspect_root`` marks it live.

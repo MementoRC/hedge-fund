@@ -12,12 +12,20 @@ from datetime import date
 from hedge_fund.viz.views import MIN_CURVE_POINTS
 
 NOT_AVAILABLE = "n/a"
+MARKDOWN_SPECIAL = frozenset("\\`*_{}[]()#+-.!|<>~$&")
 Window = tuple[date, date]
 WHOLE_HISTORY = "SPY covers the whole NAV history"
 NO_SPY = (
     "No SPY series for this root. A demo root takes SPY from its sibling `<root>.store`; "
     "a problem loading it is listed in the sidebar."
 )
+
+
+def escape_markdown(text: str) -> str:
+    """``text`` (LLM output or report text) backslash-escaped so ``st.markdown`` shows it
+    literally: no emphasis, links, code, headings or ``$`` LaTeX.
+    """
+    return "".join(f"\\{char}" if char in MARKDOWN_SPECIAL else char for char in text)
 
 
 def fmt_number(value: float | None, spec: str = ",.2f") -> str:

@@ -56,6 +56,14 @@ def headlines(view: OverviewView) -> tuple[Headline, ...]:
     )
 
 
+def show_headlines(shown: Sequence[Headline], per_row: int = COLUMNS_PER_ROW) -> None:
+    """``st.metric`` cards, ``per_row`` to a row; the last row may be shorter."""
+    for start in range(0, len(shown), per_row):
+        row = shown[start : start + per_row]
+        for column, item in zip(st.columns(per_row), row, strict=False):
+            column.metric(item.label, item.value, help=item.hint)
+
+
 def run_table(runs: Sequence[BacktestRun]) -> pd.DataFrame:
     """One formatted row per run; the three return columns are full-window figures."""
     # Pre-formatted strings: raw floats would show NaN as blank, not "n/a", so sorting is lexical.
@@ -85,11 +93,7 @@ def render(state: RootState) -> None:
     if workspace is None:
         return
     view = overview_view(workspace.snapshots, workspace.benchmark, workspace.cycles)
-    shown = headlines(view)
-    for start in range(0, len(shown), COLUMNS_PER_ROW):
-        row = shown[start : start + COLUMNS_PER_ROW]
-        for column, item in zip(st.columns(COLUMNS_PER_ROW), row, strict=True):
-            column.metric(item.label, item.value, help=item.hint)
+    show_headlines(headlines(view))
     st.caption(
         return_note(
             view.benchmark_window,

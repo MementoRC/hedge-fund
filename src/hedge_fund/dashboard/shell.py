@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from hedge_fund.dashboard import overview, portfolio
+from hedge_fund.dashboard import backtests, cycles, overview, portfolio, research
 from hedge_fund.dashboard.data import DEFAULT_ROOT, RootState, load_state
 from hedge_fund.viz.load import RootKind
 
@@ -67,6 +67,18 @@ def portfolio_page() -> None:
     portfolio.render(current_state())
 
 
+def cycles_page() -> None:
+    cycles.render(current_state())
+
+
+def research_page() -> None:
+    research.render(current_state())
+
+
+def backtests_page() -> None:
+    backtests.render(current_state())
+
+
 def main() -> None:
     """Entry point of ``app.py``: navigation over the pages, the sidebar, then the page."""
     st.set_page_config(page_title="Hedge Fund", layout="wide")
@@ -74,6 +86,9 @@ def main() -> None:
         [
             st.Page(overview_page, title="Overview", url_path="overview", default=True),
             st.Page(portfolio_page, title="Portfolio & NAV", url_path="portfolio"),
+            st.Page(cycles_page, title="Cycles", url_path="cycles"),
+            st.Page(research_page, title="Research & attribution", url_path="research"),
+            st.Page(backtests_page, title="Backtests", url_path="backtests"),
         ]
     )
     render_sidebar()

@@ -7,6 +7,7 @@ import streamlit as st
 
 from hedge_fund.dashboard import backtests, cycles, overview, portfolio, research
 from hedge_fund.dashboard.data import DEFAULT_ROOT, RootState, load_state
+from hedge_fund.dashboard.format import escape_markdown
 from hedge_fund.viz.load import RootKind
 
 MAX_LISTED = 10
@@ -35,14 +36,16 @@ def _show_kind(state: RootState) -> None:
     elif state.kind is RootKind.BACKTEST:
         st.sidebar.caption("Backtest root.")
     elif state.is_live:
-        st.sidebar.caption("Live root", help=state.kind_error)
+        # is_live implies kind_error is set (data.py:82); the guard is for the type checker.
+        tip = escape_markdown(state.kind_error) if state.kind_error is not None else None
+        st.sidebar.caption("Live root", help=tip)
     elif state.kind_error is not None:
-        st.sidebar.caption(f"Not a demo or backtest root: {state.kind_error}")
+        st.sidebar.caption(f"Not a demo or backtest root: {escape_markdown(state.kind_error)}")
 
 
 def _show_read_error(state: RootState) -> None:
     if state.read_error is not None:
-        st.sidebar.warning(f"The root could not be read: {state.read_error}")
+        st.sidebar.warning(f"The root could not be read: {escape_markdown(state.read_error)}")
 
 
 def _show_unreadable(state: RootState) -> None:
@@ -50,7 +53,8 @@ def _show_unreadable(state: RootState) -> None:
         return
     problems = state.workspace.unreadable
     count = len(problems)
-    lines = [f"- {problem}" for problem in problems[:MAX_LISTED]]
+    # Each entry is "<where>: <reason>" from files on disk; the "- " prefix stays markdown.
+    lines = [f"- {escape_markdown(problem)}" for problem in problems[:MAX_LISTED]]
     if count > MAX_LISTED:
         lines.append(f"- and {count - MAX_LISTED} more")
     noun = "file" if count == 1 else "files"

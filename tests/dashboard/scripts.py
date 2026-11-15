@@ -102,11 +102,18 @@ def sidebar_with_state(case: str) -> None:
     from unittest.mock import patch
 
     from hedge_fund.dashboard import shell
-    from tests.dashboard.builders import make_state
+    from tests.dashboard.builders import MARKDOWN_TEXT, make_state
 
-    state = make_state()
-    if case == "read_error":
-        state = dataclasses.replace(state, read_error="denied")
+    plain = make_state()
+    states = {
+        "plain": plain,
+        "read_error": dataclasses.replace(plain, read_error="denied"),
+        "markdown_read_error": dataclasses.replace(plain, read_error=MARKDOWN_TEXT),
+        "markdown_refusal": dataclasses.replace(plain, kind_error=MARKDOWN_TEXT),
+        "markdown_live": dataclasses.replace(plain, kind_error=MARKDOWN_TEXT, is_live=True),
+        "markdown_unreadable": make_state(unreadable=(f"runs/x.json: {MARKDOWN_TEXT}",)),
+    }
+    state = states[case]
     with patch.object(shell, "current_state", lambda: state):
         shell.render_sidebar()
 

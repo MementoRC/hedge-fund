@@ -9,9 +9,12 @@ import pytest
 from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.dashboard import shell
-from tests.dashboard.builders import backtest_root, mismatched_root, open_page
+from hedge_fund.dashboard.format import escape_markdown
+from tests.dashboard.builders import MARKDOWN_TEXT, backtest_root, mismatched_root, open_page
 from tests.dashboard.scripts import sidebar_only, sidebar_with_state
 from tests.viz.builders import make_snapshots
+
+LITERAL = r"\`boom\` costs \$5"  # MARKDOWN_TEXT as the sidebar must show it
 
 
 def _bodies(elements: object) -> list[str]:
@@ -96,7 +99,7 @@ def test_a_marker_for_another_run_gets_no_badge_although_the_loader_read_it(
     assert not any("DEMO" in body for body in _bodies(at.sidebar.markdown))
     [caption] = _bodies(at.sidebar.caption)
     assert caption.startswith("Not a demo or backtest root: ")
-    assert "other-run" in caption
+    assert escape_markdown("other-run") in caption
 
 
 def test_an_empty_directory_is_named_as_unclassified(tmp_path: Path) -> None:
@@ -116,7 +119,7 @@ def test_one_unreadable_file_is_a_sidebar_warning_not_an_exception(tmp_path: Pat
     assert len(at.exception) == 0
     [warning] = _bodies(at.sidebar.warning)
     assert warning.startswith("1 unreadable file;")
-    assert "runs/bad00.json" in warning
+    assert escape_markdown("runs/bad00.json") in warning
 
 
 def test_many_unreadable_files_are_counted_and_the_list_is_capped(tmp_path: Path) -> None:
@@ -127,8 +130,8 @@ def test_many_unreadable_files_are_counted_and_the_list_is_capped(tmp_path: Path
 
     [warning] = _bodies(at.sidebar.warning)
     assert warning.startswith("12 unreadable files;")
-    assert "runs/bad09.json" in warning
-    assert "runs/bad10.json" not in warning
+    assert escape_markdown("runs/bad09.json") in warning
+    assert escape_markdown("runs/bad10.json") not in warning
     assert "- and 2 more" in warning
 
 
@@ -156,3 +159,40 @@ def test_an_unclassified_root_with_no_error_prints_no_none() -> None:
     assert len(at.sidebar.caption) == 0
     assert len(at.sidebar.warning) == 0
     assert not any("None" in body for body in _bodies(at.sidebar.markdown))
+
+
+def test_the_markdown_sample_escapes_to_the_literal() -> None:
+    assert escape_markdown(MARKDOWN_TEXT) == LITERAL
+    assert MARKDOWN_TEXT not in LITERAL
+
+
+def test_a_read_error_in_the_sidebar_is_shown_literally() -> None:
+    at = open_page(sidebar_with_state, None, "markdown_read_error")
+
+    assert len(at.exception) == 0
+    assert _bodies(at.sidebar.warning) == [f"The root could not be read: {LITERAL}"]
+    assert len(at.sidebar.caption) == 0
+
+
+def test_a_refusal_reason_in_the_sidebar_is_shown_literally() -> None:
+    at = open_page(sidebar_with_state, None, "markdown_refusal")
+
+    assert len(at.exception) == 0
+    assert _bodies(at.sidebar.caption) == [f"Not a demo or backtest root: {LITERAL}"]
+
+
+def test_the_live_root_tooltip_is_shown_literally_under_the_neutral_caption() -> None:
+    at = open_page(sidebar_with_state, None, "markdown_live")
+
+    [caption] = at.sidebar.caption
+    assert caption.value == "Live root"
+    assert caption.help == LITERAL
+
+
+def test_unreadable_file_lines_are_shown_literally_under_a_plain_list_prefix() -> None:
+    at = open_page(sidebar_with_state, None, "markdown_unreadable")
+
+    assert len(at.exception) == 0
+    [warning] = _bodies(at.sidebar.warning)
+    assert warning.startswith("1 unreadable file;")
+    assert warning.endswith(rf"- runs/x\.json: {LITERAL}")

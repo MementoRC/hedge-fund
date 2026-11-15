@@ -164,7 +164,7 @@ def readable_probe(case: str) -> None:
     import streamlit as st
 
     from hedge_fund.dashboard.states import readable_workspace
-    from tests.dashboard.builders import benchmark_state, make_state, missing_state
+    from tests.dashboard.builders import MARKDOWN_TEXT, benchmark_state, make_state, missing_state
 
     states = {
         "missing": missing_state(),
@@ -172,6 +172,7 @@ def readable_probe(case: str) -> None:
         "refused": dataclasses.replace(make_state(), kind_error="not a demo"),
         "live": dataclasses.replace(benchmark_state(), kind_error="not a demo", is_live=True),
         "read_error": dataclasses.replace(benchmark_state(), read_error="denied"),
+        "markdown_read_error": dataclasses.replace(benchmark_state(), read_error=MARKDOWN_TEXT),
     }
     workspace = readable_workspace(states[case])
     st.caption("readable" if workspace is not None else "unreadable")

@@ -41,6 +41,7 @@ from tests.viz.builders import (
 
 SYNTHETIC = Path("synthetic")
 NAV_VALUES = (100.0, 120.0, 90.0, 115.0)  # 2024-01-02 .. 2024-01-05
+MARKDOWN_TEXT = "`boom` costs $5"  # markdown and "$" LaTeX that must show literally
 
 
 def make_workspace(**changes: Any) -> Workspace:

@@ -10,6 +10,7 @@ from pathlib import Path
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
+from hedge_fund.dashboard.format import escape_markdown
 from hedge_fund.viz.load import Workspace
 
 DEMO_COMMAND = "pixi run -e dev demo"
@@ -46,7 +47,8 @@ def readable_workspace(state: RootState) -> Workspace | None:
     live or paper root.
     """
     if state.read_error is not None:
-        st.error(f"Could not read `{state.root}`: {state.read_error}. No data is shown from it.")
+        reason = escape_markdown(state.read_error)  # exception text: shown literally
+        st.error(f"Could not read `{state.root}`: {reason}. No data is shown from it.")
         return None
     if state.workspace is None:
         st.info(missing_message(state.root))

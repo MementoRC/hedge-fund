@@ -22,6 +22,7 @@ from hedge_fund.dashboard.overview import RUN_NOTE
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import backtest_view
 from tests.dashboard.builders import (
+    MARKDOWN_TEXT,
     RUN_ID,
     live_root,
     make_backtest_report,
@@ -274,7 +275,8 @@ def test_switching_to_a_root_with_fewer_runs_opens_its_first_run(
     at = open_page(page_of_root, two_run_root(demo_root, tmp_path), "backtests")
     assert len(at.selectbox[0].options) == 2
     at.selectbox[0].select_index(1).run()  # the second run: row index 1 of two
-    assert [s.value for s in at.subheader][0] == f"Run {at.selectbox[0].options[1]}"
+    picked = escape_markdown(at.selectbox[0].options[1])
+    assert [s.value for s in at.subheader][0] == f"Run {picked}"
 
     at.sidebar.text_input(key="root").set_value(str(demo_root)).run()  # one run only
 
@@ -282,7 +284,16 @@ def test_switching_to_a_root_with_fewer_runs_opens_its_first_run(
     [table] = at.dataframe
     assert len(table.value) == 1
     assert at.selectbox[0].options == [workspace.backtests[0].run_id]
-    assert [s.value for s in at.subheader][0] == f"Run {workspace.backtests[0].run_id}"
+    only = escape_markdown(workspace.backtests[0].run_id)
+    assert [s.value for s in at.subheader][0] == f"Run {only}"
+
+
+def test_the_run_heading_shows_the_run_id_literally() -> None:
+    at = open_page(page_of_builder, None, "backtests", "markdown_run_state")
+
+    assert len(at.exception) == 0
+    assert at.selectbox[0].options == [f"run {MARKDOWN_TEXT}"]
+    assert [s.value for s in at.subheader][0] == r"Run run \`boom\` costs \$5"
 
 
 @pytest.mark.parametrize("picked", [5, -1, None])

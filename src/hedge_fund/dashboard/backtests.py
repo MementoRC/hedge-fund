@@ -89,7 +89,7 @@ def _selected(view: BacktestView, root: Path) -> BacktestRun:
 
 
 def _show_run(run: BacktestRun) -> None:
-    st.subheader(f"Run {run.run_id}")
+    st.subheader(f"Run {escape_markdown(run.run_id)}")  # a file-derived id, shown literally
     show_headlines(run_metrics(run), per_row=METRICS_PER_ROW)
     st.markdown("**Residual biases**")
     lines = bias_lines(run)

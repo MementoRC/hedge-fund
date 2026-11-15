@@ -303,6 +303,11 @@ def two_runs_state() -> RootState:
     )
 
 
+def markdown_run_state() -> RootState:
+    """One backtest summary, no snapshots, whose run id holds ``MARKDOWN_TEXT``."""
+    return make_state(backtests=(make_backtest_report(run_id=f"run {MARKDOWN_TEXT}"),))
+
+
 def markdown_thesis_state() -> RootState:
     """Research whose thesis holds markdown and LaTeX characters: ``$5 *bold*``."""
     return make_state(research=(ResearchResult(DAY0, (make_name(thesis="$5 *bold*"),)),))

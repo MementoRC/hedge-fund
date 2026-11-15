@@ -14,6 +14,7 @@ import streamlit as st
 from hedge_fund.dashboard.data import RootState
 from hedge_fund.dashboard.format import NOT_AVAILABLE, escape_markdown, fmt_date, fmt_money
 from hedge_fund.dashboard.palette import PALETTE
+from hedge_fund.dashboard.picker import pick_index
 from hedge_fund.dashboard.states import nothing_message, readable_workspace
 from hedge_fund.viz.charts import funnel_chart
 from hedge_fund.viz.views import CycleRow, CycleView, cycle_view
@@ -90,15 +91,15 @@ def _selected(view: CycleView, root: Path) -> CycleRow:
     The key is scoped to the root, so a row index saved for another root is never read; an
     index out of range (the root's own files changed) falls back to the newest cycle.
     """
-    newest_first = list(reversed(range(len(view.rows))))
-    index = st.selectbox(
+    newest = len(view.rows) - 1
+    index = pick_index(
         "Cycle",
-        newest_first,
-        format_func=lambda i: cycle_label(view.rows[i]),
+        list(reversed(range(len(view.rows)))),
+        lambda i: cycle_label(view.rows[i]),
         key=f"cycle:{root}",
+        fallback=newest,
     )
-    in_range = index is not None and 0 <= index < len(view.rows)
-    return view.rows[index] if in_range else view.rows[-1]
+    return view.rows[index]
 
 
 def _detail(row: CycleRow) -> None:

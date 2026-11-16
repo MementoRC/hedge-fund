@@ -221,7 +221,7 @@ def test_a_root_with_everything_shows_every_section() -> None:
     assert at.dataframe[1].value.iloc[0]["IC (rank correlation)"] == "0.20"
     assert len(at.expander) == 2
     markdown = [m.value for m in at.main.markdown]
-    assert "Buy: wide moat" in markdown
+    assert r"Buy\: wide moat" in markdown
     assert NO_THESIS in markdown  # BBB has no valid run
     assert ATTRIBUTION_NOTE in [c.value for c in at.main.caption]
     assert _charts(at) == 1
@@ -250,6 +250,13 @@ def test_a_thesis_with_markdown_characters_is_shown_literally() -> None:
     markdown = [m.value for m in at.main.markdown]
     assert escape_markdown("$5 *bold*") in markdown  # sent escaped: renders "$5 *bold*"
     assert "$5 *bold*" not in markdown
+
+
+def test_the_thesis_label_shows_the_ticker_literally() -> None:
+    at = open_page(page_of_builder, None, "research", "markdown_ticker_state")
+
+    assert len(at.exception) == 0
+    assert [expander.label for expander in at.expander] == [r"Thesis: T\`boom\` costs \$5"]
 
 
 def test_a_missing_root_names_the_demo_command() -> None:

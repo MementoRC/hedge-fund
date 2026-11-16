@@ -11,6 +11,7 @@ import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
 from hedge_fund.dashboard.format import chart_note, fmt_date, fmt_percent
+from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import DEMO_COMMAND, usable_workspace
 from hedge_fund.viz.charts import (
     drawdown_chart,
@@ -18,10 +19,8 @@ from hedge_fund.viz.charts import (
     nav_vs_benchmark,
     sector_exposure_chart,
 )
-from hedge_fund.viz.theme import DARK
 from hedge_fund.viz.views import PortfolioView, portfolio_view
 
-PALETTE = DARK  # one fixed palette (user decision: no theme selector)
 POSITION_COLUMNS = ["Ticker", "Sector", "Side", "Target weight"]
 EXPOSURE_NOTE = (
     "Exposure is the target weights at each rebalance (gross = long plus short, "

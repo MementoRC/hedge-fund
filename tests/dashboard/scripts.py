@@ -102,11 +102,18 @@ def sidebar_with_state(case: str) -> None:
     from unittest.mock import patch
 
     from hedge_fund.dashboard import shell
-    from tests.dashboard.builders import make_state
+    from tests.dashboard.builders import MARKDOWN_TEXT, make_state
 
-    state = make_state()
-    if case == "read_error":
-        state = dataclasses.replace(state, read_error="denied")
+    plain = make_state()
+    states = {
+        "plain": plain,
+        "read_error": dataclasses.replace(plain, read_error="denied"),
+        "markdown_read_error": dataclasses.replace(plain, read_error=MARKDOWN_TEXT),
+        "markdown_refusal": dataclasses.replace(plain, kind_error=MARKDOWN_TEXT),
+        "markdown_live": dataclasses.replace(plain, kind_error=MARKDOWN_TEXT, is_live=True),
+        "markdown_unreadable": make_state(unreadable=(f"runs/x.json: {MARKDOWN_TEXT}",)),
+    }
+    state = states[case]
     with patch.object(shell, "current_state", lambda: state):
         shell.render_sidebar()
 
@@ -164,7 +171,7 @@ def readable_probe(case: str) -> None:
     import streamlit as st
 
     from hedge_fund.dashboard.states import readable_workspace
-    from tests.dashboard.builders import benchmark_state, make_state, missing_state
+    from tests.dashboard.builders import MARKDOWN_TEXT, benchmark_state, make_state, missing_state
 
     states = {
         "missing": missing_state(),
@@ -172,6 +179,7 @@ def readable_probe(case: str) -> None:
         "refused": dataclasses.replace(make_state(), kind_error="not a demo"),
         "live": dataclasses.replace(benchmark_state(), kind_error="not a demo", is_live=True),
         "read_error": dataclasses.replace(benchmark_state(), read_error="denied"),
+        "markdown_read_error": dataclasses.replace(benchmark_state(), read_error=MARKDOWN_TEXT),
     }
     workspace = readable_workspace(states[case])
     st.caption("readable" if workspace is not None else "unreadable")

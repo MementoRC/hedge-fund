@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 from hedge_fund.viz.theme import Palette, plotly_template
 from hedge_fund.viz.views import BacktestView, CostRow, Curve, Funnel, PortfolioView
 
-PERCENT_TICKS = ".0%"
+PERCENT_TICKS = ".1%"
 PERCENT_HOVER = ".1%"
 FUNNEL_STAGES = ("Shortlist", "Researched", "Target positions", "Orders")
 
@@ -126,11 +126,29 @@ def llm_cost_chart(costs: Sequence[CostRow], palette: Palette) -> go.Figure:
 
 
 def _figure(title: str, palette: Palette, y_title: str) -> go.Figure:
+    """A figure painted with ``palette`` twice: through the template and on the layout itself.
+
+    The page renders with ``theme=None`` and the browser side does not reliably apply the
+    template's colours (a Light Streamlit setting showed plotly's own backgrounds and grid),
+    so every colour is also set directly on the layout, where it always wins.
+    """
+    axis = {
+        "gridcolor": palette.grid,
+        "zerolinecolor": palette.grid,
+        "linecolor": palette.muted,
+        "tickfont": {"color": palette.muted},
+    }
+    axis_title = {"font": {"color": palette.muted}}
     figure = go.Figure()
     figure.update_layout(
         template=plotly_template(palette),
         title={"text": title},
-        yaxis={"title": {"text": y_title}},
+        paper_bgcolor=palette.background,
+        plot_bgcolor=palette.background,
+        font={"color": palette.text},
+        legend={"font": {"color": palette.text}},
+        xaxis={**axis, "title": axis_title},
+        yaxis={**axis, "title": {**axis_title, "text": y_title}},
         margin={"l": 60, "r": 20, "t": 50, "b": 40},
     )
     return figure

@@ -20,7 +20,8 @@ from hedge_fund.dashboard.format import (
     fmt_percent,
 )
 from hedge_fund.dashboard.overview import RUN_NOTE, Headline, run_table, show_headlines
-from hedge_fund.dashboard.portfolio import PALETTE
+from hedge_fund.dashboard.palette import PALETTE
+from hedge_fund.dashboard.picker import pick_index
 from hedge_fund.dashboard.states import DEMO_COMMAND, nothing_message, readable_workspace
 from hedge_fund.viz.charts import nav_vs_benchmark
 from hedge_fund.viz.views import BacktestRun, BacktestView, backtest_view
@@ -78,18 +79,17 @@ def _selected(view: BacktestView, root: Path) -> BacktestRun:
     """The run picked in the selector (load order). The key is scoped to the root, and an
     index out of range (or none) falls back to the first run.
     """
-    index = st.selectbox(
+    index = pick_index(
         "Run",
         list(range(len(view.runs))),
-        format_func=lambda i: view.runs[i].run_id,
+        lambda i: view.runs[i].run_id,
         key=f"run:{root}",
     )
-    in_range = index is not None and 0 <= index < len(view.runs)
-    return view.runs[index] if in_range else view.runs[0]
+    return view.runs[index]
 
 
 def _show_run(run: BacktestRun) -> None:
-    st.subheader(f"Run {run.run_id}")
+    st.subheader(f"Run {escape_markdown(run.run_id)}")  # a file-derived id, shown literally
     show_headlines(run_metrics(run), per_row=METRICS_PER_ROW)
     st.markdown("**Residual biases**")
     lines = bias_lines(run)

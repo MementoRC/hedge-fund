@@ -165,7 +165,7 @@ def test_a_real_live_root_shows_its_cycles_under_a_neutral_caption(tmp_path: Pat
     assert len(at.error) == 0
     [table] = at.dataframe
     assert len(table.value) == 1
-    assert r"- gross: gross 1\.70 \> 1\.60" in _markdown(at)
+    assert r"- gross\: gross 1\.70 \> 1\.60" in _markdown(at)
 
 
 @pytest.mark.parametrize(
@@ -219,7 +219,7 @@ def test_the_newest_cycle_opens_first_and_another_can_be_picked() -> None:
         "LLM budget": "$1.00",
         "LLM spent": "$0.12",
     }
-    assert r"- gross: gross 1\.70 \> 1\.60" in _markdown(at)
+    assert r"- gross\: gross 1\.70 \> 1\.60" in _markdown(at)
 
 
 def test_a_halted_cycle_shows_the_halt_the_error_and_the_unresolved_tickers() -> None:
@@ -229,7 +229,7 @@ def test_a_halted_cycle_shows_the_halt_the_error_and_the_unresolved_tickers() ->
     assert len(at.error) == 0  # the cycle's own error is report text, not a page error
     markdown = _markdown(at)
     assert "**Halted** by a risk breaker." in markdown
-    assert "**Cycle error:** RuntimeError: boom" in markdown
+    assert r"**Cycle error:** RuntimeError\: boom" in markdown
     assert "Unresolved tickers (no price or fundamentals): 2." in _captions(at)
 
 
@@ -238,8 +238,8 @@ def test_veto_and_error_text_is_sent_escaped() -> None:
 
     assert len(at.exception) == 0
     markdown = _markdown(at)
-    assert r"- gross: \$5 limit" in markdown
-    assert r"**Cycle error:** RuntimeError: \`boom\`" in markdown
+    assert r"- gross\: \$5 limit" in markdown
+    assert r"**Cycle error:** RuntimeError\: \`boom\`" in markdown
 
 
 def test_switching_to_a_root_with_fewer_cycles_opens_its_newest_cycle(tmp_path: Path) -> None:

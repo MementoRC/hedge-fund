@@ -120,8 +120,38 @@ def test_the_y_axis_is_titled_and_percent_axes_format_ticks_and_hover(
     yaxis = build(_view(), LIGHT).layout.yaxis
 
     assert yaxis.title.text == y_title
-    assert yaxis.tickformat == (".0%" if percent else None)
+    assert yaxis.tickformat == (".1%" if percent else None)
     assert yaxis.hoverformat == (".1%" if percent else None)
+
+
+@pytest.mark.parametrize("palette", [DARK, LIGHT], ids=["dark", "light"])
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda palette: nav_vs_benchmark(_view(), palette),
+        lambda palette: drawdown_chart(_view(), palette),
+        lambda palette: exposure_chart(_view(), palette),
+        lambda palette: sector_exposure_chart(_view(), palette),
+        lambda palette: funnel_chart(Funnel(5, 4, 3, 2), palette),
+        lambda palette: llm_cost_chart([], palette),
+    ],
+    ids=["nav", "drawdown", "exposure", "sector", "funnel", "cost"],
+)
+def test_the_palette_colours_sit_on_the_layout_itself_not_only_in_the_template(
+    build: Callable[[Palette], go.Figure], palette: Palette
+) -> None:
+    layout = build(palette).layout
+
+    assert layout.paper_bgcolor == palette.background
+    assert layout.plot_bgcolor == palette.background
+    assert layout.font.color == palette.text
+    assert layout.legend.font.color == palette.text
+    for axis in (layout.xaxis, layout.yaxis):
+        assert axis.gridcolor == palette.grid
+        assert axis.zerolinecolor == palette.grid
+        assert axis.linecolor == palette.muted
+        assert axis.tickfont.color == palette.muted
+        assert axis.title.font.color == palette.muted
 
 
 def test_a_nan_in_a_series_is_passed_through_to_the_trace() -> None:

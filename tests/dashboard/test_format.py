@@ -32,7 +32,8 @@ def test_the_placeholder_is_n_a() -> None:
 def test_escape_markdown_makes_llm_text_literal() -> None:
     assert escape_markdown("$5 *bold*") == r"\$5 \*bold\*"
     assert escape_markdown(r"a\b [x](y) `z` _u_ # h") == r"a\\b \[x\]\(y\) \`z\` \_u\_ \# h"
-    assert escape_markdown("Buy: wide moat") == "Buy: wide moat"
+    assert escape_markdown("Buy: wide moat") == r"Buy\: wide moat"
+    assert escape_markdown(":red[x] :rocket:") == r"\:red\[x\] \:rocket\:"
     assert escape_markdown("AT&amp;T") == r"AT\&amp;T"  # no HTML entity is decoded
 
 

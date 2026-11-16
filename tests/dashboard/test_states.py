@@ -12,6 +12,7 @@ from hedge_fund.dashboard.states import (
     missing_message,
     nothing_message,
 )
+from tests.dashboard.builders import MARKDOWN_TEXT
 from tests.dashboard.scripts import readable_probe, usable_probe
 
 
@@ -108,3 +109,15 @@ def test_readable_workspace_fails_closed_on_a_read_error() -> None:
     [error] = at.error
     assert "denied" in error.value
     assert "No data is shown from it." in error.value
+
+
+def test_a_read_error_is_shown_literally_and_still_fails_closed() -> None:
+    at = AppTest.from_function(
+        readable_probe, default_timeout=60, args=("markdown_read_error",)
+    ).run()
+
+    assert len(at.exception) == 0
+    assert [c.value for c in at.caption] == ["unreadable"]
+    [error] = at.error
+    assert r": \`boom\` costs \$5. No data is shown from it." in error.value
+    assert MARKDOWN_TEXT not in error.value

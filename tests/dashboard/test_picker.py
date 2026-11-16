@@ -26,7 +26,7 @@ def test_the_pick_is_returned_and_the_widget_gets_the_order_the_labels_and_the_k
 ) -> None:
     seen = _stub(monkeypatch, 0)
 
-    index = pick_index("Run", [2, 1, 0], lambda i: f"row {i}", key="run:r", fallback=2)
+    index = pick_index("Run", [2, 1, 0], lambda i: f"row {i}", key="run:r")
 
     assert index == 0
     assert (seen["label"], seen["options"], seen["key"]) == ("Run", [2, 1, 0], "run:r")
@@ -39,4 +39,4 @@ def test_an_out_of_range_or_missing_pick_falls_back(
 ) -> None:
     _stub(monkeypatch, picked)
 
-    assert pick_index("Run", [0, 1, 2], str, key="run:r", fallback=1) == 1
+    assert pick_index("Run", [2, 1, 0], str, key="run:r") == 2

@@ -91,13 +91,11 @@ def _selected(view: CycleView, root: Path) -> CycleRow:
     The key is scoped to the root, so a row index saved for another root is never read; an
     index out of range (the root's own files changed) falls back to the newest cycle.
     """
-    newest = len(view.rows) - 1
     index = pick_index(
         "Cycle",
         list(reversed(range(len(view.rows)))),
         lambda i: cycle_label(view.rows[i]),
         key=f"cycle:{root}",
-        fallback=newest,
     )
     return view.rows[index]
 

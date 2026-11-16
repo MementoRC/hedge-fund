@@ -84,7 +84,6 @@ def _selected(view: BacktestView, root: Path) -> BacktestRun:
         list(range(len(view.runs))),
         lambda i: view.runs[i].run_id,
         key=f"run:{root}",
-        fallback=0,
     )
     return view.runs[index]
 

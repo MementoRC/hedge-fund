@@ -120,7 +120,7 @@ def test_the_y_axis_is_titled_and_percent_axes_format_ticks_and_hover(
     yaxis = build(_view(), LIGHT).layout.yaxis
 
     assert yaxis.title.text == y_title
-    assert yaxis.tickformat == (".0%" if percent else None)
+    assert yaxis.tickformat == (".1%" if percent else None)
     assert yaxis.hoverformat == (".1%" if percent else None)
 
 

@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 from hedge_fund.viz.theme import Palette, plotly_template
 from hedge_fund.viz.views import BacktestView, CostRow, Curve, Funnel, PortfolioView
 
-PERCENT_TICKS = ".0%"
+PERCENT_TICKS = ".1%"
 PERCENT_HOVER = ".1%"
 FUNNEL_STAGES = ("Shortlist", "Researched", "Target positions", "Orders")
 

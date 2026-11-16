@@ -12,7 +12,7 @@ from datetime import date
 from hedge_fund.viz.views import MIN_CURVE_POINTS
 
 NOT_AVAILABLE = "n/a"
-MARKDOWN_SPECIAL = frozenset("\\`*_{}[]()#+-.!|<>~$&")
+MARKDOWN_SPECIAL = frozenset("\\`*_{}[]()#+-.!|<>~$&:")
 Window = tuple[date, date]
 WHOLE_HISTORY = "SPY covers the whole NAV history"
 NO_SPY = (

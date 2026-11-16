@@ -195,4 +195,4 @@ def test_unreadable_file_lines_are_shown_literally_under_a_plain_list_prefix() -
     assert len(at.exception) == 0
     [warning] = _bodies(at.sidebar.warning)
     assert warning.startswith("1 unreadable file;")
-    assert warning.endswith(rf"- runs/x\.json: {LITERAL}")
+    assert warning.endswith(rf"- runs/x\.json\: {LITERAL}")

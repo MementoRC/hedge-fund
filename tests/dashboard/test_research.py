@@ -221,7 +221,7 @@ def test_a_root_with_everything_shows_every_section() -> None:
     assert at.dataframe[1].value.iloc[0]["IC (rank correlation)"] == "0.20"
     assert len(at.expander) == 2
     markdown = [m.value for m in at.main.markdown]
-    assert "Buy: wide moat" in markdown
+    assert r"Buy\: wide moat" in markdown
     assert NO_THESIS in markdown  # BBB has no valid run
     assert ATTRIBUTION_NOTE in [c.value for c in at.main.caption]
     assert _charts(at) == 1

@@ -19,6 +19,34 @@ from hedge_fund.sitegen.pages import JunitCounts, Stats
 JUNIT_FILE = "junit.xml"
 COVERAGE_FILE = "coverage.json"
 JUNIT_FIELDS = ("tests", "failures", "errors", "skipped")
+MARKER = ".hf-site-generated"
+
+
+class SiteError(ValueError):
+    """A root or an --out the builder refuses; the message is one line."""
+
+
+def check_out(out: Path, root: Path) -> None:
+    """Raise SiteError unless ``out`` is safe to delete and rewrite.
+
+    Refused: the filesystem root, the home dir, any ``out`` that is or contains ``root`` or
+    the current directory (``.`` included), a non-directory, and a non-empty directory
+    without ``MARKER``. An absent or empty ``out`` is fine. Paths are resolved first, so
+    symlinks and ``..`` cannot bypass the checks.
+    """
+    target = out.resolve()
+    if target == Path(target.anchor):
+        raise SiteError(f"--out {out} is the filesystem root: refusing to write there")
+    if target == Path.home().resolve():
+        raise SiteError(f"--out {out} is the home directory: refusing to write there")
+    guarded = ((root.resolve(), "--root"), (Path.cwd().resolve(), "the current directory"))
+    for inner, name in guarded:
+        if target == inner or target in inner.parents:
+            raise SiteError(f"--out {out} is or contains {name}: refusing to delete it")
+    if target.exists() and not target.is_dir():
+        raise SiteError(f"--out {out} is not a directory")
+    if target.is_dir() and any(target.iterdir()) and not (target / MARKER).is_file():
+        raise SiteError(f"--out {out} is not empty and has no {MARKER}: refusing to delete it")
 
 
 def read_stats(stats_dir: Path) -> Stats:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hedge_fund.sitegen.build import read_stats
+from hedge_fund.sitegen.build import MARKER, SiteError, check_out, read_stats
 from hedge_fund.sitegen.pages import JunitCounts, Stats
 
 JUNIT = (
@@ -120,3 +120,97 @@ def test_an_integer_coverage_is_a_float(tmp_path: Path) -> None:
     stats = _stats_dir(tmp_path, coverage={"totals": {"percent_covered": 100}})
 
     assert read_stats(stats).coverage == 100.0
+
+
+def test_check_out_refuses_the_filesystem_root(demo_root: Path) -> None:
+    with pytest.raises(SiteError, match="filesystem root"):
+        check_out(Path("/"), demo_root)
+
+
+def test_check_out_refuses_the_home_directory(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    with pytest.raises(SiteError, match="home directory"):
+        check_out(home, demo_root)
+
+
+def test_check_out_refuses_dot_and_a_dir_that_contains_the_cwd(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work = tmp_path / "a" / "b"
+    work.mkdir(parents=True)
+    monkeypatch.chdir(work)
+
+    with pytest.raises(SiteError, match="current directory"):
+        check_out(Path("."), demo_root)
+    with pytest.raises(SiteError, match="current directory"):
+        check_out(tmp_path / "a", demo_root)
+
+
+def test_check_out_refuses_the_root_and_a_dir_that_contains_it(demo_root: Path) -> None:
+    with pytest.raises(SiteError, match="--root"):
+        check_out(demo_root, demo_root)
+    with pytest.raises(SiteError, match="--root"):
+        check_out(demo_root.parent, demo_root)
+
+
+def test_check_out_resolves_symlinks_and_dotdot_before_comparing(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    home.mkdir()
+    work.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(work)
+    (tmp_path / "to_home").symlink_to(home, target_is_directory=True)
+    (tmp_path / "to_root").symlink_to(demo_root, target_is_directory=True)
+    (tmp_path / "to_slash").symlink_to(Path("/"), target_is_directory=True)
+
+    with pytest.raises(SiteError, match="home directory"):
+        check_out(tmp_path / "to_home", demo_root)
+    with pytest.raises(SiteError, match="--root"):
+        check_out(tmp_path / "to_root", demo_root)
+    with pytest.raises(SiteError, match="filesystem root"):
+        check_out(tmp_path / "to_slash", demo_root)
+    with pytest.raises(SiteError, match="current directory"):
+        check_out(work / "sub" / ".." / ".." / "work", demo_root)
+    with pytest.raises(SiteError, match="home directory"):
+        check_out(work / ".." / "home", demo_root)
+
+
+def test_check_out_refuses_a_non_empty_dir_without_the_marker(
+    demo_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "keep.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(SiteError, match=MARKER):
+        check_out(out, demo_root)
+    assert (out / "keep.txt").is_file()
+
+
+def test_check_out_refuses_a_file(demo_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.write_text("x", encoding="utf-8")
+
+    with pytest.raises(SiteError, match="not a directory"):
+        check_out(out, demo_root)
+
+
+def test_check_out_accepts_an_absent_an_empty_or_a_marked_dir(
+    demo_root: Path, tmp_path: Path
+) -> None:
+    check_out(tmp_path / "absent", demo_root)
+    (tmp_path / "empty").mkdir()
+    check_out(tmp_path / "empty", demo_root)
+    marked = tmp_path / "marked"
+    marked.mkdir()
+    (marked / MARKER).write_text("", encoding="utf-8")
+    (marked / "old.md").write_text("x", encoding="utf-8")
+    check_out(marked, demo_root)

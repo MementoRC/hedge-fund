@@ -660,7 +660,7 @@ def site_build(
     """
     try:
         build_site(root, out, stats_dir)
-    except SiteError as exc:
+    except (SiteError, OSError) as exc:
         _fail(str(exc), exc)
     typer.echo(f"site pages for {root} written to {out}")
 

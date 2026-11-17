@@ -47,7 +47,10 @@ def test_the_defaults_write_website_docs_generated_and_read_stats_from_the_cwd(
     assert "Coverage: 50.00%, below the 100% gate." in page
 
 
-def test_a_live_root_is_refused_with_one_line(tmp_path: Path) -> None:
+def test_a_live_root_is_refused_with_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
     result = _site("--root", str(live_root(tmp_path)), "--out", str(tmp_path / "out"))
 
     assert result.exit_code == 1
@@ -56,7 +59,10 @@ def test_a_live_root_is_refused_with_one_line(tmp_path: Path) -> None:
     assert not (tmp_path / "out").exists()
 
 
-def test_an_unmarked_out_is_refused(demo_root: Path, tmp_path: Path) -> None:
+def test_an_unmarked_out_is_refused(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
     out = tmp_path / "out"
     out.mkdir()
     (out / "keep.txt").write_text("x", encoding="utf-8")
@@ -66,6 +72,21 @@ def test_an_unmarked_out_is_refused(demo_root: Path, tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert MARKER in result.output
     assert (out / "keep.txt").is_file()
+
+
+def test_an_oserror_while_writing_is_one_line_not_a_traceback(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "build_site", boom)
+
+    result = _site("--root", str(demo_root), "--out", str(tmp_path / "out"))
+
+    assert result.exit_code != 0
+    assert "disk full" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_root_is_required() -> None:

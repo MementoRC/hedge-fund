@@ -26,17 +26,22 @@ from hedge_fund.sitegen.palette import DARK_PALETTE, LIGHT_PALETTE, Palette
 from hedge_fund.viz.charts import (
     drawdown_chart,
     exposure_chart,
+    funnel_chart,
+    llm_cost_chart,
     nav_vs_benchmark,
     sector_exposure_chart,
 )
 from hedge_fund.viz.format import (
+    NOT_AVAILABLE,
     Headline,
     chart_note,
     escape_site_markdown,
+    fmt_date,
+    fmt_money,
     headlines,
     return_note,
 )
-from hedge_fund.viz.views import OverviewView, PortfolioView
+from hedge_fund.viz.views import CostRow, CycleRow, CycleView, OverviewView, PortfolioView
 
 DECIMALS = 6
 MAX_LISTED = 10
@@ -51,6 +56,25 @@ PAGE_FILES = (PORTFOLIO_PAGE, CYCLES_PAGE, BACKTEST_PAGE, STATS_PAGE)
 NO_NAV = "No account snapshots in this root, so there is no NAV to chart."
 NO_EXPOSURE = "No cycle in this root has a target portfolio, so there is no exposure to chart."
 NO_SECTORS = "The latest target holds no position, so there is no sector exposure to chart."
+NO_CYCLES = "No cycles in this root."
+NO_COSTS = "No cycle in this root records an LLM budget or spend."
+NO_FUNNEL = "The newest cycle stopped before the shortlist, so there is no funnel to chart."
+FUNNEL_NOTE = (
+    "The funnel starts at the shortlist: a cycle report stores no universe or quality-gate "
+    "counts. Target positions are the target at rebalance; orders are the planned orders."
+)
+CYCLE_HEADER = (
+    "Date",
+    "Outcome",
+    "Shortlist",
+    "Researched",
+    "Target positions",
+    "Orders",
+    "Risk vetoes",
+    "Approval",
+    "LLM budget",
+    "LLM spent",
+)
 
 
 @dataclass(frozen=True)
@@ -147,6 +171,48 @@ def portfolio_page(overview: OverviewView, view: PortfolioView, context: PageCon
             lambda p: sector_exposure_chart(shown, p),
             NO_SECTORS,
         ),
+    )
+
+
+def cycles_page(view: CycleView, costs: Sequence[CostRow], context: PageContext) -> str:
+    """Every cycle in load order, the newest cycle's funnel, LLM budget vs spend.
+
+    The newest cycle has the greatest ``as_of``; on a tie the later one in load order wins
+    (a static page has no picker).
+    """
+    if not view.rows:
+        return render_page("Cycles", context, NO_CYCLES)
+    newest = max(reversed(view.rows), key=lambda row: row.as_of)
+    funnel = newest.funnel
+    has_funnel = any((funnel.shortlist, funnel.researched, funnel.portfolio, funnel.orders))
+    shown_costs: tuple[CostRow, ...] = rounded(tuple(costs))
+    has_costs = any(row.budget is not None or row.spent is not None for row in shown_costs)
+    return render_page(
+        "Cycles",
+        context,
+        table(CYCLE_HEADER, [_cycle_cells(row) for row in view.rows]),
+        f"## Funnel of the newest cycle ({fmt_date(newest.as_of)})",
+        chart_or("cycles-funnel", has_funnel, lambda p: funnel_chart(funnel, p), NO_FUNNEL),
+        FUNNEL_NOTE if has_funnel else "",  # render_page drops empty sections
+        "## LLM budget vs spend",
+        chart_or("cycles-llm-cost", has_costs, lambda p: llm_cost_chart(shown_costs, p), NO_COSTS),
+    )
+
+
+def _cycle_cells(row: CycleRow) -> tuple[str, ...]:
+    approval = NOT_AVAILABLE if row.approval is None else row.approval.value
+    funnel = row.funnel
+    return (
+        fmt_date(row.as_of),
+        row.outcome.value,
+        str(funnel.shortlist),
+        str(funnel.researched),
+        str(funnel.portfolio),
+        str(funnel.orders),
+        str(len(row.vetoes)),
+        approval,
+        fmt_money(row.budget),
+        fmt_money(row.spent),
     )
 
 

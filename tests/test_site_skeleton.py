@@ -129,3 +129,10 @@ def test_the_methodology_page_bias_list_equals_the_residual_biases() -> None:
     bullets = [line[2:] for line in section.splitlines() if line.startswith("- ")]
 
     assert bullets == list(RESIDUAL_BIASES)
+
+
+def test_the_stats_inputs_are_gitignored() -> None:
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert "junit.xml" in ignored
+    assert "coverage.json" in ignored

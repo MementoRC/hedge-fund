@@ -24,6 +24,8 @@ build/
 .coverage
 htmlcov/
 coverage.xml
+junit.xml
+coverage.json
 
 # mypy
 .mypy_cache/

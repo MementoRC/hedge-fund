@@ -10,7 +10,6 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import escape_markdown, fmt_date
 from hedge_fund.dashboard.research import (
     ATTRIBUTION_COLUMNS,
     ATTRIBUTION_NOTE,
@@ -26,6 +25,7 @@ from hedge_fund.dashboard.research import (
     names_table,
 )
 from hedge_fund.domain.research import ResearchResult
+from hedge_fund.viz.format import escape_markdown, fmt_date
 from hedge_fund.viz.load import RootKind, Workspace
 from hedge_fund.viz.views import HorizonRow, ResearchView, research_view
 from tests.dashboard.builders import (

@@ -1,4 +1,4 @@
-"""Display formatting: non-finite and missing numbers read "n/a", windows are named."""
+"""Shared display formatting (viz/format.py): "n/a" for non-finite numbers, named windows."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from datetime import date
 import numpy as np
 import pytest
 
-from hedge_fund.dashboard.format import (
-    NO_SPY,
+from hedge_fund.dashboard.format import NO_SPY
+from hedge_fund.viz.format import (
     NOT_AVAILABLE,
     WHOLE_HISTORY,
     chart_note,

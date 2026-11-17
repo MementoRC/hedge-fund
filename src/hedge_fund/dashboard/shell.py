@@ -7,7 +7,7 @@ import streamlit as st
 
 from hedge_fund.dashboard import backtests, cycles, overview, portfolio, research
 from hedge_fund.dashboard.data import DEFAULT_ROOT, RootState, load_state
-from hedge_fund.dashboard.format import escape_markdown
+from hedge_fund.viz.format import escape_markdown
 from hedge_fund.viz.load import RootKind
 
 MAX_LISTED = 10

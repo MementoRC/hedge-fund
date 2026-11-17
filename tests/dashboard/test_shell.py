@@ -9,7 +9,7 @@ import pytest
 from hedge_fund.adapters.account import JsonSnapshotStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.dashboard import shell
-from hedge_fund.dashboard.format import escape_markdown
+from hedge_fund.viz.format import escape_markdown
 from tests.dashboard.builders import MARKDOWN_TEXT, backtest_root, mismatched_root, open_page
 from tests.dashboard.scripts import sidebar_only, sidebar_with_state
 from tests.viz.builders import make_snapshots

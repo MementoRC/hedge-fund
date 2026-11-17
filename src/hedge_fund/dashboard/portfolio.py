@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import NO_SPY, chart_note, fmt_date, fmt_percent
+from hedge_fund.dashboard.format import NO_SPY
 from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import DEMO_COMMAND, usable_workspace
 from hedge_fund.viz.charts import (
@@ -19,6 +19,7 @@ from hedge_fund.viz.charts import (
     nav_vs_benchmark,
     sector_exposure_chart,
 )
+from hedge_fund.viz.format import chart_note, fmt_date, fmt_percent
 from hedge_fund.viz.views import PortfolioView, portfolio_view
 
 POSITION_COLUMNS = ["Ticker", "Sector", "Side", "Target weight"]

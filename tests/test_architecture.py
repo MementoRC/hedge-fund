@@ -15,6 +15,7 @@ PURE = (
     "viz/views.py",
     "viz/charts.py",
     "viz/theme.py",
+    "viz/format.py",
     "dashboard/format.py",
     "dashboard/palette.py",
 )

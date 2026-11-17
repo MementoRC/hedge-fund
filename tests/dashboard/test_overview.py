@@ -10,9 +10,9 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from hedge_fund.dashboard.format import WHOLE_HISTORY, fmt_money, fmt_percent
-from hedge_fund.dashboard.overview import RUN_NOTE, Headline, headlines, run_table
+from hedge_fund.dashboard.overview import RUN_NOTE, run_table
 from hedge_fund.domain.cycle import CycleOutcome
+from hedge_fund.viz.format import WHOLE_HISTORY, Headline, fmt_money, fmt_percent, headlines
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import overview_view
 from tests.dashboard.builders import make_run, open_page

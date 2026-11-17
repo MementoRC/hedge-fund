@@ -12,19 +12,13 @@ from pathlib import Path
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import (
-    NO_SPY,
-    chart_note,
-    escape_markdown,
-    fmt_date,
-    fmt_number,
-    fmt_percent,
-)
-from hedge_fund.dashboard.overview import RUN_NOTE, Headline, run_table, show_headlines
+from hedge_fund.dashboard.format import NO_SPY
+from hedge_fund.dashboard.overview import RUN_NOTE, run_table, show_headlines
 from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.picker import pick_index
 from hedge_fund.dashboard.states import DEMO_COMMAND, nothing_message, readable_workspace
 from hedge_fund.viz.charts import nav_vs_benchmark
+from hedge_fund.viz.format import chart_note, escape_markdown, run_metrics
 from hedge_fund.viz.views import BacktestRun, BacktestView, backtest_view
 
 METRICS_PER_ROW = 4
@@ -38,20 +32,6 @@ NO_EQUITY = (
     "demo world with both."
 )
 NO_BIAS = "The run lists no residual bias."
-
-
-def run_metrics(run: BacktestRun) -> tuple[Headline, ...]:
-    window = f"Run window: {fmt_date(run.start)} to {fmt_date(run.end)}"
-    return (
-        Headline("Return (full window)", fmt_percent(run.total_return), window),
-        Headline("SPY (full window)", fmt_percent(run.benchmark_return), window),
-        Headline("Excess (full window)", fmt_percent(run.excess_return), window),
-        Headline("Max drawdown (full window)", fmt_percent(run.max_drawdown), window),
-        Headline("Sharpe (full window)", fmt_number(run.sharpe), window),
-        Headline("Beta (full window)", fmt_number(run.beta), window),
-        Headline("Breaker days", str(run.breaker_days), "Daily-loss plus drawdown breaker days"),
-        Headline("Trading days", str(run.trading_days), window),
-    )
 
 
 def bias_lines(run: BacktestRun) -> str:

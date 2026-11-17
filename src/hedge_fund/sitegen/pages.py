@@ -23,7 +23,20 @@ import plotly.graph_objects as go
 
 from hedge_fund.sitegen.assets import CHART_CLASS, DARK_SUFFIX, LIGHT_SUFFIX
 from hedge_fund.sitegen.palette import DARK_PALETTE, LIGHT_PALETTE, Palette
-from hedge_fund.viz.format import Headline, escape_site_markdown
+from hedge_fund.viz.charts import (
+    drawdown_chart,
+    exposure_chart,
+    nav_vs_benchmark,
+    sector_exposure_chart,
+)
+from hedge_fund.viz.format import (
+    Headline,
+    chart_note,
+    escape_site_markdown,
+    headlines,
+    return_note,
+)
+from hedge_fund.viz.views import OverviewView, PortfolioView
 
 DECIMALS = 6
 MAX_LISTED = 10
@@ -35,6 +48,9 @@ CYCLES_PAGE = "cycles.md"
 BACKTEST_PAGE = "backtests.md"
 STATS_PAGE = "stats.md"
 PAGE_FILES = (PORTFOLIO_PAGE, CYCLES_PAGE, BACKTEST_PAGE, STATS_PAGE)
+NO_NAV = "No account snapshots in this root, so there is no NAV to chart."
+NO_EXPOSURE = "No cycle in this root has a target portfolio, so there is no exposure to chart."
+NO_SECTORS = "The latest target holds no position, so there is no sector exposure to chart."
 
 
 @dataclass(frozen=True)
@@ -95,6 +111,43 @@ def unreadable_block(entries: Sequence[str]) -> str:
     if count > MAX_LISTED:
         lines.append(f"- and {count - MAX_LISTED} more")
     return "\n".join(lines)
+
+
+def portfolio_page(overview: OverviewView, view: PortfolioView, context: PageContext) -> str:
+    """The Overview headlines and return note, then NAV vs SPY, drawdown, exposure, sectors."""
+    shown: PortfolioView = rounded(view)
+    has_nav = bool(shown.nav_index)
+    note = return_note(
+        overview.benchmark_window,
+        overview.benchmark_partial,
+        has_return=overview.benchmark_return is not None,
+        no_spy=SITE_NO_SPY,
+    )
+    return render_page(
+        "Portfolio",
+        context,
+        headline_table(headlines(overview)),
+        note,
+        "## NAV vs SPY",
+        chart_or("portfolio-nav", has_nav, lambda p: nav_vs_benchmark(shown, p), NO_NAV),
+        chart_note(view.benchmark_window, view.benchmark_partial, no_spy=SITE_NO_SPY),
+        "## Drawdown",
+        chart_or("portfolio-drawdown", has_nav, lambda p: drawdown_chart(shown, p), NO_NAV),
+        "## Exposure",
+        chart_or(
+            "portfolio-exposure",
+            bool(shown.exposure),
+            lambda p: exposure_chart(shown, p),
+            NO_EXPOSURE,
+        ),
+        "## Sector exposure",
+        chart_or(
+            "portfolio-sectors",
+            bool(shown.sectors),
+            lambda p: sector_exposure_chart(shown, p),
+            NO_SECTORS,
+        ),
+    )
 
 
 def rounded(value: Any) -> Any:

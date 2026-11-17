@@ -40,8 +40,16 @@ from hedge_fund.viz.format import (
     fmt_money,
     headlines,
     return_note,
+    run_metrics,
 )
-from hedge_fund.viz.views import CostRow, CycleRow, CycleView, OverviewView, PortfolioView
+from hedge_fund.viz.views import (
+    BacktestView,
+    CostRow,
+    CycleRow,
+    CycleView,
+    OverviewView,
+    PortfolioView,
+)
 
 DECIMALS = 6
 MAX_LISTED = 10
@@ -74,6 +82,12 @@ CYCLE_HEADER = (
     "Approval",
     "LLM budget",
     "LLM spent",
+)
+NO_BIAS = "The run lists no residual bias."  # the dashboard's wording (dashboard/backtests.py)
+NO_EQUITY = "This root holds no account snapshots, so there is no equity curve to draw."
+EQUITY_NOTE = (
+    "Equity is this root's account history, indexed to 100; the run figures above are over "
+    "each run's whole window."
 )
 
 
@@ -196,6 +210,39 @@ def cycles_page(view: CycleView, costs: Sequence[CostRow], context: PageContext)
         FUNNEL_NOTE if has_funnel else "",  # render_page drops empty sections
         "## LLM budget vs spend",
         chart_or("cycles-llm-cost", has_costs, lambda p: llm_cost_chart(shown_costs, p), NO_COSTS),
+    )
+
+
+def backtest_page(view: BacktestView, context: PageContext) -> str:
+    """The root's run, its full-window figures and biases, then root-level equity vs SPY.
+
+    ``classify_root`` admits exactly one backtest summary per root, so the view holds one run
+    and there is no run table.
+    """
+    [run] = view.runs
+    shown: BacktestView = rounded(view)
+    biases = "\n".join(f"- {escape_site_markdown(bias)}" for bias in run.biases)
+    return render_page(
+        "Backtest",
+        context,
+        f"This root holds one backtest run, {escape_site_markdown(run.run_id)}.",
+        headline_table(run_metrics(run)),
+        "## Residual biases",
+        biases or NO_BIAS,
+        "## Equity vs SPY",
+        *_equity_sections(shown),
+    )
+
+
+def _equity_sections(view: BacktestView) -> tuple[str, ...]:
+    """The equity chart with its two captions; only ``NO_EQUITY`` when there is no NAV
+    (the dashboard's early return)."""
+    if not view.nav_index:
+        return (NO_EQUITY,)
+    return (
+        chart_block("backtest-equity", lambda p: nav_vs_benchmark(view, p)),
+        chart_note(view.benchmark_window, view.benchmark_partial, no_spy=SITE_NO_SPY),
+        EQUITY_NOTE,
     )
 
 

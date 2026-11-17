@@ -8,7 +8,9 @@ at its sidebar, the site has none.
 
 from __future__ import annotations
 
+import html
 import math
+import re
 from dataclasses import dataclass
 from datetime import date
 
@@ -16,6 +18,8 @@ from hedge_fund.viz.views import MIN_CURVE_POINTS, BacktestRun, OverviewView
 
 NOT_AVAILABLE = "n/a"
 MARKDOWN_SPECIAL = frozenset("\\`*_{}[]()#+-.!|<>~$&:")
+SITE_MARKDOWN_SPECIAL = frozenset("\\`*_{}[]()>#+-.!")  # Python-Markdown's escapable set
+_WHITESPACE = re.compile(r"\s+")
 Window = tuple[date, date]
 WHOLE_HISTORY = "SPY covers the whole NAV history"
 
@@ -32,6 +36,19 @@ def escape_markdown(text: str) -> str:
     literally: no emphasis, links, code, headings or ``$`` LaTeX.
     """
     return "".join(f"\\{char}" if char in MARKDOWN_SPECIAL else char for char in text)
+
+
+def escape_site_markdown(text: str) -> str:
+    """``text`` made literal for the MkDocs site: whitespace runs (newlines, CR, tabs) become
+    one space, so it can never end a table row or list item; then HTML-escaped; then
+    Python-Markdown's escapable characters get a backslash.
+
+    ``&`` and ``;`` are not escaped, since that would break the entities ``html.escape`` just
+    wrote. Table cells also escape ``|`` (``sitegen.pages.cell``).
+    """
+    collapsed = _WHITESPACE.sub(" ", text)
+    escaped = html.escape(collapsed, quote=False)
+    return "".join(f"\\{char}" if char in SITE_MARKDOWN_SPECIAL else char for char in escaped)
 
 
 def fmt_number(value: float | None, spec: str = ",.2f") -> str:

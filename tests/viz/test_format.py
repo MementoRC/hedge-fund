@@ -14,6 +14,7 @@ from hedge_fund.viz.format import (
     WHOLE_HISTORY,
     chart_note,
     escape_markdown,
+    escape_site_markdown,
     fmt_date,
     fmt_money,
     fmt_number,
@@ -155,3 +156,24 @@ def test_return_note_with_a_return_labels_the_two_spans() -> None:
         "Returns marked (SPY window) are over that span; the full-history return is over the "
         "whole NAV."
     )
+
+
+def test_escape_site_markdown_escapes_html_then_markdown() -> None:
+    assert escape_site_markdown("<script>alert(1)</script>") == (
+        r"&lt;script&gt;alert\(1\)&lt;/script&gt;"
+    )
+    assert escape_site_markdown("*x* and _y_") == r"\*x\* and \_y\_"
+    assert escape_site_markdown("AT&T; 5 > 3") == "AT&amp;T; 5 &gt; 3"
+    assert escape_site_markdown(r"a\b `c` [d](e) {f} #g +h -i .j !k") == (
+        r"a\\b \`c\` \[d\]\(e\) \{f\} \#g \+h \-i \.j \!k"
+    )
+
+
+def test_escape_site_markdown_leaves_entities_pipes_and_streamlit_only_characters_alone() -> None:
+    assert escape_site_markdown("&amp; a|b ~$:") == "&amp;amp; a|b ~$:"
+
+
+def test_escape_site_markdown_collapses_every_whitespace_run_to_one_space() -> None:
+    assert escape_site_markdown("a\nb\r\nc\t\td   e") == "a b c d e"
+    assert escape_site_markdown("line\n\n# heading") == r"line \# heading"
+    assert escape_site_markdown("x\r<y>") == "x &lt;y&gt;"

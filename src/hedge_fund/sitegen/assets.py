@@ -3,7 +3,11 @@
 Discovery convention, shared with ``pages.py``: every chart is ``<div id="<id>"
 class="hf-chart">`` and its figure JSON sits in the scripts ``<id>-light`` and
 ``<id>-dark``. ``charts.js`` draws each chart in the palette matching Material's scheme
-(``slate`` is dark, anything else light) and re-draws when the scheme attribute changes.
+(``slate`` is dark, anything else light) and re-draws when the scheme attribute changes. A chart whose JSON is missing or invalid is
+logged and skipped, so it cannot blank the others.
+
+Rendering relies on ``DOMContentLoaded``, which holds because ``website/mkdocs.yml`` does not
+enable ``navigation.instant``. If that is ever enabled, render from Material's ``document$``.
 """
 
 from __future__ import annotations
@@ -35,10 +39,16 @@ _CHARTS_JS = """\
   function each(plot) {
     var suffix = SUFFIX[scheme()];
     document.querySelectorAll(SELECTOR).forEach(function (div) {
-      plot(div, JSON.parse(document.getElementById(div.id + suffix).textContent));
+      try {
+        plot(div, JSON.parse(document.getElementById(div.id + suffix).textContent));
+      } catch (error) {
+        console.error("chart " + div.id + " not drawn:", error);
+      }
     });
   }
 
+  // DOMContentLoaded is enough while website/mkdocs.yml leaves navigation.instant off.
+  // With instant navigation, render from Material's document$ observable instead.
   document.addEventListener("DOMContentLoaded", function () {
     each(function (div, figure) {
       Plotly.newPlot(div, figure.data, figure.layout, CONFIG);

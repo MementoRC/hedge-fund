@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
+
+import yaml
 
 from hedge_fund.sitegen.assets import (
     CHART_CLASS,
@@ -78,3 +81,32 @@ def test_charts_js_uses_the_shared_class_and_suffix_constants() -> None:
 
 def test_charts_js_has_no_resize_or_hidden_div_workaround() -> None:
     assert "resize" not in charts_js()
+
+
+def test_charts_js_guards_each_chart_so_one_bad_block_cannot_blank_the_rest() -> None:
+    js = charts_js()
+
+    assert js.count("try {") == 1
+    assert "} catch (error) {" in js
+    assert "console.error(" in js
+    assert "div.id" in js.split("console.error(")[1].split(")")[0]
+    assert "innerHTML" not in js
+    assert "eval(" not in js
+    # both passes go through the one guarded loop
+    assert js.count("each(function") == 2
+
+
+class _SchemeLoader(yaml.SafeLoader):
+    """Reads, but does not run, mkdocs' ``!!python/name:`` tags."""
+
+
+_SchemeLoader.add_multi_constructor(
+    "tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix
+)
+
+
+def test_instant_navigation_stays_off_because_charts_js_relies_on_domcontentloaded() -> None:
+    mkdocs = Path(__file__).resolve().parents[2] / "website" / "mkdocs.yml"
+    config = yaml.load(mkdocs.read_text(encoding="utf-8"), Loader=_SchemeLoader)  # noqa: S506
+
+    assert "navigation.instant" not in config["theme"]["features"]

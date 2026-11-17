@@ -10,11 +10,41 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from pathlib import Path
 
 from defusedxml.ElementTree import ParseError, parse
+from plotly.offline import get_plotlyjs
 
-from hedge_fund.sitegen.pages import JunitCounts, Stats
+from hedge_fund.sitegen.assets import (
+    ASSETS_DIR,
+    CHARTS_JS,
+    PALETTE_CSS,
+    PLOTLY_JS,
+    charts_js,
+    palette_css,
+)
+from hedge_fund.sitegen.pages import (
+    BACKTEST_PAGE,
+    CYCLES_PAGE,
+    PORTFOLIO_PAGE,
+    STATS_PAGE,
+    JunitCounts,
+    PageContext,
+    Stats,
+    backtest_page,
+    cycles_page,
+    portfolio_page,
+    stats_page,
+)
+from hedge_fund.viz.load import RootError, RootKind, Workspace, classify_root, load_workspace
+from hedge_fund.viz.views import (
+    backtest_view,
+    cycle_view,
+    overview_view,
+    portfolio_view,
+    research_view,
+)
 
 JUNIT_FILE = "junit.xml"
 COVERAGE_FILE = "coverage.json"
@@ -55,6 +85,54 @@ def check_out(out: Path, root: Path) -> None:
     marker = target / MARKER
     if non_empty and not (marker.is_file() and not marker.is_symlink()):
         raise SiteError(f"--out {out} is not empty and has no {MARKER}: refusing to delete it")
+
+
+def build_site(root: Path, out: Path, stats_dir: Path) -> None:
+    """Classify ``root`` (demo or backtest only), check ``out``, then rewrite it: the marker,
+    the four pages, ``palette.css``, ``charts.js`` and ``plotly.min.js``.
+
+    Every refusal is a SiteError raised before anything is deleted.
+    """
+    try:
+        kind = classify_root(root)
+    except RootError as exc:
+        raise SiteError(str(exc)) from exc
+    check_out(out, root)
+    target = out.resolve()  # the path check_out validated; never delete the raw ``out``
+    pages = render_pages(load_workspace(root), kind, read_stats(stats_dir))
+    if target.exists():
+        shutil.rmtree(target)
+    assets = target / ASSETS_DIR
+    assets.mkdir(parents=True)
+    _write(target / MARKER, "")
+    for name, text in pages.items():
+        _write(target / name, text)
+    _write(assets / PALETTE_CSS, palette_css())
+    _write(assets / CHARTS_JS, charts_js())
+    _write(assets / PLOTLY_JS, get_plotlyjs())
+
+
+def render_pages(workspace: Workspace, kind: RootKind, stats: Stats) -> dict[str, str]:
+    """Page file name to Markdown, from the existing view builders."""
+    ws = workspace
+    context = PageContext(demo=kind is RootKind.DEMO, unreadable=ws.unreadable)
+    costs = research_view(ws.research, ws.cycles, ws.verifications, ws.attributions).costs
+    return {
+        PORTFOLIO_PAGE: portfolio_page(
+            overview_view(ws.snapshots, ws.benchmark, ws.cycles),
+            portfolio_view(ws.snapshots, ws.benchmark, ws.cycles),
+            context,
+        ),
+        CYCLES_PAGE: cycles_page(cycle_view(ws.cycles), costs, context),
+        BACKTEST_PAGE: backtest_page(
+            backtest_view(ws.backtests, ws.snapshots, ws.benchmark), context
+        ),
+        STATS_PAGE: stats_page(stats, context),
+    }
+
+
+def _write(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def read_stats(stats_dir: Path) -> Stats:

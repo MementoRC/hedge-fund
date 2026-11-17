@@ -6,9 +6,28 @@ import json
 from pathlib import Path
 
 import pytest
+from plotly.offline import get_plotlyjs
 
-from hedge_fund.sitegen.build import MARKER, SiteError, check_out, read_stats
-from hedge_fund.sitegen.pages import JunitCounts, Stats
+from hedge_fund.sitegen.assets import (
+    ASSETS_DIR,
+    CHARTS_JS,
+    PALETTE_CSS,
+    PLOTLY_JS,
+    charts_js,
+    palette_css,
+)
+from hedge_fund.sitegen.build import MARKER, SiteError, build_site, check_out, read_stats
+from hedge_fund.sitegen.pages import (
+    BACKTEST_PAGE,
+    DEMO_BANNER,
+    PAGE_FILES,
+    PORTFOLIO_PAGE,
+    SITE_NO_SPY,
+    STATS_PAGE,
+    JunitCounts,
+    Stats,
+)
+from tests.dashboard.builders import backtest_root, busy_root, copy_root, live_root
 
 JUNIT = (
     '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" '
@@ -255,3 +274,116 @@ def test_check_out_accepts_an_absent_an_empty_or_a_marked_dir(
     (marked / MARKER).write_text("", encoding="utf-8")
     (marked / "old.md").write_text("x", encoding="utf-8")
     check_out(marked, demo_root)
+
+
+ASSET_PATHS = {f"{ASSETS_DIR}/{name}" for name in (PALETTE_CSS, CHARTS_JS, PLOTLY_JS)}
+
+
+def _tree(out: Path) -> dict[str, bytes]:
+    files = sorted(path for path in out.rglob("*") if path.is_file())
+    return {path.relative_to(out).as_posix(): path.read_bytes() for path in files}
+
+
+def _build(root: Path, tmp_path: Path, name: str = "out") -> Path:
+    out = tmp_path / name
+    build_site(root, out, _stats_dir(tmp_path))
+    return out
+
+
+def test_a_demo_build_writes_every_page_the_assets_and_the_marker(
+    demo_root: Path, tmp_path: Path
+) -> None:
+    out = _build(demo_root, tmp_path)
+
+    assert set(_tree(out)) == {MARKER, *PAGE_FILES, *ASSET_PATHS}
+    assert (out / ASSETS_DIR / PLOTLY_JS).read_text(encoding="utf-8") == get_plotlyjs()
+    assert (out / ASSETS_DIR / PALETTE_CSS).read_text(encoding="utf-8") == palette_css()
+    assert (out / ASSETS_DIR / CHARTS_JS).read_text(encoding="utf-8") == charts_js()
+    assert DEMO_BANNER in (out / PORTFOLIO_PAGE).read_text(encoding="utf-8")
+
+
+def test_every_generated_page_starts_with_a_single_h1(demo_root: Path, tmp_path: Path) -> None:
+    out = _build(demo_root, tmp_path)
+
+    for name in PAGE_FILES:
+        lines = (out / name).read_text(encoding="utf-8").splitlines()
+        assert lines[0].startswith("# "), name
+        assert len([line for line in lines if line.startswith("# ")]) == 1, name
+
+
+def test_two_builds_of_one_root_are_byte_identical(demo_root: Path, tmp_path: Path) -> None:
+    assert _tree(_build(demo_root, tmp_path, "one")) == _tree(_build(demo_root, tmp_path, "two"))
+
+
+def test_two_roots_at_different_absolute_paths_build_identical_pages(
+    demo_root: Path, tmp_path: Path
+) -> None:
+    first = copy_root(demo_root, tmp_path / "a", "demo")  # no sibling store: one unreadable entry
+    second = copy_root(demo_root, tmp_path / "b", "demo")
+
+    one, two = _tree(_build(first, tmp_path, "one")), _tree(_build(second, tmp_path, "two"))
+
+    assert one == two
+    portfolio = one[PORTFOLIO_PAGE].decode("utf-8")
+    assert r"store demo\.store (FileNotFoundError)" in portfolio
+    assert str(tmp_path) not in "".join(text.decode("utf-8") for text in one.values() if text)
+
+
+def test_a_backtest_root_has_no_banner_and_no_spy(demo_root: Path, tmp_path: Path) -> None:
+    out = _build(backtest_root(demo_root, tmp_path), tmp_path)
+
+    assert DEMO_BANNER not in (out / PORTFOLIO_PAGE).read_text(encoding="utf-8")
+    assert SITE_NO_SPY in (out / BACKTEST_PAGE).read_text(encoding="utf-8")
+
+
+def test_live_and_paper_roots_are_refused_and_nothing_is_written(tmp_path: Path) -> None:
+    for root in (live_root(tmp_path), busy_root(tmp_path)):
+        out = tmp_path / f"out-{root.name}"
+        with pytest.raises(SiteError, match="expected exactly one readable backtest summary"):
+            build_site(root, out, _stats_dir(tmp_path))
+        assert not out.exists()
+
+
+def test_a_rebuild_removes_stale_files_and_rewrites_the_marker(
+    demo_root: Path, tmp_path: Path
+) -> None:
+    out = _build(demo_root, tmp_path)
+    (out / "old.md").write_text("stale", encoding="utf-8")
+
+    build_site(demo_root, out, _stats_dir(tmp_path))
+
+    assert not (out / "old.md").exists()
+    assert (out / MARKER).is_file()
+
+
+def test_an_empty_out_is_built_into(demo_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+
+    build_site(demo_root, out, _stats_dir(tmp_path))
+
+    assert (out / MARKER).is_file()
+
+
+def test_an_unmarked_out_is_refused_before_anything_is_deleted(
+    demo_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "keep.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(SiteError, match=MARKER):
+        build_site(demo_root, out, _stats_dir(tmp_path))
+    assert (out / "keep.txt").is_file()
+
+
+def test_the_stats_page_with_and_without_stats_files(demo_root: Path, tmp_path: Path) -> None:
+    without = _build(demo_root, tmp_path, "without")
+    stats = _stats_dir(tmp_path / "with", JUNIT, {"totals": {"percent_covered": 100.0}})
+    with_files = tmp_path / "with-out"
+    build_site(demo_root, with_files, stats)
+
+    assert "were not produced" in (without / STATS_PAGE).read_text(encoding="utf-8")
+    page = (with_files / STATS_PAGE).read_text(encoding="utf-8")
+    assert "**failed** (9 passed, 1 failed, 0 errors, 2 skipped)" in page
+    assert "Coverage: 100.00%." in page

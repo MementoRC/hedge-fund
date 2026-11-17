@@ -44,6 +44,16 @@ def test_missing_stats_say_they_were_not_produced() -> None:
     assert NO_COVERAGE in page
 
 
+def test_exactly_one_missing_input_names_only_that_input() -> None:
+    no_coverage = stats_page(Stats(JunitCounts(10, 0, 0, 0), None), PLAIN)
+    no_tests = stats_page(Stats(None, 100.0), PLAIN)
+
+    assert NO_COVERAGE in no_coverage
+    assert NO_TESTS not in no_coverage
+    assert NO_TESTS in no_tests
+    assert NO_COVERAGE not in no_tests
+
+
 def test_the_stats_page_has_the_demo_banner_on_a_demo_root() -> None:
     assert DEMO_BANNER in stats_page(Stats(None, None), DEMO)
     assert stats_page(Stats(None, None), PLAIN).startswith("# Stats\n")

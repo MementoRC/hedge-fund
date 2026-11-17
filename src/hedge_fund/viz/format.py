@@ -35,20 +35,35 @@ def escape_markdown(text: str) -> str:
     """``text`` (LLM output or report text) backslash-escaped so ``st.markdown`` shows it
     literally: no emphasis, links, code, headings or ``$`` LaTeX.
     """
-    return "".join(f"\\{char}" if char in MARKDOWN_SPECIAL else char for char in text)
+    return _backslash(text, MARKDOWN_SPECIAL)
 
 
 def escape_site_markdown(text: str) -> str:
     """``text`` made literal for the MkDocs site: whitespace runs (newlines, CR, tabs) become
     one space, so it can never end a table row or list item; then HTML-escaped; then
-    Python-Markdown's escapable characters get a backslash.
+    Python-Markdown's escapable characters get a backslash. Unlike ``escape_markdown``
+    (Streamlit's renderer), it targets Python-Markdown and also neutralises raw HTML.
 
     ``&`` and ``;`` are not escaped, since that would break the entities ``html.escape`` just
     wrote. Table cells also escape ``|`` (``sitegen.pages.cell``).
+
+    Contract:
+
+    - Safe only as inline body text, list-item text, or table-cell text (pipes handled by
+      ``sitegen.pages.cell``).
+    - NOT safe inside code spans, link or URL targets, or HTML attributes: ``quote=False``
+      leaves quotes untouched.
+    - Not idempotent: a second call double-escapes ``&`` (``&lt;`` becomes ``&amp;lt;``).
+    - Must not start a line: a leading run of three tildes could open a superfences code
+      fence, and ``~`` is not backslash-escapable in Python-Markdown.
     """
     collapsed = _WHITESPACE.sub(" ", text)
-    escaped = html.escape(collapsed, quote=False)
-    return "".join(f"\\{char}" if char in SITE_MARKDOWN_SPECIAL else char for char in escaped)
+    return _backslash(html.escape(collapsed, quote=False), SITE_MARKDOWN_SPECIAL)
+
+
+def _backslash(text: str, chars: frozenset[str]) -> str:
+    """``text`` with a backslash before every character in ``chars``."""
+    return "".join(f"\\{char}" if char in chars else char for char in text)
 
 
 def fmt_number(value: float | None, spec: str = ",.2f") -> str:

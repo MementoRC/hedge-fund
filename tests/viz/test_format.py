@@ -158,15 +158,23 @@ def test_return_note_with_a_return_labels_the_two_spans() -> None:
     )
 
 
-def test_escape_site_markdown_escapes_html_then_markdown() -> None:
-    assert escape_site_markdown("<script>alert(1)</script>") == (
-        r"&lt;script&gt;alert\(1\)&lt;/script&gt;"
-    )
-    assert escape_site_markdown("*x* and _y_") == r"\*x\* and \_y\_"
-    assert escape_site_markdown("AT&T; 5 > 3") == "AT&amp;T; 5 &gt; 3"
-    assert escape_site_markdown(r"a\b `c` [d](e) {f} #g +h -i .j !k") == (
-        r"a\\b \`c\` \[d\]\(e\) \{f\} \#g \+h \-i \.j \!k"
-    )
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(
+            "<script>alert(1)</script>", r"&lt;script&gt;alert\(1\)&lt;/script&gt;", id="html"
+        ),
+        pytest.param("*x* and _y_", r"\*x\* and \_y\_", id="emphasis"),
+        pytest.param("AT&T; 5 > 3", "AT&amp;T; 5 &gt; 3", id="ampersand-and-semicolon"),
+        pytest.param(
+            r"a\b `c` [d](e) {f} #g +h -i .j !k",
+            r"a\\b \`c\` \[d\]\(e\) \{f\} \#g \+h \-i \.j \!k",
+            id="escapable-set",
+        ),
+    ],
+)
+def test_escape_site_markdown_escapes_html_then_markdown(text: str, expected: str) -> None:
+    assert escape_site_markdown(text) == expected
 
 
 def test_escape_site_markdown_leaves_entities_pipes_and_streamlit_only_characters_alone() -> None:

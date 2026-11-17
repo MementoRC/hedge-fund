@@ -3,8 +3,8 @@
 Discovery convention, shared with ``pages.py``: every chart is ``<div id="<id>"
 class="hf-chart">`` and its figure JSON sits in the scripts ``<id>-light`` and
 ``<id>-dark``. ``charts.js`` draws each chart in the palette matching Material's scheme
-(``slate`` is dark, anything else light) and re-draws when the scheme attribute changes. A chart whose JSON is missing or invalid is
-logged and skipped, so it cannot blank the others.
+(``slate`` is dark, anything else light) and re-draws when the scheme attribute changes.
+A chart whose JSON is missing or invalid is logged and skipped, so it cannot blank the others.
 
 Rendering relies on ``DOMContentLoaded``, which holds because ``website/mkdocs.yml`` does not
 enable ``navigation.instant``. If that is ever enabled, render from Material's ``document$``.

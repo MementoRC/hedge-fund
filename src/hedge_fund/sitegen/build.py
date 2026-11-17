@@ -88,7 +88,9 @@ def check_out(out: Path, root: Path) -> None:
 
 
 def build_site(root: Path, out: Path, stats_dir: Path) -> None:
-    """Classify ``root`` (demo or backtest only), check ``out``, then rewrite it: the marker,
+    """Build the site for ``root`` into ``out``.
+
+    Classify ``root`` (demo or backtest only), check ``out``, then rewrite it: the marker,
     the four pages, ``palette.css``, ``charts.js`` and ``plotly.min.js``.
 
     Every refusal is a SiteError raised before anything is deleted.
@@ -100,6 +102,7 @@ def build_site(root: Path, out: Path, stats_dir: Path) -> None:
     check_out(out, root)
     target = out.resolve()  # the path check_out validated; never delete the raw ``out``
     pages = render_pages(load_workspace(root), kind, read_stats(stats_dir))
+    plotly_js = get_plotlyjs()
     if target.exists():
         shutil.rmtree(target)
     assets = target / ASSETS_DIR
@@ -109,7 +112,7 @@ def build_site(root: Path, out: Path, stats_dir: Path) -> None:
         _write(target / name, text)
     _write(assets / PALETTE_CSS, palette_css())
     _write(assets / CHARTS_JS, charts_js())
-    _write(assets / PLOTLY_JS, get_plotlyjs())
+    _write(assets / PLOTLY_JS, plotly_js)
 
 
 def render_pages(workspace: Workspace, kind: RootKind, stats: Stats) -> dict[str, str]:

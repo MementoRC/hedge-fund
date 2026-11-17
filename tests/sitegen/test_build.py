@@ -326,7 +326,7 @@ def test_two_roots_at_different_absolute_paths_build_identical_pages(
     assert one == two
     portfolio = one[PORTFOLIO_PAGE].decode("utf-8")
     assert r"store demo\.store (FileNotFoundError)" in portfolio
-    assert str(tmp_path) not in "".join(text.decode("utf-8") for text in one.values() if text)
+    assert str(tmp_path) not in "".join(text.decode("utf-8") for text in one.values())
 
 
 def test_a_backtest_root_has_no_banner_and_no_spy(demo_root: Path, tmp_path: Path) -> None:
@@ -375,6 +375,23 @@ def test_an_unmarked_out_is_refused_before_anything_is_deleted(
     with pytest.raises(SiteError, match=MARKER):
         build_site(demo_root, out, _stats_dir(tmp_path))
     assert (out / "keep.txt").is_file()
+
+
+def test_a_failing_plotly_bundle_leaves_the_previous_site_intact(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = _build(demo_root, tmp_path)
+    before = _tree(out)
+
+    def boom() -> str:
+        raise RuntimeError("no plotly bundle")
+
+    monkeypatch.setattr("hedge_fund.sitegen.build.get_plotlyjs", boom)
+
+    with pytest.raises(RuntimeError, match="no plotly bundle"):
+        build_site(demo_root, out, _stats_dir(tmp_path))
+    assert (out / MARKER).is_file()
+    assert _tree(out) == before
 
 
 def test_the_stats_page_with_and_without_stats_files(demo_root: Path, tmp_path: Path) -> None:

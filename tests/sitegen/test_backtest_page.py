@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+
+import pytest
+
+from hedge_fund.dashboard import backtests as dashboard_backtests
 from hedge_fund.sitegen.pages import (
     EQUITY_NOTE,
     NO_BIAS,
@@ -76,8 +81,40 @@ def test_equity_vs_spy_with_spy_draws_both_lines() -> None:
     page = _page(spy=True)
 
     assert SITE_NO_SPY not in page
+    assert "SPY covers the whole NAV history, 2024-01-02 to 2024-01-05." in page
+    assert EQUITY_NOTE in page
     names = [trace["name"] for trace in figures(page)["backtest-equity-dark"]["data"]]
     assert names == ["Strategy", "SPY"]
+
+
+def test_a_partial_benchmark_gets_the_partial_window_note() -> None:
+    report = make_backtest_report()
+    benchmark = make_nav(51.0, 52.0, 53.0, start=date(2024, 1, 3))
+    view = backtest_view((report,), SNAPSHOTS, benchmark)
+    assert view.benchmark_partial
+
+    page = backtest_page(view, PLAIN)
+
+    assert (
+        "SPY covers only 2024-01-03 to 2024-01-05 (partial window): the chart rebases it to "
+        "the strategy at 2024-01-03 while the strategy line stays full length."
+    ) in page
+    assert SITE_NO_SPY not in page
+    assert EQUITY_NOTE in page
+
+
+def test_the_copied_wording_matches_the_dashboard() -> None:
+    assert NO_BIAS == dashboard_backtests.NO_BIAS
+    assert EQUITY_NOTE == dashboard_backtests.EQUITY_NOTE
+
+
+@pytest.mark.parametrize("count", [0, 2])
+def test_a_root_without_exactly_one_run_is_rejected(count: int) -> None:
+    reports = tuple(make_backtest_report(run_id=f"run-{i}") for i in range(count))
+    view = backtest_view(reports, SNAPSHOTS, None)
+
+    with pytest.raises(ValueError, match=f"exactly one run, got {count}"):
+        backtest_page(view, PLAIN)
 
 
 def test_no_snapshots_gives_only_the_note_with_no_chart_or_captions() -> None:

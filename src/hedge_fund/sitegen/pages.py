@@ -219,7 +219,9 @@ def backtest_page(view: BacktestView, context: PageContext) -> str:
     ``classify_root`` admits exactly one backtest summary per root, so the view holds one run
     and there is no run table.
     """
-    [run] = view.runs
+    if len(view.runs) != 1:
+        raise ValueError(f"backtest root must have exactly one run, got {len(view.runs)}")
+    run = view.runs[0]
     shown: BacktestView = rounded(view)
     biases = "\n".join(f"- {escape_site_markdown(bias)}" for bias in run.biases)
     return render_page(

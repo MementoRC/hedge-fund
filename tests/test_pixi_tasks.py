@@ -38,10 +38,13 @@ def test_the_site_environment_is_ci_dev_and_site_in_the_default_solve_group() ->
     assert env == {"features": ["ci", "dev", "site"], "solve-group": "default"}
 
 
-def test_the_site_task_builds_the_site_strictly_into_the_repo_root() -> None:
+def test_the_site_task_generates_the_pages_then_builds_the_site_strictly() -> None:
     tasks = _manifest()["feature"]["site"]["tasks"]
 
-    assert tasks["site"] == "mkdocs build --strict -f website/mkdocs.yml -d ../_site"
+    assert tasks["site"] == (
+        "hedge-fund site build --root data/demo --stats-dir . && "
+        "mkdocs build --strict -f website/mkdocs.yml -d ../_site"
+    )
 
 
 def test_dev_and_ci_stay_free_of_mkdocs() -> None:

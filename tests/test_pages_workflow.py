@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,15 @@ import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 NOT_PR = "github.event_name != 'pull_request'"
+UPLOAD = "actions/upload-pages-artifact"
+FLAG = "Flag a failing test run"
+PINNED = {
+    "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+    "prefix-dev/setup-pixi": "fef5c9568ca6c4ff7707bf840ab0692ba3f08293",
+    "actions/configure-pages": "983d7736d9b0ae728b81ab479565c72886d7745b",
+    UPLOAD: "56afc609e74202658d3ffba0e8f6dda462b719fa",
+    "actions/deploy-pages": "d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+}
 
 
 def _load(name: str) -> dict[Any, Any]:
@@ -62,8 +72,13 @@ def test_the_build_checks_out_hedge_fund_and_the_tradingagents_fork_side_by_side
     checkouts = [s for s in _build()["steps"] if s.get("uses", "").startswith("actions/checkout")]
 
     assert [c["with"] for c in checkouts] == [
-        {"path": "hedge-fund"},
-        {"repository": "MementoRC/TradingAgents", "ref": "hedge-fund", "path": "TradingAgents"},
+        {"path": "hedge-fund", "persist-credentials": False},
+        {
+            "repository": "MementoRC/TradingAgents",
+            "ref": "hedge-fund",
+            "path": "TradingAgents",
+            "persist-credentials": False,
+        },
     ]
 
 
@@ -74,10 +89,12 @@ def test_the_build_runs_in_hedge_fund_with_the_site_env() -> None:
     assert build["defaults"] == {"run": {"working-directory": "hedge-fund"}}
     assert setup["with"]["environments"] == "site"
     assert setup["with"]["manifest-path"] == "hedge-fund/pixi.toml"
+    assert setup["with"]["locked"] is True
+    assert setup["with"]["cache"] is True
 
 
 def test_the_build_installs_tests_builds_the_demo_then_the_site() -> None:
-    runs = [s for s in _build()["steps"] if "run" in s]
+    runs = [s for s in _build()["steps"] if "run" in s and s["name"] != FLAG]
 
     assert [s["run"] for s in runs] == [
         "pixi run -e site setup-dev",
@@ -100,6 +117,33 @@ def test_the_build_configures_pages_off_prs_and_uploads_the_site() -> None:
     ]
     assert _step(build, "actions/configure-pages")["if"] == NOT_PR
     assert _step(build, "actions/upload-pages-artifact")["with"]["path"] == "hedge-fund/_site"
+
+
+def test_every_action_is_pinned_to_its_commit_sha() -> None:
+    workflow = _load("pages.yml")
+    refs = [
+        step["uses"] for job in workflow["jobs"].values() for step in job["steps"] if "uses" in step
+    ]
+
+    assert refs
+    assert all(re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref) for ref in refs)
+    assert {ref.split("@")[0]: ref.split("@")[1] for ref in refs} == PINNED
+
+
+def test_a_failing_test_run_is_flagged_without_failing_the_build() -> None:
+    steps = _build()["steps"]
+    tests = next(s for s in steps if s.get("id") == "tests")
+    flag = steps[-1]
+    upload = next(i for i, s in enumerate(steps) if s.get("uses", "").startswith(UPLOAD))
+
+    assert tests["continue-on-error"] is True
+    assert flag["name"] == FLAG
+    assert flag["if"] == "steps.tests.outcome == 'failure'"
+    assert steps.index(flag) > upload
+    assert "::warning::" in flag["run"]
+    assert "$GITHUB_STEP_SUMMARY" in flag["run"]
+    assert "exit" not in flag["run"]
+    assert "continue-on-error" not in flag
 
 
 def test_the_build_installs_the_same_pixi_as_ci() -> None:

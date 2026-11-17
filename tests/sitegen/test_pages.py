@@ -156,6 +156,24 @@ def test_chart_json_is_compact_rounded_and_has_no_raw_lt_or_amp() -> None:
     assert "\n" not in text
 
 
+def test_chart_json_does_not_mutate_the_callers_figure() -> None:
+    figure = _figure()
+    before = figure.layout.autosize
+
+    chart_json(figure)
+
+    assert figure.layout.autosize == before
+
+
+def test_a_literal_escape_sequence_in_the_data_survives_the_round_trip() -> None:
+    literal = "a" + "\\" + "u003c" + "b" + "\\" + "u0026" + "c<&"
+    text = chart_json(_figure(literal))
+
+    assert "<" not in text
+    assert "&" not in text
+    assert json.loads(text)["data"][0]["name"] == literal
+
+
 def test_a_chart_block_is_one_div_and_a_light_and_a_dark_script() -> None:
     block = chart_block("portfolio-x", lambda palette: drawdown_chart(_view(), palette))
     lines = block.split("\n")
@@ -184,8 +202,13 @@ def test_the_site_no_spy_text_comes_back_exactly_from_both_notes() -> None:
 
 def test_a_chart_block_is_byte_identical_to_the_golden_file() -> None:
     assert plotly.__version__ == "7.1.0"  # the golden pins this plotly's JSON (incl. bdata)
-    assert golden_block() + "\n" == GOLDEN.read_text(encoding="utf-8")
-    light = figures(golden_block())["portfolio-drawdown-light"]
+    block = golden_block()
+    assert block + "\n" == GOLDEN.read_text(encoding="utf-8"), (
+        "golden differs. If plotly 7.1.0 output changed on purpose, regenerate: "
+        "GOLDEN.write_text(golden_block() + '\\n', encoding='utf-8') "
+        "(from tests.sitegen.test_pages), exactly one trailing newline, then review the diff"
+    )
+    light = figures(block)["portfolio-drawdown-light"]
     assert numbers(light["data"][0]["y"]) == [0.0, 0.0, -0.25, -0.041667]
 
 

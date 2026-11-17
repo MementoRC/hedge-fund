@@ -112,8 +112,8 @@ def rounded(value: Any) -> Any:
 def chart_json(figure: go.Figure) -> str:
     """``figure`` as compact JSON with plain floats rounded, non-finite ones null, and no raw
     less-than sign or ampersand (each written as a JSON unicode escape)."""
-    figure.update_layout(autosize=True)
     parsed = json.loads(figure.to_json(engine="json"))
+    parsed.setdefault("layout", {})["autosize"] = True
     text = json.dumps(_round_json(parsed), separators=(",", ":"), allow_nan=False)
     return text.replace("<", "\\u003c").replace("&", "\\u0026")
 

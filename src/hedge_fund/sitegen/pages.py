@@ -89,6 +89,13 @@ EQUITY_NOTE = (
     "Equity is this root's account history, indexed to 100; the run figures above are over "
     "each run's whole window."
 )
+COVERAGE_GATE = 100.0
+NO_TESTS = "Test results were not produced in this build."
+NO_COVERAGE = "Coverage was not produced in this build."
+STATS_NOTE = (
+    "These figures come from the test run of this site build; it does not block the site. "
+    "The CI workflow is the blocking gate."
+)
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,28 @@ class PageContext:
 
     demo: bool
     unreadable: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class JunitCounts:
+    """The ``testsuite`` attributes of a pytest ``junit.xml``."""
+
+    tests: int
+    failures: int
+    errors: int
+    skipped: int
+
+    @property
+    def passed(self) -> int:
+        return self.tests - self.failures - self.errors - self.skipped
+
+
+@dataclass(frozen=True)
+class Stats:
+    """``junit`` and ``coverage`` (``totals.percent_covered``) are None when not produced."""
+
+    junit: JunitCounts | None
+    coverage: float | None
 
 
 def render_page(title: str, context: PageContext, *sections: str) -> str:
@@ -234,6 +263,30 @@ def backtest_page(view: BacktestView, context: PageContext) -> str:
         "## Equity vs SPY",
         *_equity_sections(shown),
     )
+
+
+def stats_page(stats: Stats, context: PageContext) -> str:
+    return render_page(
+        "Stats", context, _tests_line(stats.junit), _coverage_line(stats.coverage), STATS_NOTE
+    )
+
+
+def _tests_line(junit: JunitCounts | None) -> str:
+    if junit is None:
+        return NO_TESTS
+    result = "passed" if junit.failures == 0 and junit.errors == 0 else "failed"
+    return (
+        f"Test suite: **{result}** ({junit.passed} passed, {junit.failures} failed, "
+        f"{junit.errors} errors, {junit.skipped} skipped)."
+    )
+
+
+def _coverage_line(coverage: float | None) -> str:
+    """Only the shown value is rounded (2 decimals); the gate check uses the raw value."""
+    if coverage is None:
+        return NO_COVERAGE
+    flag = ", below the 100% gate" if coverage < COVERAGE_GATE else ""
+    return f"Coverage: {coverage:.2f}%{flag}."
 
 
 def _equity_sections(view: BacktestView) -> tuple[str, ...]:

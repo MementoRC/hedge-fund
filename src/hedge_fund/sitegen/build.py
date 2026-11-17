@@ -32,7 +32,8 @@ def check_out(out: Path, root: Path) -> None:
     Refused: the filesystem root, the home dir, any ``out`` that is or contains ``root`` or
     the current directory (``.`` included), a non-directory, and a non-empty directory
     without ``MARKER``. An absent or empty ``out`` is fine. Paths are resolved first, so
-    symlinks and ``..`` cannot bypass the checks.
+    symlinks and ``..`` cannot bypass the checks. Callers must delete the resolved path that
+    this function validated, not the raw ``out`` argument.
     """
     target = out.resolve()
     if target == Path(target.anchor):
@@ -45,7 +46,14 @@ def check_out(out: Path, root: Path) -> None:
             raise SiteError(f"--out {out} is or contains {name}: refusing to delete it")
     if target.exists() and not target.is_dir():
         raise SiteError(f"--out {out} is not a directory")
-    if target.is_dir() and any(target.iterdir()) and not (target / MARKER).is_file():
+    if not target.is_dir():
+        return
+    try:
+        non_empty = any(target.iterdir())
+    except OSError as exc:
+        raise SiteError(f"cannot read --out {out}: {exc.strerror or exc}") from exc
+    marker = target / MARKER
+    if non_empty and not (marker.is_file() and not marker.is_symlink()):
         raise SiteError(f"--out {out} is not empty and has no {MARKER}: refusing to delete it")
 
 

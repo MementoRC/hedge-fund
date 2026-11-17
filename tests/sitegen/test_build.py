@@ -195,6 +195,47 @@ def test_check_out_refuses_a_non_empty_dir_without_the_marker(
     assert (out / "keep.txt").is_file()
 
 
+def test_check_out_refuses_a_symlinked_marker(demo_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    real = tmp_path / "real_marker"
+    real.write_text("", encoding="utf-8")
+    (out / MARKER).symlink_to(real)
+    (out / "keep.txt").write_text("x", encoding="utf-8")
+
+    with pytest.raises(SiteError, match=MARKER):
+        check_out(out, demo_root)
+
+
+def test_check_out_refuses_a_marker_that_is_a_directory(demo_root: Path, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    (out / MARKER).mkdir(parents=True)
+
+    with pytest.raises(SiteError, match=MARKER):
+        check_out(out, demo_root)
+
+
+def test_check_out_reports_an_unreadable_dir_as_a_site_error(
+    demo_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    out = tmp_path / "out"
+    out.mkdir()
+    target = out.resolve()
+    real_iterdir = Path.iterdir
+
+    def deny(self: Path):  # noqa: ANN202
+        if self == target:
+            raise PermissionError("denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", deny)
+
+    with pytest.raises(SiteError, match="cannot read") as info:
+        check_out(out, demo_root)
+    assert str(out) in str(info.value)
+    assert isinstance(info.value.__cause__, PermissionError)
+
+
 def test_check_out_refuses_a_file(demo_root: Path, tmp_path: Path) -> None:
     out = tmp_path / "out"
     out.write_text("x", encoding="utf-8")

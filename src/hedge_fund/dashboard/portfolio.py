@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import chart_note, fmt_date, fmt_percent
+from hedge_fund.dashboard.format import NO_SPY, chart_note, fmt_date, fmt_percent
 from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import DEMO_COMMAND, usable_workspace
 from hedge_fund.viz.charts import (
@@ -60,7 +60,7 @@ def render(state: RootState) -> None:
         return
     view = portfolio_view(workspace.snapshots, workspace.benchmark, workspace.cycles)
     _chart(nav_vs_benchmark(view, PALETTE))
-    st.caption(chart_note(view.benchmark_window, view.benchmark_partial))
+    st.caption(chart_note(view.benchmark_window, view.benchmark_partial, no_spy=NO_SPY))
     _chart(drawdown_chart(view, PALETTE))
     st.subheader("Exposure")
     if not view.exposure:

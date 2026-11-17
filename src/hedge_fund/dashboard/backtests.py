@@ -13,6 +13,7 @@ import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
 from hedge_fund.dashboard.format import (
+    NO_SPY,
     chart_note,
     escape_markdown,
     fmt_date,
@@ -105,5 +106,5 @@ def _equity(view: BacktestView) -> None:
         st.info(NO_EQUITY)
         return
     st.plotly_chart(nav_vs_benchmark(view, PALETTE), theme=None)
-    st.caption(chart_note(view.benchmark_window, view.benchmark_partial))
+    st.caption(chart_note(view.benchmark_window, view.benchmark_partial, no_spy=NO_SPY))
     st.caption(EQUITY_NOTE)

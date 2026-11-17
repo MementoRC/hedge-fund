@@ -65,10 +65,14 @@ def fmt_window(window: Window | None) -> str:
     return NOT_AVAILABLE if window is None else f"{fmt_date(window[0])} to {fmt_date(window[1])}"
 
 
-def chart_note(window: Window | None, partial: bool) -> str:
-    """What the SPY line on a NAV chart covers (the strategy line is always the full NAV)."""
+def chart_note(window: Window | None, partial: bool, *, no_spy: str) -> str:
+    """What the SPY line on a NAV chart covers (the strategy line is always the full NAV).
+
+    With no SPY series (``window`` is None) the caller's ``no_spy`` text comes back
+    unchanged: the dashboard and the site word that case differently.
+    """
     if window is None:
-        return NO_SPY
+        return no_spy
     if partial:
         return (
             f"SPY covers only {fmt_window(window)} (partial window): the chart rebases it to "
@@ -77,11 +81,12 @@ def chart_note(window: Window | None, partial: bool) -> str:
     return f"{WHOLE_HISTORY}, {fmt_window(window)}."
 
 
-def return_note(window: Window | None, partial: bool, *, has_return: bool) -> str:
+def return_note(window: Window | None, partial: bool, *, has_return: bool, no_spy: str) -> str:
     """``chart_note`` plus what the SPY-window returns mean; ``has_return`` is False when the
-    window has fewer than ``MIN_CURVE_POINTS`` dates, so no return exists.
+    window has fewer than ``MIN_CURVE_POINTS`` dates, so no return exists. With no SPY series
+    this is exactly ``no_spy``.
     """
-    note = chart_note(window, partial)
+    note = chart_note(window, partial, no_spy=no_spy)
     if window is None:
         return note
     if not has_return:

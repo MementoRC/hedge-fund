@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 from hedge_fund.dashboard.format import (
+    NO_SPY,
     NOT_AVAILABLE,
+    WHOLE_HISTORY,
     chart_note,
     escape_markdown,
     fmt_date,
@@ -23,6 +25,7 @@ from hedge_fund.viz.views import MIN_CURVE_POINTS
 
 WINDOW = (date(2024, 1, 3), date(2024, 1, 5))
 NON_FINITE = [math.nan, math.inf, -math.inf, None]
+NO_SPY_TEXT = "No SPY here."
 
 
 def test_the_placeholder_is_n_a() -> None:
@@ -104,45 +107,51 @@ def test_fmt_date_and_window() -> None:
     assert fmt_window(None) == "n/a"
 
 
-def test_chart_note_without_a_benchmark_says_there_is_no_spy_series() -> None:
-    note = chart_note(None, partial=False)
+def test_chart_note_without_a_benchmark_is_exactly_the_no_spy_text_passed_in() -> None:
+    assert chart_note(None, partial=False, no_spy=NO_SPY_TEXT) == NO_SPY_TEXT
+    assert chart_note(None, partial=True, no_spy=NO_SPY) == NO_SPY
 
-    assert "No SPY series" in note
-    assert "<root>.store" in note
+
+def test_the_dashboard_no_spy_text_names_the_store_and_the_sidebar() -> None:
+    assert NO_SPY.startswith("No SPY series for this root.")
+    assert "<root>.store" in NO_SPY
+    assert "sidebar" in NO_SPY
 
 
 def test_chart_note_for_a_full_benchmark_says_it_covers_the_whole_history() -> None:
-    note = chart_note(WINDOW, partial=False)
+    note = chart_note(WINDOW, partial=False, no_spy=NO_SPY_TEXT)
 
-    assert "whole NAV history" in note
-    assert "2024-01-03 to 2024-01-05" in note
-    assert "partial" not in note
+    assert note == "SPY covers the whole NAV history, 2024-01-03 to 2024-01-05."
 
 
 def test_chart_note_for_a_partial_benchmark_names_the_window_and_the_rebase() -> None:
-    note = chart_note(WINDOW, partial=True)
+    note = chart_note(WINDOW, partial=True, no_spy=NO_SPY_TEXT)
 
-    assert "partial window" in note
-    assert "2024-01-03 to 2024-01-05" in note
-    assert "rebases it to the strategy at 2024-01-03" in note
-    assert "strategy line stays full length" in note
+    assert note == (
+        "SPY covers only 2024-01-03 to 2024-01-05 (partial window): the chart rebases it to "
+        "the strategy at 2024-01-03 while the strategy line stays full length."
+    )
 
 
-def test_return_note_without_a_benchmark_is_the_chart_note() -> None:
-    assert return_note(None, partial=False, has_return=False) == chart_note(None, partial=False)
+def test_return_note_without_a_benchmark_is_exactly_the_no_spy_text() -> None:
+    assert return_note(None, partial=False, has_return=False, no_spy=NO_SPY_TEXT) == NO_SPY_TEXT
+    assert return_note(None, partial=True, has_return=True, no_spy=NO_SPY) == NO_SPY
 
 
 def test_return_note_with_a_window_but_no_return_says_fewer_than_three_dates() -> None:
-    note = return_note(WINDOW, partial=True, has_return=False)
+    note = return_note(WINDOW, partial=True, has_return=False, no_spy=NO_SPY_TEXT)
 
-    assert "partial window" in note
-    assert f"fewer than {MIN_CURVE_POINTS} dates" in note
-    assert "no SPY return is computed" in note
+    assert note == (
+        f"{chart_note(WINDOW, partial=True, no_spy=NO_SPY_TEXT)} That is fewer than "
+        f"{MIN_CURVE_POINTS} dates, so no SPY return is computed."
+    )
 
 
 def test_return_note_with_a_return_labels_the_two_spans() -> None:
-    note = return_note(WINDOW, partial=False, has_return=True)
+    note = return_note(WINDOW, partial=False, has_return=True, no_spy=NO_SPY_TEXT)
 
-    assert "whole NAV history" in note
-    assert "(SPY window)" in note
-    assert "full-history return" in note
+    assert note.startswith(WHOLE_HISTORY)
+    assert note.endswith(
+        "Returns marked (SPY window) are over that span; the full-history return is over the "
+        "whole NAV."
+    )

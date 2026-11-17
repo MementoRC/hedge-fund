@@ -14,6 +14,7 @@ import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
 from hedge_fund.dashboard.format import (
+    NO_SPY,
     NOT_AVAILABLE,
     fmt_date,
     fmt_money,
@@ -99,6 +100,7 @@ def render(state: RootState) -> None:
             view.benchmark_window,
             view.benchmark_partial,
             has_return=view.benchmark_return is not None,
+            no_spy=NO_SPY,
         )
     )
     runs = backtest_view(workspace.backtests, workspace.snapshots, workspace.benchmark).runs

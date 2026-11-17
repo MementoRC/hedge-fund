@@ -22,6 +22,8 @@ PURE = (
     "sitegen/assets.py",
     "sitegen/palette.py",
 )
+# sitegen/build.py is exempt from the pure scans: it renders the site and does the file I/O.
+SITEGEN_IMPURE = {"sitegen/build.py"}
 PURE_BANNED = (
     "hedge_fund.adapters",
     "hedge_fund.services",
@@ -245,4 +247,15 @@ def test_sitegen_reaches_adapters_only_through_viz_load() -> None:
 
 
 def test_sitegen_imports_no_streamlit() -> None:
-    assert _importing(_files("sitegen"), "streamlit") == []
+    files = _files("sitegen")
+
+    assert files
+    assert _importing(files, "streamlit") == []
+
+
+def test_every_sitegen_module_is_pure_or_explicitly_exempt() -> None:
+    files = [p for p in _files("sitegen") if p.name != "__init__.py"]
+
+    assert files
+    uncovered = sorted(_relative(p) for p in files if _relative(p) not in {*PURE, *SITEGEN_IMPURE})
+    assert uncovered == [], uncovered

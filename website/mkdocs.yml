@@ -6,9 +6,6 @@ docs_dir: docs
 
 theme:
   name: material
-  # TODO(S2/polish): the colours below are Material's defaults. The shared palette lives in
-  # hedge_fund.viz.theme (built in PR0); polish wires it in through extra CSS. Do not invent
-  # a second palette here.
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -25,11 +22,20 @@ theme:
     - content.code.copy
 
 markdown_extensions:
+  - admonition
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
+
+# Written by `hedge-fund site build` (pixi run -e site site). Chart colours come from
+# hedge_fund.viz.theme through palette.css; plotly.min.js must load before charts.js.
+extra_css:
+  - generated/assets/palette.css
+extra_javascript:
+  - generated/assets/plotly.min.js
+  - generated/assets/charts.js
 
 nav:
   - Home: index.md
@@ -37,3 +43,8 @@ nav:
   - A cycle, step by step: cycle.md
   - Design rules: design-rules.md
   - Backtest methodology: backtest-methodology.md
+  - Results:
+      - Portfolio: generated/portfolio.md
+      - Cycles: generated/cycles.md
+      - Backtest: generated/backtests.md
+      - Stats: generated/stats.md

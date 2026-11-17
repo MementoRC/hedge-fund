@@ -56,3 +56,21 @@ def test_the_app_task_launches_the_dashboard_entry_point() -> None:
     tasks = _manifest()["feature"]["dev"]["tasks"]
 
     assert tasks["app"] == "streamlit run app.py"
+
+
+LOCK = PIXI.with_name("pixi.lock")
+
+
+def test_plotly_is_pinned_to_the_series_the_golden_chart_json_was_made_with() -> None:
+    assert _manifest()["dependencies"]["plotly"] == ">=7.1,<7.2"
+
+
+def test_defusedxml_is_a_runtime_dependency_of_every_environment() -> None:
+    assert _manifest()["dependencies"]["defusedxml"] == ">=0.7.1"
+
+
+def test_the_lock_resolves_plotly_7_1_0_and_defusedxml() -> None:
+    lock = LOCK.read_text(encoding="utf-8")
+
+    assert "/plotly-7.1.0-" in lock
+    assert "/defusedxml-" in lock

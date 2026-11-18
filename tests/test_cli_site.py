@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import click
 import pytest
 from typer.testing import CliRunner, Result
 
@@ -27,7 +28,7 @@ def test_site_build_writes_the_pages(demo_root: Path, tmp_path: Path) -> None:
     result = _site("--root", str(demo_root), "--out", str(out), "--stats-dir", str(stats))
 
     assert result.exit_code == 0, result.output
-    assert f"written to {out}" in result.output
+    assert f"written to {out}" in click.unstyle(result.output)
     assert all((out / name).is_file() for name in PAGE_FILES)
 
 
@@ -54,8 +55,9 @@ def test_a_live_root_is_refused_with_one_line(
     result = _site("--root", str(live_root(tmp_path)), "--out", str(tmp_path / "out"))
 
     assert result.exit_code == 1
-    assert result.output.startswith("error: ")
-    assert result.output.count("\n") == 1
+    output = click.unstyle(result.output)
+    assert output.startswith("error: ")
+    assert output.count("\n") == 1
     assert not (tmp_path / "out").exists()
 
 
@@ -70,7 +72,7 @@ def test_an_unmarked_out_is_refused(
     result = _site("--root", str(demo_root), "--out", str(out))
 
     assert result.exit_code == 1
-    assert MARKER in result.output
+    assert MARKER in click.unstyle(result.output)
     assert (out / "keep.txt").is_file()
 
 
@@ -85,12 +87,13 @@ def test_an_oserror_while_writing_is_one_line_not_a_traceback(
     result = _site("--root", str(demo_root), "--out", str(tmp_path / "out"))
 
     assert result.exit_code != 0
-    assert "disk full" in result.output
-    assert "Traceback" not in result.output
+    output = click.unstyle(result.output)
+    assert "disk full" in output
+    assert "Traceback" not in output
 
 
 def test_root_is_required() -> None:
     result = _site()
 
     assert result.exit_code == 2
-    assert "--root" in result.output
+    assert "--root" in click.unstyle(result.output)

@@ -7,53 +7,28 @@ history", the SPY pair "SPY window", and the run table's returns "full window".
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import pandas as pd
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import (
-    NOT_AVAILABLE,
+from hedge_fund.dashboard.format import NO_SPY
+from hedge_fund.dashboard.states import usable_workspace
+from hedge_fund.viz.format import (
+    Headline,
     fmt_date,
-    fmt_money,
     fmt_number,
     fmt_percent,
-    fmt_window,
+    headlines,
     return_note,
 )
-from hedge_fund.dashboard.states import usable_workspace
-from hedge_fund.viz.views import BacktestRun, OverviewView, backtest_view, overview_view
+from hedge_fund.viz.views import BacktestRun, backtest_view, overview_view
 
 COLUMNS_PER_ROW = 3
 RUN_NOTE = (
     "Run figures (return, SPY, excess) are over each run's whole window, which can be longer "
     "than the SPY span of the NAV chart."
 )
-
-
-@dataclass(frozen=True)
-class Headline:
-    label: str
-    value: str
-    hint: str | None = None
-
-
-def headlines(view: OverviewView) -> tuple[Headline, ...]:
-    outcome = NOT_AVAILABLE if view.last_cycle_outcome is None else view.last_cycle_outcome.value
-    spy_window = f"SPY window: {fmt_window(view.benchmark_window)}"
-    return (
-        Headline("NAV", fmt_money(view.nav), f"As of {fmt_date(view.as_of)}"),
-        Headline("Strategy return (full history)", fmt_percent(view.total_return)),
-        Headline("Max drawdown", fmt_percent(view.max_drawdown), "Full history"),
-        Headline("SPY return (SPY window)", fmt_percent(view.benchmark_return), spy_window),
-        Headline(
-            "Strategy return (SPY window)",
-            fmt_percent(view.strategy_return_in_benchmark_window),
-            spy_window,
-        ),
-        Headline("Last cycle", outcome, f"Cycle of {fmt_date(view.last_cycle_as_of)}"),
-    )
 
 
 def show_headlines(shown: Sequence[Headline], per_row: int = COLUMNS_PER_ROW) -> None:
@@ -99,6 +74,7 @@ def render(state: RootState) -> None:
             view.benchmark_window,
             view.benchmark_partial,
             has_return=view.benchmark_return is not None,
+            no_spy=NO_SPY,
         )
     )
     runs = backtest_view(workspace.backtests, workspace.snapshots, workspace.benchmark).runs

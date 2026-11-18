@@ -15,10 +15,9 @@ from hedge_fund.dashboard.backtests import (
     NO_BIAS,
     NO_EQUITY,
     bias_lines,
-    run_metrics,
 )
-from hedge_fund.dashboard.format import WHOLE_HISTORY, escape_markdown, fmt_date, fmt_percent
 from hedge_fund.dashboard.overview import RUN_NOTE
+from hedge_fund.viz.format import WHOLE_HISTORY, escape_markdown, fmt_date, fmt_percent, run_metrics
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import backtest_view
 from tests.dashboard.builders import (

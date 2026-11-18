@@ -1,63 +1,96 @@
 name: Pages
 
-# Builds the MkDocs site and deploys it to GitHub Pages. CI is the only deployer.
-# One-time repo setting: Settings > Pages > Source = "GitHub Actions".
-# The first deploy happens on the first push to development after that setting exists.
+# Builds the MkDocs site, with the result pages generated from the demo root, and deploys it
+# to GitHub Pages. CI is the only deployer; pull requests into development build as a check
+# and never deploy. ci.yml stays the blocking test gate: here a failing test or low coverage
+# only shows on the Stats page.
+# One-time repo settings:
+#   - Settings > Pages > Source = "GitHub Actions".
+#   - Settings > Environments > github-pages > Deployment branches: add `development`
+#     (by default the environment only allows the default branch, main).
 on:
   push:
+    branches: [development]
+  pull_request:
     branches: [development]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: "${{ github.event_name == 'pull_request' && format('pages-pr-{0}', github.ref) || 'pages' }}"
+  cancel-in-progress: "${{ github.event_name == 'pull_request' }}"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read  # configure-pages reads the Pages site settings
+    defaults:
+      run:
+        working-directory: hedge-fund
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          path: hedge-fund
+          persist-credentials: false
 
-      - uses: prefix-dev/setup-pixi@v0.9.0
+      # The public fork, as the sibling ../TradingAgents that pixi.toml installs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          repository: MementoRC/TradingAgents
+          ref: hedge-fund
+          path: TradingAgents
+          persist-credentials: false
+
+      - uses: prefix-dev/setup-pixi@fef5c9568ca6c4ff7707bf840ab0692ba3f08293  # v0.9.0
         with:
           pixi-version: v0.74.0
+          manifest-path: hedge-fund/pixi.toml
           environments: site
+          locked: true
+          cache: true
 
-      # S1: the site has hand-written pages only, so there is nothing to generate and no demo
-      # to build. TODO(S2): before the build step, run the test suite with
-      #   --cov-report=json:coverage.json --junitxml=junit.xml
-      # (for the stats page) and `pixi run -e site demo` (the demo root the site renders);
-      # the `site` task will then also run the sitegen builder ahead of mkdocs. The site env
-      # will need hedge_fund installed (setup-dev, which needs the ../TradingAgents sibling
-      # clone), so S2 adds that checkout too. Also for the S2 plan:
-      #   - NaN/inf metrics render as "n/a" in the page layer (formatter + tests), not in viz/views.py;
-      #   - pages showing benchmark_return/excess_return show benchmark_window/benchmark_partial
-      #     or label them "full window", and never assume a return exists on a too-short window;
-      #   - `site export` requires --store and checks the DEMO.json marker digest against the
-      #     store manifest;
-      #   - any golden hashing serialized floats rounds them at the source (demo prices are 6 dp);
-      #   - round-trip tests on NaN fields assert math.isnan, not ==;
-      #   - demo vs real is decided only via viz classify_root.
-      - name: Build the site
+      - name: Install hedge_fund and TradingAgents
+        run: pixi run -e site setup-dev
+
+      - name: Test suite (recorded for the Stats page)
+        id: tests
+        run: pixi run -e site test --junitxml=junit.xml --cov-report=json:coverage.json
+        continue-on-error: true
+
+      - name: Build the demo root
+        run: pixi run -e site demo
+
+      - name: Generate the result pages and build the site
         run: pixi run -e site site
 
-      - uses: actions/configure-pages@v5
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b  # v5
+        if: github.event_name != 'pull_request'
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
         with:
-          path: _site
+          path: hedge-fund/_site
+
+      - name: Flag a failing test run
+        if: steps.tests.outcome == 'failure'
+        run: |
+          msg="The test suite failed; the site was published with the failure shown on the Stats page."
+          echo "::warning::${msg}"
+          echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4

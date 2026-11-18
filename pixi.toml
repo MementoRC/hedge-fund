@@ -10,10 +10,11 @@ python = ">=3.12,<3.14"
 pandas = ">=3.0"
 numpy = ">=1.26"
 scipy = ">=1.11"
-plotly = ">=5.18.0"
+plotly = ">=7.1,<7.2"
 streamlit = ">=1.50"
 requests = ">=2.31.0"
 pyyaml = ">=6.0"
+defusedxml = ">=0.7.1"
 pip = "*"
 setuptools = ">=61"
 # TradingAgents (sibling fork ../TradingAgents) runtime deps, from conda-forge
@@ -75,9 +76,10 @@ demo = "hedge-fund demo build --root data/demo"
 mkdocs-material = ">=9.5"
 
 [feature.site.tasks]
-# S1: only the MkDocs build. S2 adds the sitegen builder (renders the demo root's pages into
-# website/docs/generated/) in front of it. The path after -d is relative to website/mkdocs.yml.
-site = "mkdocs build --strict -f website/mkdocs.yml -d ../_site"
+# The sitegen builder renders data/demo into website/docs/generated/ (stats from ./junit.xml
+# and ./coverage.json), then MkDocs builds strictly. The path after -d is relative to
+# website/mkdocs.yml. Locally, `mkdocs serve` needs the builder run first.
+site = "hedge-fund site build --root data/demo --stats-dir . && mkdocs build --strict -f website/mkdocs.yml -d ../_site"
 
 [feature.py312.dependencies]
 python = "3.12.*"

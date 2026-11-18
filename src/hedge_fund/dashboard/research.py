@@ -14,17 +14,11 @@ import pandas as pd
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import (
-    escape_markdown,
-    fmt_date,
-    fmt_money,
-    fmt_number,
-    fmt_percent,
-)
 from hedge_fund.dashboard.palette import PALETTE
 from hedge_fund.dashboard.states import DEMO_COMMAND, nothing_message, readable_workspace
 from hedge_fund.domain.attribution import AttributionTotals
 from hedge_fund.viz.charts import llm_cost_chart
+from hedge_fund.viz.format import escape_markdown, fmt_date, fmt_money, fmt_number, fmt_percent
 from hedge_fund.viz.load import RootKind
 from hedge_fund.viz.views import ResearchView, research_view
 

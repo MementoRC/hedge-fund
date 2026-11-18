@@ -8,8 +8,8 @@ from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
 
-from hedge_fund.dashboard.format import WHOLE_HISTORY, fmt_date
 from hedge_fund.dashboard.portfolio import EXPOSURE_NOTE, positions_table
+from hedge_fund.viz.format import WHOLE_HISTORY, fmt_date
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import portfolio_view
 from tests.dashboard.builders import open_page

@@ -15,9 +15,15 @@ PURE = (
     "viz/views.py",
     "viz/charts.py",
     "viz/theme.py",
+    "viz/format.py",
     "dashboard/format.py",
     "dashboard/palette.py",
+    "sitegen/pages.py",
+    "sitegen/assets.py",
+    "sitegen/palette.py",
 )
+# sitegen/build.py is exempt from the pure scans: it renders the site and does the file I/O.
+SITEGEN_IMPURE = {"sitegen/build.py"}
 PURE_BANNED = (
     "hedge_fund.adapters",
     "hedge_fund.services",
@@ -214,10 +220,42 @@ def test_the_dashboard_imports_no_adapters() -> None:
 
 
 def test_nothing_below_the_dashboard_imports_it() -> None:
-    lower = _files("domain", "engine", "services", "viz", "demo", "adapters")
+    lower = _files("domain", "engine", "services", "viz", "demo", "adapters", "sitegen")
 
     assert _importing(lower, "hedge_fund.dashboard") == []
 
 
-def test_only_the_dashboard_palette_module_imports_the_theme() -> None:
-    assert _importing(_files("dashboard"), "hedge_fund.viz.theme") == ["dashboard/palette.py"]
+def test_nothing_below_sitegen_imports_it() -> None:
+    lower = _files("domain", "engine", "services", "viz", "demo", "adapters", "dashboard")
+
+    assert _importing(lower, "hedge_fund.sitegen") == []
+
+
+def test_only_the_two_palette_modules_import_the_theme() -> None:
+    assert _importing(_files("dashboard", "sitegen"), "hedge_fund.viz.theme") == [
+        "dashboard/palette.py",
+        "sitegen/palette.py",
+    ]
+
+
+def test_sitegen_reaches_adapters_only_through_viz_load() -> None:
+    files = _files("sitegen")
+
+    assert files
+    assert _importing(files, "hedge_fund.adapters") == []
+    assert _importing(files, "hedge_fund.viz.load") == ["sitegen/build.py"]
+
+
+def test_sitegen_imports_no_streamlit() -> None:
+    files = _files("sitegen")
+
+    assert files
+    assert _importing(files, "streamlit") == []
+
+
+def test_every_sitegen_module_is_pure_or_explicitly_exempt() -> None:
+    files = [p for p in _files("sitegen") if p.name != "__init__.py"]
+
+    assert files
+    uncovered = sorted(_relative(p) for p in files if _relative(p) not in {*PURE, *SITEGEN_IMPURE})
+    assert uncovered == [], uncovered

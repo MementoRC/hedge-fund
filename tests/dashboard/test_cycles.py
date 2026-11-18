@@ -12,7 +12,7 @@ from streamlit.testing.v1 import AppTest
 from hedge_fund.dashboard import cycles
 from hedge_fund.dashboard.cycles import CYCLE_COLUMNS, FUNNEL_NOTE, cycle_label, cycle_table
 from hedge_fund.dashboard.data import inspect_root
-from hedge_fund.dashboard.format import fmt_date
+from hedge_fund.viz.format import fmt_date
 from hedge_fund.viz.load import Workspace
 from hedge_fund.viz.views import cycle_view
 from tests.dashboard.builders import (

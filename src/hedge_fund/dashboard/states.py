@@ -10,7 +10,7 @@ from pathlib import Path
 import streamlit as st
 
 from hedge_fund.dashboard.data import RootState
-from hedge_fund.dashboard.format import escape_markdown
+from hedge_fund.viz.format import escape_markdown
 from hedge_fund.viz.load import Workspace
 
 DEMO_COMMAND = "pixi run -e dev demo"

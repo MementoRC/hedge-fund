@@ -4,6 +4,7 @@ the book's P&L (Layer 7b) and ``hedge-fund verify`` scores the stored research r
 against what followed (Layer 7d). ``hedge-fund backtest snapshot`` freezes point-in-time
 data for the offline backtest and ``hedge-fund backtest run`` replays it (Layer 8).
 ``hedge-fund demo build`` writes the synthetic demo world (a frozen store and a backtest run over it).
+``hedge-fund site build`` renders a demo or backtest root into the site's generated result pages.
 
 This is the only composition root: ``build_deps``, ``build_settle_deps``,
 ``build_attribute_deps``, ``build_verify_deps``, ``build_snapshot_sources``,
@@ -118,6 +119,7 @@ from hedge_fund.services.cycle import (
 )
 from hedge_fund.services.settle import SettleDeps, SettlementSaveError, run_settle
 from hedge_fund.services.verify import VerificationSaveError, VerifyDeps, run_verify
+from hedge_fund.sitegen.build import SiteError, build_site
 from hedge_fund.universe import load_universe, resource_text
 
 UNIVERSE = "sp500"
@@ -126,6 +128,7 @@ FLAGGED_SPANS = "sp500_flagged_spans"
 DEFAULT_SNAPSHOT_START = date(2010, 1, 1)
 DEFAULT_BACKTEST_CASH = 100_000.0
 DEFAULT_DEMO_ROOT = Path("data", "demo")
+DEFAULT_SITE_OUT = Path("website", "docs", "generated")
 _FAILED_LEGS = frozenset({SubmitStatus.ERROR, SubmitStatus.REJECTED})
 _SETTLE_EXIT: Mapping[SettleOutcome, int] = {
     SettleOutcome.CLEAN: 0,
@@ -149,6 +152,8 @@ backtest_app = typer.Typer(add_completion=False, help="Offline backtest of the q
 app.add_typer(backtest_app, name="backtest")
 demo_app = typer.Typer(add_completion=False, help="The synthetic demo world.")
 app.add_typer(demo_app, name="demo")
+site_app = typer.Typer(add_completion=False, help="The generated result pages of the MkDocs site.")
+app.add_typer(site_app, name="site")
 
 
 @app.callback()
@@ -629,6 +634,35 @@ def demo_build(
         _fail(str(exc), exc)
     write_demo_marker(root, DemoMarker(seed=seed, store_digest=digest, run_id=run_id))
     typer.echo(f"demo root {root}: seed {seed}, store {store}, run {run_id}")
+
+
+@site_app.command("build")
+def site_build(
+    root: Annotated[
+        Path,
+        typer.Option("--root", help="A demo or backtest root; live and paper roots are refused."),
+    ],
+    out: Annotated[
+        Path,
+        typer.Option(
+            "--out",
+            help="Output dir, deleted and rewritten (only if empty or holding .hf-site-generated).",
+        ),
+    ] = DEFAULT_SITE_OUT,
+    stats_dir: Annotated[
+        Path,
+        typer.Option("--stats-dir", help="Where junit.xml and coverage.json are read from."),
+    ] = Path("."),
+) -> None:
+    """Render ROOT's Portfolio, Cycles, Backtest and Stats pages into --out for MkDocs.
+
+    A demo root takes SPY from its sibling <root>.store; a backtest root shows no SPY line.
+    """
+    try:
+        build_site(root, out, stats_dir)
+    except (SiteError, OSError) as exc:
+        _fail(str(exc), exc)
+    typer.echo(f"site pages for {root} written to {out}")
 
 
 def _clear_demo(root: Path, store: Path, *, force: bool) -> None:

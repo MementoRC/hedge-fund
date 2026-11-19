@@ -79,6 +79,11 @@ mkdocs-material = ">=9.5"
 # The sitegen builder renders data/demo into website/docs/generated/ (stats from ./junit.xml
 # and ./coverage.json), then MkDocs builds strictly. The path after -d is relative to
 # website/mkdocs.yml. Locally, `mkdocs serve` needs the builder run first.
+# The first local run needs `pixi run -e site install-editable && pixi run -e site demo`: the
+# hedge-fund CLI and data/demo don't exist in a fresh checkout (no ../TradingAgents needed;
+# setup-dev would also require that sibling clone). CI runs these steps itself.
+# If data/demo already exists, skip demo (or run `pixi run -e site demo --force` to rebuild it).
+# After an interrupted demo build, delete data/demo and data/demo.store, then re-run demo.
 site = "hedge-fund site build --root data/demo --stats-dir . && mkdocs build --strict -f website/mkdocs.yml -d ../_site"
 
 [feature.py312.dependencies]

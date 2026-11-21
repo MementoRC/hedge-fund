@@ -108,6 +108,7 @@ def make_frozen_data(**changes: Any) -> FrozenData:
     AAA splits 2:1 ex 2024-01-22 (the stored prices are post-split throughout) and pays 0.5
     ex 2024-02-01. BBB leaves the index effective 2024-01-29, when CCC (unpriced, no
     sector, no CIK) joins. ``changes`` replace fields.
+    DGS10 and VIXCLS (make_macro) span the same 30 days.
     """
     days = pd.bdate_range("2024-01-01", periods=30)
     closes = make_closes(["AAA", "BBB", "SPY"], n_days=30).set_axis(days, axis=0)
@@ -130,7 +131,10 @@ def make_frozen_data(**changes: Any) -> FrozenData:
         no_sector=("CCC",),
         no_cik=("CCC",),
         sic_sectors=(),
+        macro=make_macro(days),
     )
+    if "macro" not in changes and "closes" in changes:
+        changes["macro"] = make_macro(changes["closes"].index)  # follow the replaced calendar
     return dataclasses.replace(base, **changes)
 
 

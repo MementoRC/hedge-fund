@@ -60,6 +60,28 @@ def test_round_trip_preserves_every_field(tmp_path: Path) -> None:
     assert loaded.no_sector == data.no_sector
     assert loaded.no_cik == data.no_cik
     assert loaded.sic_sectors == data.sic_sectors
+    assert_closes_equal(loaded.macro, data.macro)
+
+
+def test_macro_round_trips_with_its_dtype_index_type_and_unnamed_axes(tmp_path: Path) -> None:
+    data = make_frozen_data()
+    write_store(tmp_path, data, created_at=CREATED)
+    macro = load_store(tmp_path).macro
+    assert_closes_equal(macro, data.macro)
+    assert isinstance(macro.index, pd.DatetimeIndex)
+    assert macro.index.dtype == "datetime64[ns]"
+    assert macro.index.name is None
+    assert macro.columns.name is None
+    assert list(macro.columns) == ["DGS10", "VIXCLS"]
+    assert (macro.dtypes == "float64").all()
+
+
+def test_a_format_1_store_asks_for_a_new_snapshot(tmp_path: Path) -> None:
+    _write(tmp_path)
+    _edit_manifest(tmp_path, lambda m: m.update(format=1))
+    expected = "backtest store format 1 is out of date; re-run `hedge-fund backtest snapshot`"
+    with pytest.raises(FrozenStoreError, match=re.escape(expected)):
+        load_store(tmp_path)
 
 
 def test_empty_event_tables_round_trip(tmp_path: Path) -> None:
@@ -172,8 +194,8 @@ def test_a_manifest_without_a_key_fails_the_load(tmp_path: Path) -> None:
 
 def test_an_unknown_format_fails_the_load(tmp_path: Path) -> None:
     _write(tmp_path)
-    _edit_manifest(tmp_path, lambda m: m.update(format=2))
-    with pytest.raises(FrozenStoreError, match="format 2"):
+    _edit_manifest(tmp_path, lambda m: m.update(format=3))
+    with pytest.raises(FrozenStoreError, match="format 3, expected 2"):
         load_store(tmp_path)
 
 

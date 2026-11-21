@@ -1,6 +1,6 @@
 """Build the frozen backtest data online, once, from injected vendor sources.
 
-Services never import adapters: the CLI wires yfinance and SEC EDGAR into SnapshotSources
+Services never import adapters: the CLI wires yfinance, SEC EDGAR and FRED into SnapshotSources
 and writes the returned FrozenData with adapters/data/frozen_store.py.
 """
 
@@ -14,9 +14,11 @@ import pandas as pd
 
 from hedge_fund.domain.backtest import Dividend, FlaggedSpan, FrozenData, MemberSpan
 from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.engine.backtest.membership import ever_members
 from hedge_fund.engine.backtest.sic import sic_sector
 from hedge_fund.ports.fundamentals import FundamentalsProvider, coerce_facts, empty_facts
+from hedge_fund.ports.macro import MacroProvider
 
 BENCHMARK = "SPY"
 
@@ -33,7 +35,7 @@ class SnapshotSources:
     ``auto_adjust=False``) on tz-naive dates, or None. ``splits(tickers)``: every split of
     those tickers through the fetch date. ``company_ciks()``: current ticker -> CIK.
     ``sic(cik)``: the CIK's SIC code or None. ``fundamentals(ciks)``: a
-    FundamentalsProvider for those CIKs.
+    FundamentalsProvider for those CIKs. ``macro``: the FRED series (MACRO_SERIES).
     """
 
     history: PriceHistory
@@ -41,6 +43,7 @@ class SnapshotSources:
     company_ciks: Callable[[], Mapping[str, str]]
     sic: Callable[[str], str | None]
     fundamentals: FundamentalsFactory
+    macro: MacroProvider
 
 
 def build_frozen_data(
@@ -61,6 +64,7 @@ def build_frozen_data(
     trading days is unpriced, one with neither sector is no_sector, one with no CIK is
     no_cik and gets no facts; all are recorded. The store's end is SPY's last trading day.
     ``flagged`` is the reused-ticker spans; only those overlapping start..end are frozen.
+    The macro series are fetched over start..end and trimmed to the store's end.
 
     Raises ValueError when start > end or SPY has no prices (it is the store's calendar).
     """
@@ -89,6 +93,7 @@ def build_frozen_data(
         no_sector=tuple(ticker for ticker in members if ticker not in member_sectors),
         no_cik=tuple(ticker for ticker in members if ticker not in member_ciks),
         sic_sectors=from_sic,
+        macro=_macro_frame(sources.macro, start, end, closes.index[-1]),
         flagged=tuple(item for item in flagged if item.span.overlaps(start, end)),
     )
 
@@ -189,3 +194,11 @@ def _facts(fundamentals: FundamentalsFactory, member_ciks: Mapping[str, str]) ->
     if not member_ciks:
         return empty_facts()
     return coerce_facts(fundamentals(member_ciks).facts(list(member_ciks)))
+
+
+def _macro_frame(macro: MacroProvider, start: date, end: date, last: pd.Timestamp) -> pd.DataFrame:
+    """MACRO_SERIES over start..end, trimmed to start..``last`` (the store's end), so a FRED
+    observation after the last close cannot fail FrozenData's validation."""
+    frame = macro.series(MACRO_SERIES, start, end)
+    index = pd.DatetimeIndex(frame.index)
+    return frame.loc[(index >= pd.Timestamp(start)) & (index <= last)]

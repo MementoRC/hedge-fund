@@ -4,7 +4,9 @@
 Every fact is filed before the first rebalance (2024-02-01), save POISON_TICKER's FY2023 10-K
 filed 2024-02-20 (after it, before the second); prices are a seeded random walk (one integer
 ``seed``, default 1: the value the golden test pins; the facts stream is seeded ``seed - 1``,
-see ``demo.facts``). The book is
+see ``demo.facts``). DGS10 and VIXCLS come from a third stream, seeded "macro-<seed>", so they
+leave the price, open and dividend bytes unchanged; VIXCLS moves against SPY's daily return
+plus noise. The book is
 this wide because the default risk limits (name_risk 0.15) veto any book of fewer than about
 a dozen names. Events:
 - SPLIT_TICKER splits 2:1 ex 2024-02-14 (stored prices are post-split throughout);
@@ -30,6 +32,7 @@ import pandas as pd
 from hedge_fund.demo.facts import make_passing_facts
 from hedge_fund.domain.backtest import Dividend, FrozenData, MemberSpan
 from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.macro import RATE_SERIES, RISKOFF_SERIES
 
 DEFAULT_SEED = 1  # picked so both rebalances trade and every event below hits a held name
 SECTORS = {
@@ -59,6 +62,9 @@ BOUNDARY_FILED = pd.Timestamp("2024-03-01")  # filed ON the second rebalance day
 SHIFT_TO_2023 = pd.Timedelta(days=-1004)  # E 2026-06-30 -> 2023-09-30, filed 2023-11-01
 POISONED_METRIC_TAG = "us-gaap:RetainedEarningsAccumulatedDeficit"
 _PRICE_DECIMALS = 6
+VIX_LEVEL = 18.0  # the demo VIXCLS mean-reverts to this level
+_VIX_REVERSION = 0.05  # share of the gap to VIX_LEVEL closed each day
+_VIX_MARKET_LOADING = -150.0  # VIX points per unit of SPY daily log return
 
 
 def _prices(days: pd.DatetimeIndex, seed: int) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -80,6 +86,25 @@ def _prices(days: pd.DatetimeIndex, seed: int) -> tuple[pd.DataFrame, pd.DataFra
     frame.loc[stopped, DELIST_TICKER] = np.nan
     opens.loc[stopped, DELIST_TICKER] = np.nan
     return opens, frame
+
+
+def _macro(closes: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """Seeded DGS10 (a random walk) and VIXCLS (mean-reverting, against SPY), 6 dp.
+
+    Drawn from their own ``random.Random(f"macro-{seed}")`` stream, never from the price
+    stream, so seed ``seed``'s prices, opens and dividends keep their bytes.
+    """
+    rng = random.Random(f"macro-{seed}")
+    market = np.log(closes["SPY"]).diff().fillna(0.0).to_numpy()
+    rates = 4.0 + np.cumsum([rng.gauss(0.0, 0.05) for _ in market])
+    vix = [VIX_LEVEL]
+    for move in market[1:]:
+        pull = _VIX_REVERSION * (VIX_LEVEL - vix[-1])
+        vix.append(vix[-1] + pull + _VIX_MARKET_LOADING * move + rng.gauss(0.0, 0.5))
+    frame = pd.DataFrame(
+        {RATE_SERIES: rates, RISKOFF_SERIES: vix}, index=closes.index, dtype="float64"
+    )
+    return frame.round(_PRICE_DECIMALS)
 
 
 def _late_filing(
@@ -135,4 +160,5 @@ def make_golden_data(seed: int = DEFAULT_SEED) -> FrozenData:
         no_sector=(),
         no_cik=(),
         sic_sectors=(),
+        macro=_macro(closes, seed),
     )

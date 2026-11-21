@@ -41,7 +41,11 @@ from hedge_fund.adapters.cost import PRICES_FILE, load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
-from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
+from hedge_fund.adapters.data.factory import (
+    default_fundamentals_provider,
+    default_macro_provider,
+    default_provider,
+)
 from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
 from hedge_fund.adapters.data.frozen_store import (
     MANIFEST,
@@ -266,7 +270,7 @@ def build_backtest_deps(
 
 
 def build_snapshot_sources() -> SnapshotSources:
-    """The real vendors for ``backtest snapshot``: yfinance prices and splits, SEC EDGAR.
+    """The real vendors for ``backtest snapshot``: yfinance prices and splits, SEC EDGAR, FRED.
 
     The SEC client is built first, so a missing SEC_USER_AGENT (FundamentalsProviderError)
     fails before anything is fetched.
@@ -279,6 +283,7 @@ def build_snapshot_sources() -> SnapshotSources:
         company_ciks=sec.company_ciks,
         sic=sec.sic,
         fundamentals=EdgarProvider,
+        macro=default_macro_provider(),
     )
 
 

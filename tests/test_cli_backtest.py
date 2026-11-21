@@ -19,6 +19,7 @@ from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.broker.simulated import SimulatedBroker
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
+from hedge_fund.adapters.data.fred_provider import FredProvider
 from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
 from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
 from hedge_fund.adapters.data.sec_sources import SecLookups
@@ -43,8 +44,8 @@ from hedge_fund.services.backtest import BacktestDeps
 from hedge_fund.services.backtest_snapshot import SnapshotSources
 from hedge_fund.services.cycle import CycleParams
 from hedge_fund.universe import parse_universe
-from tests.factories import make_facts, make_frozen_data
-from tests.fakes import FakeFundamentalsProvider
+from tests.factories import make_facts, make_frozen_data, make_macro
+from tests.fakes import FakeFundamentalsProvider, FakeMacroProvider
 
 NOW = datetime(2024, 1, 16, 22, 0, tzinfo=UTC)  # 17:00 in New York: yesterday is 2024-01-15
 DAYS = pd.bdate_range("2024-01-02", periods=10)  # 2024-01-02 .. 2024-01-15
@@ -76,6 +77,7 @@ def _sources() -> SnapshotSources:
         company_ciks=lambda: {},
         sic=lambda cik: None,
         fundamentals=lambda ciks: FakeFundamentalsProvider(make_facts(list(ciks))),
+        macro=FakeMacroProvider(make_macro(DAYS)),
     )
 
 
@@ -227,6 +229,7 @@ def test_build_snapshot_sources_wires_the_real_vendors(monkeypatch: pytest.Monke
     assert sources.fundamentals is EdgarProvider
     assert isinstance(sources.company_ciks.__self__, SecLookups)  # type: ignore[attr-defined]
     assert isinstance(sources.sic.__self__, SecLookups)  # type: ignore[attr-defined]
+    assert isinstance(sources.macro, FredProvider)
 
 
 def test_build_snapshot_sources_needs_the_sec_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -506,4 +509,5 @@ def _replace_history(sources: SnapshotSources, history: object) -> SnapshotSourc
         company_ciks=sources.company_ciks,
         sic=sources.sic,
         fundamentals=sources.fundamentals,
+        macro=sources.macro,
     )

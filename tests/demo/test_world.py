@@ -14,11 +14,12 @@ from hedge_fund.adapters.data.frozen_store import MANIFEST, write_store
 from hedge_fund.demo import facts, world
 from hedge_fund.domain.backtest import Dividend, FrozenData
 from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.macro import MACRO_SERIES
 from tests import factories
 
 SAMPLE_SPY_FIRST_CLOSE = 404.264766
 SAMPLE_AE1_FIRST_OPEN = 102.187122
-GOLDEN_STORE_DIGEST = "aee232327b0a9d2e27573fb5b06ce89d9f2ac9ba933d4fdb149a41dd2dcb36a7"
+GOLDEN_STORE_DIGEST = "71335b8226872f18b2091540649fa93b0cac05b83e5ea7f252d23c27f903a7ea"
 # sha256 of seed 1's opens, closes and dividends, taken before the demo gained macro series:
 # the macro stream is seeded apart, so these bytes must never move
 SEED_ONE_PRICE_DIGESTS = {
@@ -61,7 +62,7 @@ def test_another_seed_moves_the_prices_and_the_facts() -> None:
 
 def test_seed_one_is_byte_identical_to_the_golden_store(tmp_path: Path) -> None:
     # the pin from tests/services/test_backtest_golden.py (GOLDEN_STORE_DIGEST, frozen at
-    # 2024-06-01 UTC): the move and the seed - 1 facts stream changed no byte of the seed-1 store
+    # 2024-06-01 UTC): format 2, with the seed-1 macro series
     write_store(tmp_path / "store", world.make_golden_data(), created_at=world.FROZEN_AT)
     manifest = (tmp_path / "store" / MANIFEST).read_bytes()
     assert hashlib.sha256(manifest).hexdigest() == GOLDEN_STORE_DIGEST
@@ -127,3 +128,16 @@ def _price_digests(data: FrozenData) -> dict[str, str]:
 
 def test_seed_one_opens_closes_and_dividends_are_byte_identical_to_before_macro() -> None:
     assert _price_digests(world.make_golden_data()) == SEED_ONE_PRICE_DIGESTS
+
+
+def test_the_demo_macro_is_seeded_quantized_and_vix_moves_against_the_market() -> None:
+    data = world.make_golden_data()
+    macro = data.macro
+    assert list(macro.columns) == list(MACRO_SERIES)
+    assert macro.index.equals(data.closes.index)
+    values = macro.to_numpy().ravel()
+    assert (values == np.round(values, 6)).all()
+    market = np.log(data.closes["SPY"]).diff()
+    assert macro["VIXCLS"].diff().corr(market) < -0.5
+    pdt.assert_frame_equal(world.make_golden_data(7).macro, world.make_golden_data(7).macro)
+    assert not world.make_golden_data(2).macro.equals(macro)

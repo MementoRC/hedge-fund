@@ -11,6 +11,7 @@ from enum import StrEnum
 import pandas as pd
 
 from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.macro import MACRO_SERIES
 
 MEMBERSHIP_FLOOR = date(2008, 1, 1)  # decision D3: membership is reliable from here
 
@@ -77,6 +78,8 @@ class FrozenData:
     ``dividends`` those ex-dated in ``start..end``. ``facts`` is the raw FACT_COLUMNS frame,
     every filing's row. ``unpriced``, ``no_sector``, ``no_cik`` and ``sic_sectors`` are
     sorted member tickers: no price rows, no sector, no CIK, sector from the SEC SIC code.
+    ``macro`` is the FRED series (at least MACRO_SERIES, float) by raw observation date within
+    ``start..end``; the point-in-time cut is the engine's.
     ``flagged`` is the reused-ticker spans excluded from the universe, frozen so a replay
     does not change when the packaged list is edited.
     Frozen only prevents field reassignment; readers must never mutate the frames.
@@ -96,6 +99,7 @@ class FrozenData:
     no_sector: tuple[str, ...]
     no_cik: tuple[str, ...]
     sic_sectors: tuple[str, ...]
+    macro: pd.DataFrame
     flagged: tuple[FlaggedSpan, ...] = ()
 
     def __post_init__(self) -> None:
@@ -109,6 +113,29 @@ class FrozenData:
             raise ValueError("opens and closes must share dates and tickers")
         if len(index) and (index[0].date() < self.start or index[-1].date() > self.end):
             raise ValueError(f"prices fall outside {self.start}..{self.end}")
+        _check_macro(self.macro, self.start, self.end)
+
+
+def _check_macro(macro: pd.DataFrame, start: date, end: date) -> None:
+    """FrozenData's rules for ``macro``: a sorted, unique DatetimeIndex within start..end,
+    every MACRO_SERIES column, float values (NaN allowed for missing observations; inf
+    rejected)."""
+    index = macro.index
+    if not isinstance(index, pd.DatetimeIndex):
+        raise ValueError("macro index must be a DatetimeIndex")
+    if index.tz is not None:
+        raise ValueError("macro index must be tz-naive")
+    if not index.is_monotonic_increasing or index.has_duplicates:
+        raise ValueError("macro index must be sorted and unique")
+    if len(index) and (index[0].date() < start or index[-1].date() > end):
+        raise ValueError(f"macro dates fall outside {start}..{end}")
+    missing = [series for series in MACRO_SERIES if series not in macro.columns]
+    if missing:
+        raise ValueError(f"macro lacks series {missing}")
+    if not all(pd.api.types.is_float_dtype(dtype) for dtype in macro.dtypes):
+        raise ValueError("macro values must be float")
+    if macro.isin([float("inf"), float("-inf")]).to_numpy().any():
+        raise ValueError("macro values must be finite or NaN")
 
 
 @dataclass(frozen=True)

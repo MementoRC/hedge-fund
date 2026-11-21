@@ -6,6 +6,7 @@ import dataclasses
 import math
 from datetime import date
 
+import pandas as pd
 import pytest
 
 from hedge_fund.domain.backtest import (
@@ -109,3 +110,57 @@ def test_frozen_data_rejects_opens_that_do_not_match_the_closes() -> None:
 def test_frozen_data_rejects_prices_outside_its_coverage() -> None:
     with pytest.raises(ValueError, match="outside"):
         dataclasses.replace(make_frozen_data(), end=date(2024, 2, 8))
+
+
+def _macro_cases() -> list[tuple[str, object, str]]:
+    macro = make_frozen_data().macro
+    return [
+        (
+            "not-a-datetime-index",
+            macro.reset_index(drop=True),
+            "macro index must be a DatetimeIndex",
+        ),
+        ("unsorted", macro.iloc[::-1], "macro index must be sorted and unique"),
+        ("duplicate", pd.concat([macro, macro.iloc[:1]]).sort_index(), "sorted and unique"),
+        (
+            "after-end",
+            macro.set_axis(macro.index + pd.Timedelta(days=30)),
+            "macro dates fall outside",
+        ),
+        (
+            "before-start",
+            macro.set_axis(macro.index - pd.Timedelta(days=30)),
+            "macro dates fall outside",
+        ),
+        ("no-dgs10", macro.drop(columns=["DGS10"]), r"macro lacks series \['DGS10'\]"),
+        ("no-vixcls", macro.drop(columns=["VIXCLS"]), r"macro lacks series \['VIXCLS'\]"),
+        ("integer", macro.astype({"DGS10": "int64"}), "macro values must be float"),
+        ("tz-aware", macro.tz_localize("UTC"), "macro index must be tz-naive"),
+        ("infinite", macro.assign(DGS10=float("inf")), "macro values must be finite"),
+        ("negative-infinite", macro.assign(VIXCLS=float("-inf")), "macro values must be finite"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("bad", "message"),
+    [case[1:] for case in _macro_cases()],
+    ids=[case[0] for case in _macro_cases()],
+)
+def test_frozen_data_rejects_bad_macro(bad: pd.DataFrame, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        dataclasses.replace(make_frozen_data(), macro=bad)
+
+
+def test_frozen_data_accepts_macro_dated_exactly_on_start_and_end_and_nan_gaps() -> None:
+    data = make_frozen_data()
+    edges = data.macro.iloc[[0, -1]].copy()
+    edges.iloc[0, 0] = float("nan")
+    assert edges.index[0].date() == data.start
+    assert edges.index[-1].date() == data.end
+    assert dataclasses.replace(data, macro=edges).macro is edges
+
+
+def test_frozen_data_accepts_macro_with_extra_series_and_its_own_dates() -> None:
+    data = make_frozen_data()
+    extra = data.macro.iloc[::2].assign(DFF=5.3)
+    assert dataclasses.replace(data, macro=extra).macro is extra

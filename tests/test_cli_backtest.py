@@ -20,7 +20,11 @@ from hedge_fund.adapters.broker.simulated import SimulatedBroker
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
 from hedge_fund.adapters.data.fred_provider import FredProvider
-from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
+from hedge_fund.adapters.data.frozen_providers import (
+    FrozenDataProvider,
+    FrozenFundamentalsProvider,
+    FrozenMacroProvider,
+)
 from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
 from hedge_fund.adapters.data.sec_sources import SecLookups
 from hedge_fund.adapters.data.yfinance_history import YFinanceHistory
@@ -37,9 +41,11 @@ from hedge_fund.domain.backtest import (
     SimCosts,
     TradingCosts,
 )
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.ports.data import DataProviderError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
+from hedge_fund.ports.macro import MacroProviderError
 from hedge_fund.services.backtest import BacktestDeps
 from hedge_fund.services.backtest_snapshot import SnapshotSources
 from hedge_fund.services.cycle import CycleParams
@@ -500,6 +506,10 @@ def test_build_backtest_deps_is_simulated_only_and_rooted_at_root(tmp_path: Path
     assert provider.as_of == day
     shortlist = Shortlist(as_of=day, candidates=(), trimmed={})
     assert isinstance(deps.researcher(shortlist), NeutralResearcher)
+    macro = deps.macro(day)
+    assert isinstance(macro, FrozenMacroProvider)
+    with pytest.raises(MacroProviderError, match="after as_of 2024-01-10"):
+        macro.series(MACRO_SERIES, day, date(2024, 1, 11))
 
 
 def _replace_history(sources: SnapshotSources, history: object) -> SnapshotSources:

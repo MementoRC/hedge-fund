@@ -31,6 +31,7 @@ from hedge_fund.ports.approval import ApprovalGate
 from hedge_fund.ports.cycle import CycleReportStore
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.fundamentals import FundamentalsProvider
+from hedge_fund.ports.macro import MacroProvider
 from hedge_fund.ports.research import Researcher, ResearchStore
 from hedge_fund.ports.sim_broker import SimBroker
 from hedge_fund.services.account import load_nav_history, record_snapshot
@@ -58,7 +59,8 @@ class BacktestError(Exception):
 class BacktestDeps:
     """The frozen store, the run's inputs and the substitutes the replay injects.
 
-    ``prices(day)`` builds the data provider of one cycle date and ``researcher(shortlist)``
+    ``prices(day)`` builds the data provider of one cycle date, ``macro(day)`` the macro
+    provider of one cycle date, and ``researcher(shortlist)``
     the research stand-in for one shortlist.
     """
 
@@ -73,6 +75,7 @@ class BacktestDeps:
     gate: ApprovalGate
     prices: Callable[[date], DataProvider]
     fundamentals: FundamentalsProvider
+    macro: Callable[[date], MacroProvider]
     researcher: Callable[[Shortlist], Researcher]
     params: CycleParams = field(default_factory=CycleParams)
 
@@ -168,6 +171,7 @@ def _rebalance(
         universe=universe.members(day),
         prices=deps.prices(day),
         fundamentals=deps.fundamentals,
+        macro=deps.macro(day),
         researcher=deps.researcher(Shortlist(as_of=day, candidates=(), trimmed={})),
         research_store=deps.research_store,
         broker=deps.broker,

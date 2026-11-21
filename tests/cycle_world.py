@@ -17,9 +17,10 @@ from hedge_fund.services.cycle import CycleDeps, CycleParams
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from hedge_fund.services.snapshots import build_snapshot
 from hedge_fund.universe import Universe
-from tests.factories import make_closes, make_passing_facts
+from tests.factories import make_closes, make_macro, make_passing_facts
 from tests.fakes import (
     FakeFundamentalsProvider,
+    FakeMacroProvider,
     FakeProvider,
     InMemoryReportStore,
     InMemoryResearchStore,
@@ -41,6 +42,7 @@ SECTORS = {
 }  # seed 0 shortlists all six: three longs and three shorts
 HELD_OUTSIDE = "ZZZ"  # priced by the provider but not in the universe
 FRAME = make_closes([*SECTORS, "SPY", HELD_OUTSIDE], seed=0)  # SPY is the benchmark
+MACRO = make_macro(FRAME.index)  # DGS10 and VIXCLS on FRAME's days
 FACTS = make_passing_facts(list(SECTORS))
 LOOSE_LIMITS = RiskLimits(vol=1.0, name_risk=1.0, factor_share=1.0)  # the seeded book passes
 
@@ -97,6 +99,7 @@ class World:
     fundamentals: FakeFundamentalsProvider = field(
         default_factory=lambda: FakeFundamentalsProvider(FACTS)
     )
+    macro: FakeMacroProvider = field(default_factory=lambda: FakeMacroProvider(MACRO))
     researcher: ScriptedResearcher = field(default_factory=confirming)
     research_store: InMemoryResearchStore = field(default_factory=InMemoryResearchStore)
     broker: ScriptedBroker = field(default_factory=ScriptedBroker)
@@ -113,6 +116,7 @@ class World:
             universe=self.universe,
             prices=self.prices,
             fundamentals=self.fundamentals,
+            macro=self.macro,
             researcher=self.researcher,
             research_store=self.research_store,
             broker=self.broker,

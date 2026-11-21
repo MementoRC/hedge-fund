@@ -19,6 +19,7 @@ from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.cost import load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
+from hedge_fund.adapters.data.fred_provider import FredProvider
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import TradingAgentsResearcher
 from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, PriceTable, Spend
@@ -457,6 +458,7 @@ def test_build_deps_wires_the_real_adapters(tmp_path: Path) -> None:
     assert isinstance(deps.snapshot_store, JsonSnapshotStore)
     assert isinstance(deps.gate, ConsoleApprovalGate)
     assert isinstance(deps.report_store, JsonCycleReportStore)
+    assert isinstance(deps.macro, FredProvider)
 
 
 @pytest.mark.usefixtures("credentials")

@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from fractions import Fraction
 from typing import Any, NoReturn
 
+import pandas as pd
 import pytest
 
 from hedge_fund.domain.account import AccountSnapshot
@@ -18,6 +19,7 @@ from hedge_fund.domain.approval import ApprovalStatus
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import OrderState, OrderStatus, Split
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
 from hedge_fund.domain.research import Rating, ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
@@ -33,6 +35,7 @@ from hedge_fund.engine.shortlist.select import ShortlistParams
 from hedge_fund.ports.account import SnapshotStoreError
 from hedge_fund.ports.broker import BrokerError, OrderDataError
 from hedge_fund.ports.data import DataProviderError
+from hedge_fund.ports.macro import MacroProviderError
 from hedge_fund.services import cycle
 from hedge_fund.services.cycle import (
     PendingOrdersError,
@@ -42,13 +45,14 @@ from hedge_fund.services.cycle import (
 )
 from hedge_fund.services.portfolio import build_portfolio, fetch_benchmark
 from hedge_fund.services.risk import assess_portfolio
-from hedge_fund.services.snapshots import build_snapshot
+from hedge_fund.services.snapshots import LOOKBACK_ROWS, build_snapshot, calendar_window
 from tests.cycle_world import (
     AS_OF,
     EVENING,
     FRAME,
     HELD_OUTSIDE,
     LOOSE_LIMITS,
+    MACRO,
     SECTORS,
     SESSION,
     TODAY,
@@ -61,6 +65,7 @@ from tests.cycle_world import (
 from tests.factories import make_passing_facts
 from tests.fakes import (
     FakeFundamentalsProvider,
+    FakeMacroProvider,
     FakeProvider,
     InMemoryReportStore,
     InMemorySnapshotStore,
@@ -416,6 +421,26 @@ def test_plan_data_reports_unresolved_names_without_a_run() -> None:
     data = cycle.plan_data(world.deps, AS_OF)
     assert data.price_unresolved == {"NOPRICE": "no_prices", "NOSEC": "no_sector"}
     assert data.fundamentals_unresolved == {"T0": "no_cik"}
+
+
+def test_plan_data_fetches_the_macro_series_over_the_price_window() -> None:
+    world = World()
+    data = cycle.plan_data(world.deps, AS_OF)
+    start = AS_OF - calendar_window(LOOKBACK_ROWS)
+    assert world.macro.calls == [(MACRO_SERIES, start, AS_OF)]
+    expected = MACRO.loc[pd.Timestamp(start) : pd.Timestamp(AS_OF)]
+    pd.testing.assert_frame_equal(data.macro, expected, check_freq=False)
+
+
+def test_a_fred_failure_fails_the_cycle_at_the_data_stage() -> None:
+    world = World(macro=FakeMacroProvider(MACRO, error=MacroProviderError("fred is down")))
+    with pytest.raises(MacroProviderError, match="fred is down"):
+        _run(world, options=DRY)
+    [report] = world.report_store.saved
+    assert report.outcome is CycleOutcome.ERROR
+    assert report.failed_stage == "data"
+    assert report.error == "MacroProviderError: fred is down"
+    assert world.researcher.calls == []
 
 
 def test_a_held_name_missing_from_the_snapshot_is_fetched_and_traded_to_zero() -> None:

@@ -11,7 +11,11 @@ import pytest
 
 from hedge_fund.adapters.approval.auto import AutoApprovalGate
 from hedge_fund.adapters.broker.simulated import SimulatedBroker
-from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
+from hedge_fund.adapters.data.frozen_providers import (
+    FrozenDataProvider,
+    FrozenFundamentalsProvider,
+    FrozenMacroProvider,
+)
 from hedge_fund.adapters.research.neutral import NeutralResearcher
 from hedge_fund.domain.account import AccountSnapshot
 from hedge_fund.domain.backtest import (
@@ -23,9 +27,11 @@ from hedge_fund.domain.backtest import (
     SimCosts,
 )
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.domain.shortlist import Candidate, Shortlist, Side
 from hedge_fund.engine.backtest.clock import SimClock
 from hedge_fund.engine.backtest.pit_prices import closes_as_of
+from hedge_fund.ports.macro import MacroProvider, MacroProviderError
 from hedge_fund.ports.research import Researcher
 from hedge_fund.services.backtest import (
     ACCEPTED_OUTCOMES,
@@ -86,6 +92,7 @@ def _deps(data: FrozenData | None = None, **changes: Any) -> BacktestDeps:
         gate=AutoApprovalGate(),
         prices=lambda day: FrozenDataProvider(data, day),
         fundamentals=FrozenFundamentalsProvider(data),
+        macro=lambda day: FrozenMacroProvider(data, day),
         researcher=NeutralResearcher,
     )
     return replace(base, **changes)
@@ -325,6 +332,22 @@ def test_cycle_arguments() -> None:
     assert call.deps.prices.as_of == FEB_1
     assert call.deps.researcher is researcher.made[-1]
     assert researcher.shortlists[-1] == _planned(call.deps, FEB_1)
+
+
+def test_each_rebalance_reads_the_macro_series_as_of_its_day() -> None:
+    data = make_frozen_data()
+    days: list[date] = []
+
+    def macro(day: date) -> MacroProvider:
+        days.append(day)
+        return FrozenMacroProvider(data, day)
+
+    _, cycle, _ = _run(_deps(data, macro=macro))
+    (call,) = cycle.calls
+    assert days == [FEB_1]
+    assert isinstance(call.deps.macro, FrozenMacroProvider)
+    with pytest.raises(MacroProviderError, match="after as_of 2024-02-01"):
+        call.deps.macro.series(MACRO_SERIES, START, date(2024, 2, 2))
 
 
 def test_planning_failure_aborts_with_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:

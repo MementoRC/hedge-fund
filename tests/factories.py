@@ -39,6 +39,19 @@ def make_closes(tickers: Sequence[str], n_days: int = 300, seed: int = 0) -> pd.
     return pd.DataFrame(data, index=index)
 
 
+def make_macro(index: pd.DatetimeIndex, seed: int = 0) -> pd.DataFrame:
+    """Random-walk DGS10 (percent) and VIXCLS (index points) on ``index``: float64, unnamed."""
+    rng = np.random.default_rng(seed)
+    n = len(index)
+    return pd.DataFrame(
+        {
+            "DGS10": 4.0 + np.cumsum(rng.normal(0.0, 0.05, n)),
+            "VIXCLS": 20.0 + np.cumsum(rng.normal(0.0, 0.8, n)),
+        },
+        index=pd.DatetimeIndex(index).rename(None),
+    )
+
+
 def snapshot_from(closes: pd.DataFrame, sectors: Mapping[str, str]) -> PriceSnapshot:
     """Build a snapshot whose as_of is the date of the last row."""
     return PriceSnapshot(as_of=closes.index[-1].date(), closes=closes, sectors=dict(sectors))

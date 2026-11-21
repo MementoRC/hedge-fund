@@ -12,13 +12,20 @@ import pandas.testing as pdt
 
 from hedge_fund.adapters.data.frozen_store import MANIFEST, write_store
 from hedge_fund.demo import facts, world
-from hedge_fund.domain.backtest import Dividend
+from hedge_fund.domain.backtest import Dividend, FrozenData
 from hedge_fund.domain.ledger import Split
 from tests import factories
 
 SAMPLE_SPY_FIRST_CLOSE = 404.264766
 SAMPLE_AE1_FIRST_OPEN = 102.187122
 GOLDEN_STORE_DIGEST = "aee232327b0a9d2e27573fb5b06ce89d9f2ac9ba933d4fdb149a41dd2dcb36a7"
+# sha256 of seed 1's opens, closes and dividends, taken before the demo gained macro series:
+# the macro stream is seeded apart, so these bytes must never move
+SEED_ONE_PRICE_DIGESTS = {
+    "opens": "2415c38da8e0a5e377ac17a82cd8856d25172a2608d2ca61053a8edfab4d236c",
+    "closes": "b1354fe09b2f63d46e7129f2d1fafb868cc198e2c7881557258d204b6680f855",
+    "dividends": "f46b52a85dae3bd49f1678b1cdf977440444a896d65d1d78ac69101e48620ba2",
+}
 
 
 def test_the_default_seed_is_the_one_the_golden_test_uses() -> None:
@@ -100,3 +107,23 @@ def test_tests_factories_reexports_the_moved_fixtures() -> None:
     assert factories.make_passing_fundamentals is facts.make_passing_fundamentals
     assert factories.make_fundamentals is facts.make_fundamentals
     assert factories.FUNDAMENTALS_AS_OF is facts.FUNDAMENTALS_AS_OF
+
+
+def _price_digests(data: FrozenData) -> dict[str, str]:
+    def frame(values: pd.DataFrame) -> str:
+        body = (
+            values.to_numpy(dtype="float64").tobytes()
+            + pd.DatetimeIndex(values.index).as_unit("ns").asi8.tobytes()
+            + "|".join(map(str, values.columns)).encode("utf-8")
+        )
+        return hashlib.sha256(body).hexdigest()
+
+    return {
+        "opens": frame(data.opens),
+        "closes": frame(data.closes),
+        "dividends": hashlib.sha256(repr(data.dividends).encode("utf-8")).hexdigest(),
+    }
+
+
+def test_seed_one_opens_closes_and_dividends_are_byte_identical_to_before_macro() -> None:
+    assert _price_digests(world.make_golden_data()) == SEED_ONE_PRICE_DIGESTS

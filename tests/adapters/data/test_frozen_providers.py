@@ -11,10 +11,13 @@ import pytest
 from hedge_fund.adapters.data.frozen_providers import (
     FrozenDataProvider,
     FrozenFundamentalsProvider,
+    FrozenMacroProvider,
 )
 from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.ports.data import DataProvider, DataProviderError
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, FundamentalsProvider, coerce_facts
+from hedge_fund.ports.macro import MacroProvider, MacroProviderError
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from hedge_fund.services.snapshots import build_snapshot
 from tests.factories import make_facts, make_frozen_data
@@ -153,3 +156,64 @@ def test_a_restatement_is_invisible_before_its_filed_date() -> None:
     assert assets(date(2026, 9, 15)) == 1100.0  # filed == as_of is not yet visible
     assert assets(date(2026, 9, 16)) == 1200.0
     assert len(provider.facts(["AAA"])) == len(original) + 1
+
+
+def test_macro_satisfies_the_port_with_columns_in_request_order() -> None:
+    provider: MacroProvider = FrozenMacroProvider(DATA, LAST)
+    frame = provider.series(["VIXCLS", "DGS10"], FIRST, LAST)
+    assert list(frame.columns) == ["VIXCLS", "DGS10"]
+    pd.testing.assert_frame_equal(frame, DATA.macro[["VIXCLS", "DGS10"]], check_freq=False)
+
+
+def test_macro_rows_are_trimmed_to_the_request() -> None:
+    frame = FrozenMacroProvider(DATA, LAST).series(
+        MACRO_SERIES, date(2024, 1, 8), date(2024, 1, 19)
+    )
+    expected = DATA.macro.loc[
+        pd.Timestamp("2024-01-08") : pd.Timestamp("2024-01-19"), [*MACRO_SERIES]
+    ]
+    pd.testing.assert_frame_equal(frame, expected, check_freq=False)
+
+
+def test_macro_bounds_are_inclusive_on_stored_dates() -> None:
+    provider = FrozenMacroProvider(DATA, LAST)
+    start, end = date(2024, 1, 8), date(2024, 1, 19)
+    assert DATA.macro.index.isin([pd.Timestamp(start), pd.Timestamp(end)]).sum() == 2
+    frame = provider.series(MACRO_SERIES, start, end)
+    assert frame.index[0] == pd.Timestamp(start)
+    assert frame.index[-1] == pd.Timestamp(end)
+    single = provider.series(MACRO_SERIES, start, start)
+    assert list(single.index) == [pd.Timestamp(start)]
+
+
+def test_macro_result_is_a_copy_of_the_store() -> None:
+    before = DATA.macro.copy()
+    frame = FrozenMacroProvider(DATA, LAST).series(MACRO_SERIES, FIRST, LAST)
+    frame.iloc[0, 0] = -999.0
+    pd.testing.assert_frame_equal(DATA.macro, before)
+
+
+def test_macro_nan_values_pass_through_unchanged() -> None:
+    macro = DATA.macro.copy()
+    macro.iloc[3, 0] = float("nan")
+    data = make_frozen_data(macro=macro)
+    frame = FrozenMacroProvider(data, LAST).series(MACRO_SERIES, FIRST, LAST)
+    assert frame.isna().sum().sum() == macro.isna().sum().sum() >= 1
+    pd.testing.assert_frame_equal(frame, macro[[*MACRO_SERIES]], check_freq=False)
+
+
+def test_macro_for_an_unknown_series_raises() -> None:
+    with pytest.raises(MacroProviderError, match=r"no macro series \['DFF'\]"):
+        FrozenMacroProvider(DATA, LAST).series(["DGS10", "DFF"], FIRST, LAST)
+
+
+def test_macro_ending_after_as_of_raises() -> None:
+    provider = FrozenMacroProvider(DATA, date(2024, 1, 19))
+    with pytest.raises(MacroProviderError, match="after as_of 2024-01-19"):
+        provider.series(MACRO_SERIES, FIRST, date(2024, 1, 22))
+
+
+@pytest.mark.parametrize("as_of", [date(2023, 12, 29), date(2024, 2, 12)])
+def test_a_macro_provider_outside_the_store_is_refused(as_of: date) -> None:
+    with pytest.raises(ValueError, match="outside the store"):
+        FrozenMacroProvider(DATA, as_of)

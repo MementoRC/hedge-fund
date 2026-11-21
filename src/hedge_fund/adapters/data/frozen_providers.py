@@ -1,4 +1,4 @@
-"""DataProvider and FundamentalsProvider over a loaded frozen store (offline, point in time)."""
+"""DataProvider, FundamentalsProvider and MacroProvider over a loaded frozen store (offline, point in time)."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from hedge_fund.domain.ledger import Split
 from hedge_fund.engine.backtest.pit_prices import closes_as_of
 from hedge_fund.ports.data import DataProviderError
 from hedge_fund.ports.fundamentals import coerce_facts
+from hedge_fund.ports.macro import MacroProviderError
 
 
 class FrozenDataProvider:
@@ -88,3 +89,31 @@ class FrozenFundamentalsProvider:
 
     def facts(self, tickers: Sequence[str]) -> pd.DataFrame:
         return coerce_facts(self._facts.loc[self._facts["ticker"].isin(list(tickers))])
+
+
+class FrozenMacroProvider:
+    """The macro series a vendor would have served on ``as_of``, from a loaded frozen store.
+
+    One instance per cycle date, like FrozenDataProvider. Rows keep their raw observation
+    dates: the one-day point-in-time cut is the engine's (engine.factors.macro). A request
+    ending after ``as_of`` or naming a series the store lacks raises MacroProviderError.
+    """
+
+    def __init__(self, data: FrozenData, as_of: date) -> None:
+        if not data.start <= as_of <= data.end:
+            raise ValueError(f"as_of {as_of} is outside the store's {data.start}..{data.end}")
+        self._macro = data.macro
+        self._as_of = as_of
+
+    def series(self, ids: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        if end > self._as_of:
+            raise MacroProviderError(
+                f"macro end {end} is after as_of {self._as_of}: the frozen store never serves "
+                "data from after the cycle date"
+            )
+        missing = [series_id for series_id in ids if series_id not in self._macro.columns]
+        if missing:
+            raise MacroProviderError(f"the frozen store has no macro series {missing}")
+        stored = self._macro.index
+        rows = (stored >= pd.Timestamp(start)) & (stored <= pd.Timestamp(end))
+        return self._macro.loc[rows, list(ids)]

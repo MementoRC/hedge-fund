@@ -83,6 +83,26 @@ class FakeFundamentalsProvider:
         return self.frame.loc[self.frame["ticker"].isin(requested)].reset_index(drop=True)
 
 
+class FakeMacroProvider:
+    """MacroProvider serving a canned macro frame, recording every call.
+
+    ``series`` raises ``error`` instead when it is set (a plain attribute a test may change).
+    """
+
+    def __init__(self, frame: pd.DataFrame, *, error: Exception | None = None) -> None:
+        self.frame = frame
+        self.error = error
+        self.calls: list[tuple[tuple[str, ...], date, date]] = []
+
+    def series(self, ids: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        requested = tuple(ids)
+        self.calls.append((requested, start, end))
+        if self.error is not None:
+            raise self.error
+        window = self.frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
+        return window.reindex(columns=list(requested))
+
+
 class RecordingDownload:
     """Stand-in for yf.download: returns a fixed frame (or raises) and records each call."""
 

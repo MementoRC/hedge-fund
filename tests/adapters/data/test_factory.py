@@ -7,7 +7,12 @@ import pandas as pd
 import pytest
 
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
-from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
+from hedge_fund.adapters.data.factory import (
+    default_fundamentals_provider,
+    default_macro_provider,
+    default_provider,
+)
+from hedge_fund.adapters.data.fred_provider import FredProvider
 from hedge_fund.adapters.data.fundamentals_caching import CachingFundamentalsProvider
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.universe import load_universe
@@ -80,3 +85,7 @@ def test_default_fundamentals_provider_rejects_unknown_universe(tmp_path: Path) 
     vendor = FakeFundamentalsProvider(make_facts([]))
     with pytest.raises(ValueError, match="unknown universe"):
         default_fundamentals_provider(tmp_path, "nasdaq", vendor=vendor)
+
+
+def test_default_macro_provider_is_a_bare_fred_provider() -> None:
+    assert type(default_macro_provider()) is FredProvider

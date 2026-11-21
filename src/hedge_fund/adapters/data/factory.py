@@ -1,4 +1,4 @@
-"""Composition roots for the default DataProvider and FundamentalsProvider stacks."""
+"""Composition roots for the default DataProvider, FundamentalsProvider and MacroProvider stacks."""
 
 from __future__ import annotations
 
@@ -6,11 +6,13 @@ from pathlib import Path
 
 from hedge_fund.adapters.data.caching import CachingProvider
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
+from hedge_fund.adapters.data.fred_provider import FredProvider
 from hedge_fund.adapters.data.fundamentals_caching import CachingFundamentalsProvider
 from hedge_fund.adapters.data.static_sectors import StaticSectorProvider
 from hedge_fund.adapters.data.yfinance_provider import YFinanceProvider
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.fundamentals import FundamentalsProvider
+from hedge_fund.ports.macro import MacroProvider
 from hedge_fund.universe import load_universe
 
 
@@ -38,3 +40,8 @@ def default_fundamentals_provider(
     ciks = load_universe(universe).ciks
     inner: FundamentalsProvider = vendor if vendor is not None else EdgarProvider(ciks)
     return CachingFundamentalsProvider(inner, cache_dir)
+
+
+def default_macro_provider() -> MacroProvider:
+    """FRED's keyless fredgraph CSV, uncached: the live cycle fetches once per run."""
+    return FredProvider()

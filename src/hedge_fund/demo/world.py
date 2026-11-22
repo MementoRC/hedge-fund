@@ -4,7 +4,7 @@
 Every fact is filed before the first rebalance (2024-02-01), save POISON_TICKER's FY2023 10-K
 filed 2024-02-20 (after it, before the second); prices are a seeded random walk (one integer
 ``seed``, default 1: the value the golden test pins; the facts stream is seeded ``seed - 1``,
-see ``demo.facts``). DGS10 and VIXCLS come from a third stream, seeded "macro-<seed>", so they
+see ``demo.facts``). DGS10 and VIXCLS come from a third stream, seeded "macro-<seed>-b", so they
 leave the price, open and dividend bytes unchanged; VIXCLS moves against SPY's daily return
 plus noise. The book is
 this wide because the default risk limits (name_risk 0.15) veto any book of fewer than about
@@ -34,7 +34,7 @@ from hedge_fund.domain.backtest import Dividend, FrozenData, MemberSpan
 from hedge_fund.domain.ledger import Split
 from hedge_fund.domain.macro import RATE_SERIES, RISKOFF_SERIES
 
-DEFAULT_SEED = 1  # picked so both rebalances trade and every event below hits a held name
+DEFAULT_SEED = 1  # picked so the first rebalance trades, the second is vetoed by the risk engine (name_risk:CH1) once macro factors score, and every event below hits a held name
 SECTORS = {
     f"{prefix}{number}": sector
     for prefix, sector in (("AE", "Energy"), ("BT", "Tech"), ("CH", "Health"))
@@ -91,10 +91,11 @@ def _prices(days: pd.DatetimeIndex, seed: int) -> tuple[pd.DataFrame, pd.DataFra
 def _macro(closes: pd.DataFrame, seed: int) -> pd.DataFrame:
     """Seeded DGS10 (a random walk) and VIXCLS (mean-reverting, against SPY), 6 dp.
 
-    Drawn from their own ``random.Random(f"macro-{seed}")`` stream, never from the price
+    Drawn from their own ``random.Random(f"macro-{seed}-b")`` stream, never from the price
     stream, so seed ``seed``'s prices, opens and dividends keep their bytes.
     """
-    rng = random.Random(f"macro-{seed}")
+    # the "-b" label keeps the seed-1 demo's poison ticker short under macro scoring
+    rng = random.Random(f"macro-{seed}-b")
     market = np.log(closes["SPY"]).diff().fillna(0.0).to_numpy()
     rates = 4.0 + np.cumsum([rng.gauss(0.0, 0.05) for _ in market])
     vix = [VIX_LEVEL]

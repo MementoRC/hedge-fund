@@ -23,6 +23,7 @@ from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
 from hedge_fund.domain.research import Rating, ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
+from hedge_fund.domain.scores import ScoreResult
 from hedge_fund.engine.orders import OrderParams
 from hedge_fund.engine.portfolio.alpha import AlphaParams
 from hedge_fund.engine.portfolio.correlation import CorrelationParams
@@ -441,6 +442,24 @@ def test_a_fred_failure_fails_the_cycle_at_the_data_stage() -> None:
     assert report.failed_stage == "data"
     assert report.error == "MacroProviderError: fred is down"
     assert world.researcher.calls == []
+
+
+def test_the_shortlist_is_scored_with_the_macro_factors(monkeypatch: pytest.MonkeyPatch) -> None:
+    world = World()
+    data = cycle.plan_data(world.deps, AS_OF)
+    real = cycle.score
+    seen: list[ScoreResult] = []
+
+    def recording(*args: Any, **kwargs: Any) -> ScoreResult:
+        assert kwargs["macro"] is data.macro
+        seen.append(real(*args, **kwargs))
+        return seen[-1]
+
+    monkeypatch.setattr(cycle, "score", recording)
+    cycle.select_shortlist(world.deps, data)
+    [result] = seen
+    assert result.scores
+    assert all(list(s.raw)[-2:] == ["rate_beta", "riskoff_beta"] for s in result.scores)
 
 
 def test_a_held_name_missing_from_the_snapshot_is_fetched_and_traded_to_zero() -> None:

@@ -19,7 +19,7 @@ from tests import factories
 
 SAMPLE_SPY_FIRST_CLOSE = 404.264766
 SAMPLE_AE1_FIRST_OPEN = 102.187122
-GOLDEN_STORE_DIGEST = "71335b8226872f18b2091540649fa93b0cac05b83e5ea7f252d23c27f903a7ea"
+GOLDEN_STORE_DIGEST = "c0ec0000e6bfd250b38fb8b17cd1e781fd313e23ec6c506c0f23d7ad98e7a3e6"
 # sha256 of seed 1's opens, closes and dividends, taken before the demo gained macro series:
 # the macro stream is seeded apart, so these bytes must never move
 SEED_ONE_PRICE_DIGESTS = {

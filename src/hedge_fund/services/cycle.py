@@ -471,8 +471,11 @@ def plan_data(deps: CycleDeps, as_of: date) -> PlanData:
 
 
 def select_shortlist(deps: CycleDeps, data: PlanData) -> Shortlist:
-    """Step 5: score the snapshot and pick the candidates."""
-    return shortlist(score(data.prices, data.fundamentals), params=deps.params.shortlist)
+    """Step 5: score the snapshot (price, fundamental and macro factors) and pick the
+    candidates."""
+    return shortlist(
+        score(data.prices, data.fundamentals, macro=data.macro), params=deps.params.shortlist
+    )
 
 
 def plan_shortlist(deps: CycleDeps, as_of: date) -> Shortlist:

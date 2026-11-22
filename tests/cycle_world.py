@@ -64,7 +64,8 @@ def shorts() -> frozenset[str]:
     fundamentals = build_fundamentals_snapshot(
         FakeFundamentalsProvider(FACTS), list(SECTORS), AS_OF, ciks=universe().ciks
     ).snapshot
-    candidates = shortlist(score(snapshot, fundamentals)).candidates
+    # MACRO in full scores as the cycle's window does: rows outside the closes window drop out
+    candidates = shortlist(score(snapshot, fundamentals, macro=MACRO)).candidates
     return frozenset(c.ticker for c in candidates if c.side is Side.SHORT)
 
 

@@ -8,6 +8,7 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import click
 import pandas as pd
 import pytest
 from typer.testing import CliRunner, Result
@@ -211,6 +212,25 @@ def test_a_vendor_failure_exits_1_and_leaves_no_manifest(
     result = _invoke("--root", str(root), "--membership", str(membership))
     assert result.exit_code == 1
     assert "DataProviderError: yahoo is down" in result.stderr
+
+
+def test_a_fred_failure_exits_1_with_a_clean_error_and_leaves_no_manifest(
+    membership: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = MacroProviderError("fredgraph.csv?id=VIXCLS: not a fredgraph CSV")
+    failing = FakeMacroProvider(make_macro(DAYS), error=error)
+    monkeypatch.setattr(
+        cli, "build_snapshot_sources", lambda: dataclasses.replace(_sources(), macro=failing)
+    )
+    root = tmp_path / "store"
+    result = _invoke("--root", str(root), "--membership", str(membership))
+    assert result.exit_code == 1
+    assert (
+        "error: MacroProviderError: fredgraph.csv?id=VIXCLS: not a fredgraph CSV"
+        in click.unstyle(result.stderr)
+    )
+    assert "Traceback" not in result.output
+    assert failing.calls
     assert not (root / MANIFEST).exists()
 
 

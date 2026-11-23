@@ -26,7 +26,7 @@ from hedge_fund.domain.backtest import Dividend, FlaggedSpan, FrozenData, Member
 from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.fundamentals import coerce_facts
 
-STORE_FORMAT = 1
+STORE_FORMAT = 2
 MANIFEST = "manifest.json"
 KINDS: tuple[str, ...] = (
     "opens",
@@ -38,6 +38,7 @@ KINDS: tuple[str, ...] = (
     "flagged",
     "sectors",
     "ciks",
+    "macro",
 )
 _MANIFEST_KEYS = (
     "format",
@@ -111,6 +112,7 @@ def load_store(root: Path) -> FrozenData:
         no_sector=tuple(manifest["no_sector"]),
         no_cik=tuple(manifest["no_cik"]),
         sic_sectors=tuple(manifest["sic_sectors"]),
+        macro=_prices(bodies["macro"]),
         flagged=_flagged(_parquet(bodies["flagged"])),
     )
 
@@ -157,6 +159,7 @@ def _encode(data: FrozenData) -> dict[str, tuple[str, bytes]]:
         "flagged": ("parquet", flagged.to_parquet()),
         "sectors": ("json", _json(data.sectors)),
         "ciks": ("json", _json(data.ciks)),
+        "macro": ("parquet", data.macro.to_parquet()),
     }
 
 
@@ -185,6 +188,10 @@ def _manifest(root: Path) -> dict[str, Any]:
         raise FrozenStoreError(f"{path}: unreadable manifest: {exc}") from exc
     if not isinstance(manifest, dict) or any(key not in manifest for key in _MANIFEST_KEYS):
         raise FrozenStoreError(f"{path}: manifest lacks one of {list(_MANIFEST_KEYS)}")
+    if manifest["format"] == 1:
+        raise FrozenStoreError(
+            f"{path}: backtest store format 1 is out of date; re-run `hedge-fund backtest snapshot`"
+        )
     if manifest["format"] != STORE_FORMAT:
         raise FrozenStoreError(f"{path}: format {manifest['format']!r}, expected {STORE_FORMAT}")
     return manifest

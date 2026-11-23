@@ -39,6 +39,19 @@ def make_closes(tickers: Sequence[str], n_days: int = 300, seed: int = 0) -> pd.
     return pd.DataFrame(data, index=index)
 
 
+def make_macro(index: pd.DatetimeIndex, seed: int = 0) -> pd.DataFrame:
+    """Random-walk DGS10 (percent) and VIXCLS (index points) on ``index``: float64, unnamed."""
+    rng = np.random.default_rng(seed)
+    n = len(index)
+    return pd.DataFrame(
+        {
+            "DGS10": 4.0 + np.cumsum(rng.normal(0.0, 0.05, n)),
+            "VIXCLS": 20.0 + np.cumsum(rng.normal(0.0, 0.8, n)),
+        },
+        index=pd.DatetimeIndex(index).rename(None),
+    )
+
+
 def snapshot_from(closes: pd.DataFrame, sectors: Mapping[str, str]) -> PriceSnapshot:
     """Build a snapshot whose as_of is the date of the last row."""
     return PriceSnapshot(as_of=closes.index[-1].date(), closes=closes, sectors=dict(sectors))
@@ -95,6 +108,7 @@ def make_frozen_data(**changes: Any) -> FrozenData:
     AAA splits 2:1 ex 2024-01-22 (the stored prices are post-split throughout) and pays 0.5
     ex 2024-02-01. BBB leaves the index effective 2024-01-29, when CCC (unpriced, no
     sector, no CIK) joins. ``changes`` replace fields.
+    DGS10 and VIXCLS (make_macro) span the same 30 days.
     """
     days = pd.bdate_range("2024-01-01", periods=30)
     closes = make_closes(["AAA", "BBB", "SPY"], n_days=30).set_axis(days, axis=0)
@@ -117,7 +131,10 @@ def make_frozen_data(**changes: Any) -> FrozenData:
         no_sector=("CCC",),
         no_cik=("CCC",),
         sic_sectors=(),
+        macro=make_macro(days),
     )
+    if "macro" not in changes and "closes" in changes:
+        changes["macro"] = make_macro(changes["closes"].index)  # follow the replaced calendar
     return dataclasses.replace(base, **changes)
 
 

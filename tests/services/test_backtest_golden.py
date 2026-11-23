@@ -44,15 +44,15 @@ runner = CliRunner()
 
 # Regression goldens (generated once; see the module docstring).
 GOLDEN_NAV_SECOND = 100311.7017793553
-GOLDEN_FINAL_EQUITY = 101549.5880368189
-GOLDEN_FINAL_CASH = 97824.6812868189
-GOLDEN_TOTAL_RETURN = 0.015495880368189052
+GOLDEN_FINAL_EQUITY = 100839.37453587537
+GOLDEN_FINAL_CASH = 88487.25989287537
+GOLDEN_TOTAL_RETURN = 0.008393745358753700
 GOLDEN_BENCHMARK_RETURN = 0.14126923607428887
-GOLDEN_TRADED_NOTIONAL = 250780.701827352
-GOLDEN_SLIPPAGE = 125.392683879
-GOLDEN_BORROW = 34.90168830220548
-GOLDEN_STORE_DIGEST = "aee232327b0a9d2e27573fb5b06ce89d9f2ac9ba933d4fdb149a41dd2dcb36a7"
-GOLDEN_RUN_ID = "2024-01-10_2024-03-08_e3b233b1a598"
+GOLDEN_TRADED_NOTIONAL = 149744.7725931205
+GOLDEN_SLIPPAGE = 74.8723729085
+GOLDEN_BORROW = 37.42985621620548
+GOLDEN_STORE_DIGEST = "c0ec0000e6bfd250b38fb8b17cd1e781fd313e23ec6c506c0f23d7ad98e7a3e6"
+GOLDEN_RUN_ID = "2024-01-10_2024-03-08_39407fc7df23"
 GOLDEN_FIRST_ORDERS = {
     "AE1": ("sell_short", 20),
     "AE2": ("sell_short", 56),
@@ -72,20 +72,23 @@ GOLDEN_FIRST_ORDERS = {
     "CH5": ("buy", 62),
     "CH6": ("buy", 50),
 }
-GOLDEN_SECOND_ORDER_COUNT = 22
-# long/short flips: the closing leg goes out, the opening leg waits for the next cycle
-GOLDEN_SECOND_DEFERRED = {"AE4", "BT3", "BT4", "CH3", "CH4"}
 GOLDEN_FINAL_POSITIONS = {
-    "AE1": -75,
-    "AE2": -52,
-    "AE3": 67,
-    "AE5": 45,
-    "BT5": -43,
-    "BT6": 45,
-    "CH1": -44,
-    "CH2": -62,
-    "CH5": 73,
-    "CH6": 37,
+    "AE1": -40,
+    "AE2": -56,
+    "AE3": 78,
+    "AE4": -39,
+    "AE5": 47,
+    "AE6": 75,
+    "BT2": -54,
+    "BT3": 96,
+    "BT4": 58,
+    "BT5": -60,
+    "CH1": -63,
+    "CH2": -41,
+    "CH3": 60,
+    "CH4": -47,
+    "CH5": 62,
+    "CH6": 50,
 }
 GOLDEN_EVENTS = [
     (date(2024, 2, 14), "split", "AE1", -20),
@@ -182,20 +185,33 @@ def test_one_cycle_per_month_and_one_snapshot_per_day(api: Replay) -> None:
     assert [p.date for p in load_nav_history(store, as_of=END)] == days
 
 
-def test_no_cycle_failed_or_found_orders_pending(api: Replay) -> None:
+def test_no_cycle_failed_or_found_orders_pending_and_the_second_was_vetoed(api: Replay) -> None:
     for cycle in api.cycles:
         assert cycle.failed_stage is None
         assert cycle.error is None
         assert "PendingOrdersError" not in str(cycle.error)
         assert not cycle.execution_interrupted
-        assert cycle.outcome is CycleOutcome.SUBMITTED
-    assert dict(api.report.metrics.honesty.outcomes) == {CycleOutcome.SUBMITTED.value: 2}
+    first, second = api.cycles
+    assert first.outcome is CycleOutcome.SUBMITTED
+    # the macro factors reshuffle the second shortlist, and the risk engine vetoes the book:
+    # CH1's share of total variance is over name_risk (deterministic, and it keeps its veto)
+    assert second.outcome is CycleOutcome.BLOCKED
+    assert second.verdict is not None
+    [violation] = second.verdict.violations
+    assert violation.check == "name_risk:CH1"
+    assert violation.observed > violation.limit
+    assert dict(api.report.metrics.honesty.outcomes) == {
+        CycleOutcome.SUBMITTED.value: 1,
+        CycleOutcome.BLOCKED.value: 1,
+    }
 
 
 def test_every_submitted_order_reached_the_broker(api: Replay) -> None:
     accepted: set[str] = set()
     deferred: list[set[str]] = []
-    for cycle in api.cycles:
+    submitted = [c for c in api.cycles if c.outcome is CycleOutcome.SUBMITTED]
+    assert submitted
+    for cycle in submitted:
         assert cycle.execution is not None
         results = cycle.execution.results
         accepted |= {
@@ -207,7 +223,7 @@ def test_every_submitted_order_reached_the_broker(api: Replay) -> None:
         assert {r.status for r in results} <= {SubmitStatus.ACCEPTED, SubmitStatus.DEFERRED}
     assert accepted
     assert set(api.broker.orders) == accepted
-    assert deferred == [set(), GOLDEN_SECOND_DEFERRED]
+    assert deferred == [set()]  # the vetoed second cycle submits nothing
 
 
 def test_split_dividend_and_delisting_each_produced_their_event(api: Replay) -> None:
@@ -310,7 +326,8 @@ def test_golden_nav_orders_positions_and_metrics(api: Replay) -> None:
     assert {o.ticker: (o.action.value, o.shares) for o in first.orders} == GOLDEN_FIRST_ORDERS
     second = api.cycles[1].plan
     assert second is not None
-    assert len(second.orders) == GOLDEN_SECOND_ORDER_COUNT
+    assert second.blocked == "veto"
+    assert second.orders == ()  # the vetoed second cycle trades nothing
     assert {h.ticker: h.shares for h in api.broker.positions()} == GOLDEN_FINAL_POSITIONS
     assert api.broker.cash == pytest.approx(GOLDEN_FINAL_CASH, rel=1e-9)
     metrics = api.report.metrics

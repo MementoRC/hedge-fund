@@ -11,10 +11,11 @@ import pytest
 
 from hedge_fund.domain.backtest import Dividend, FlaggedSpan, FrozenData, MemberSpan
 from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.ports.fundamentals import FundamentalsProvider
 from hedge_fund.services.backtest_snapshot import SnapshotSources, build_frozen_data
-from tests.factories import make_facts
-from tests.fakes import FakeFundamentalsProvider
+from tests.factories import make_facts, make_macro
+from tests.fakes import FakeFundamentalsProvider, FakeMacroProvider
 
 START = date(2024, 1, 1)
 END = date(2024, 1, 12)
@@ -67,6 +68,7 @@ class Vendors:
         self.company_calls = 0
         self.sic_calls: list[str] = []
         self.fundamentals_ciks: list[dict[str, str]] = []
+        self.macro = FakeMacroProvider(make_macro(DAYS))
 
     def sources(self) -> SnapshotSources:
         return SnapshotSources(
@@ -75,6 +77,7 @@ class Vendors:
             company_ciks=self._company,
             sic=self._sic,
             fundamentals=self._fundamentals,
+            macro=self.macro,
         )
 
     def _history(self, ticker: str, start: date, end: date) -> pd.DataFrame | None:
@@ -112,6 +115,22 @@ def _build(
         end=END,
         flagged=flagged,
     )
+
+
+def test_the_macro_series_are_fetched_over_the_window() -> None:
+    vendors = Vendors(_histories())
+    data = _build(vendors)
+    assert vendors.macro.calls == [(MACRO_SERIES, START, END)]
+    assert list(data.macro.index) == list(DAYS)
+    assert list(data.macro.columns) == list(MACRO_SERIES)
+
+
+def test_a_macro_row_after_the_last_close_is_trimmed() -> None:
+    histories = _histories()
+    histories["SPY"] = _frame(470.0, DAYS[:-1])  # SPY's calendar stops a day before END
+    data = _build(Vendors(histories))
+    assert data.end == DAYS[-2].date()
+    assert list(data.macro.index) == list(DAYS[:-1])
 
 
 def test_every_member_in_the_window_plus_spy_is_fetched_once() -> None:

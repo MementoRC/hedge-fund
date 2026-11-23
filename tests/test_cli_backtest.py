@@ -8,6 +8,7 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import click
 import pandas as pd
 import pytest
 from typer.testing import CliRunner, Result
@@ -19,7 +20,12 @@ from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.broker.simulated import SimulatedBroker
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
-from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
+from hedge_fund.adapters.data.fred_provider import FredProvider
+from hedge_fund.adapters.data.frozen_providers import (
+    FrozenDataProvider,
+    FrozenFundamentalsProvider,
+    FrozenMacroProvider,
+)
 from hedge_fund.adapters.data.frozen_store import MANIFEST, load_store, write_store
 from hedge_fund.adapters.data.sec_sources import SecLookups
 from hedge_fund.adapters.data.yfinance_history import YFinanceHistory
@@ -36,15 +42,17 @@ from hedge_fund.domain.backtest import (
     SimCosts,
     TradingCosts,
 )
+from hedge_fund.domain.macro import MACRO_SERIES
 from hedge_fund.domain.shortlist import Shortlist
 from hedge_fund.ports.data import DataProviderError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
+from hedge_fund.ports.macro import MacroProviderError
 from hedge_fund.services.backtest import BacktestDeps
 from hedge_fund.services.backtest_snapshot import SnapshotSources
 from hedge_fund.services.cycle import CycleParams
 from hedge_fund.universe import parse_universe
-from tests.factories import make_facts, make_frozen_data
-from tests.fakes import FakeFundamentalsProvider
+from tests.factories import make_facts, make_frozen_data, make_macro
+from tests.fakes import FakeFundamentalsProvider, FakeMacroProvider
 
 NOW = datetime(2024, 1, 16, 22, 0, tzinfo=UTC)  # 17:00 in New York: yesterday is 2024-01-15
 DAYS = pd.bdate_range("2024-01-02", periods=10)  # 2024-01-02 .. 2024-01-15
@@ -76,6 +84,7 @@ def _sources() -> SnapshotSources:
         company_ciks=lambda: {},
         sic=lambda cik: None,
         fundamentals=lambda ciks: FakeFundamentalsProvider(make_facts(list(ciks))),
+        macro=FakeMacroProvider(make_macro(DAYS)),
     )
 
 
@@ -203,6 +212,25 @@ def test_a_vendor_failure_exits_1_and_leaves_no_manifest(
     result = _invoke("--root", str(root), "--membership", str(membership))
     assert result.exit_code == 1
     assert "DataProviderError: yahoo is down" in result.stderr
+
+
+def test_a_fred_failure_exits_1_with_a_clean_error_and_leaves_no_manifest(
+    membership: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error = MacroProviderError("fredgraph.csv?id=VIXCLS: not a fredgraph CSV")
+    failing = FakeMacroProvider(make_macro(DAYS), error=error)
+    monkeypatch.setattr(
+        cli, "build_snapshot_sources", lambda: dataclasses.replace(_sources(), macro=failing)
+    )
+    root = tmp_path / "store"
+    result = _invoke("--root", str(root), "--membership", str(membership))
+    assert result.exit_code == 1
+    assert (
+        "error: MacroProviderError: fredgraph.csv?id=VIXCLS: not a fredgraph CSV"
+        in click.unstyle(result.stderr)
+    )
+    assert "Traceback" not in result.output
+    assert failing.calls
     assert not (root / MANIFEST).exists()
 
 
@@ -227,6 +255,7 @@ def test_build_snapshot_sources_wires_the_real_vendors(monkeypatch: pytest.Monke
     assert sources.fundamentals is EdgarProvider
     assert isinstance(sources.company_ciks.__self__, SecLookups)  # type: ignore[attr-defined]
     assert isinstance(sources.sic.__self__, SecLookups)  # type: ignore[attr-defined]
+    assert isinstance(sources.macro, FredProvider)
 
 
 def test_build_snapshot_sources_needs_the_sec_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -497,6 +526,10 @@ def test_build_backtest_deps_is_simulated_only_and_rooted_at_root(tmp_path: Path
     assert provider.as_of == day
     shortlist = Shortlist(as_of=day, candidates=(), trimmed={})
     assert isinstance(deps.researcher(shortlist), NeutralResearcher)
+    macro = deps.macro(day)
+    assert isinstance(macro, FrozenMacroProvider)
+    with pytest.raises(MacroProviderError, match="after as_of 2024-01-10"):
+        macro.series(MACRO_SERIES, day, date(2024, 1, 11))
 
 
 def _replace_history(sources: SnapshotSources, history: object) -> SnapshotSources:
@@ -506,4 +539,5 @@ def _replace_history(sources: SnapshotSources, history: object) -> SnapshotSourc
         company_ciks=sources.company_ciks,
         sic=sources.sic,
         fundamentals=sources.fundamentals,
+        macro=sources.macro,
     )

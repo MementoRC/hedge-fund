@@ -18,8 +18,8 @@ from hedge_fund.domain.demo import DemoMarker
 
 # The golden test's pins: a seed-1 demo is that store, frozen at the same instant and replayed
 # with the same cash over the same window.
-GOLDEN_STORE_DIGEST = "aee232327b0a9d2e27573fb5b06ce89d9f2ac9ba933d4fdb149a41dd2dcb36a7"
-GOLDEN_RUN_ID = "2024-01-10_2024-03-08_e3b233b1a598"
+GOLDEN_STORE_DIGEST = "c0ec0000e6bfd250b38fb8b17cd1e781fd313e23ec6c506c0f23d7ad98e7a3e6"
+GOLDEN_RUN_ID = "2024-01-10_2024-03-08_39407fc7df23"
 runner = CliRunner()
 
 

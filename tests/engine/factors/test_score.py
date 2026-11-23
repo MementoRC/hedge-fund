@@ -17,9 +17,16 @@ from hedge_fund.engine.factors.definitions import (
     reversal_1m,
 )
 from hedge_fund.engine.factors.fundamental import FUNDAMENTAL_FACTORS, FundamentalFactorSpec, size
+from hedge_fund.engine.factors.macro import MIN_PAIRS, MacroFactorSpec, rate_beta
 from hedge_fund.engine.factors.quality import QualityGates
 from hedge_fund.engine.factors.score import score
-from tests.factories import make_closes, make_fundamentals, make_passing_fundamentals, snapshot_from
+from tests.factories import (
+    make_closes,
+    make_fundamentals,
+    make_macro,
+    make_passing_fundamentals,
+    snapshot_from,
+)
 
 SECTORS = {
     "A1": "Tech",
@@ -576,3 +583,82 @@ def test_custom_thresholds_respected() -> None:
         quality_gates=QualityGates(min_altman_z=0.0),
     )
     assert lenient.excluded == {}
+
+
+# --- macro factors ----------------------------------------------------------
+
+MACRO_NAMES = ["rate_beta", "riskoff_beta"]
+PRICE_NAMES = [spec.name for spec in FACTORS]
+
+
+def test_macro_none_scores_exactly_as_before() -> None:
+    snap = _snapshot(make_closes(TICKERS))
+    clash = MacroFactorSpec("low_vol", rate_beta, sign=1, min_history=10_000)
+    assert score(snap, macro=None, macro_factors=(clash,)) == score(snap)
+    for s in score(snap).scores:
+        assert list(s.raw) == PRICE_NAMES
+
+
+def test_macro_adds_two_factors_and_the_composite_is_the_mean_of_six_z_scores() -> None:
+    closes = make_closes(TICKERS)
+    result = score(_snapshot(closes), macro=make_macro(closes.index))
+    assert result.excluded == {}
+    assert len(result.scores) == len(TICKERS)
+    for s in result.scores:
+        assert list(s.raw) == PRICE_NAMES + MACRO_NAMES
+        assert list(s.z) == PRICE_NAMES + MACRO_NAMES
+        assert s.composite == pytest.approx(sum(s.z.values()) / 6)
+
+
+def test_factor_order_is_price_then_fundamental_then_macro() -> None:
+    closes = make_closes(TICKERS)
+    result = score(
+        _snapshot(closes),
+        make_fundamentals(TICKERS),
+        quality_gates=None,
+        macro=make_macro(closes.index),
+    )
+    expected = PRICE_NAMES + [spec.name for spec in FUNDAMENTAL_FACTORS] + MACRO_NAMES
+    for s in result.scores:
+        assert list(s.raw) == expected
+        assert s.composite == pytest.approx(sum(s.z.values()) / len(s.z))
+
+
+def test_macro_factors_read_the_unfilled_window() -> None:
+    closes = make_closes(TICKERS)
+    closes.iloc[[150, 151], 0] = np.nan  # A1: 2 / 253 missing, forward-filled for price factors
+    macro = make_macro(closes.index)
+    window = closes.iloc[-WINDOW:]
+    as_of = closes.index[-1].date()
+    expected = rate_beta(window, macro, as_of)
+    scored = {s.ticker: s for s in score(_snapshot(closes), macro=macro).scores}
+    for ticker in TICKERS:
+        assert scored[ticker].raw["rate_beta"] == pytest.approx(expected[ticker])
+    assert scored["A1"].raw["rate_beta"] != rate_beta(window.ffill(), macro, as_of)["A1"]
+
+
+def test_the_window_counts_macro_history_only_when_macro_is_given() -> None:
+    closes = make_closes(TICKERS)  # 300 rows
+    long = MacroFactorSpec("long", rate_beta, sign=1, min_history=301)
+    snap = _snapshot(closes)
+    assert score(snap, macro_factors=(long,)).excluded == {}
+    result = score(snap, macro=make_macro(closes.index), macro_factors=(long,))
+    assert result.scores == ()
+    assert result.excluded == dict.fromkeys(TICKERS, "insufficient_history")
+
+
+def test_too_few_paired_returns_exclude_every_ticker_as_nonfinite_factor() -> None:
+    closes = make_closes(TICKERS)
+    macro = make_macro(closes.index)
+    # MIN_PAIRS values before as_of, so MIN_PAIRS - 1 returns pair up
+    macro.iloc[: len(macro) - 1 - MIN_PAIRS] = np.nan
+    result = score(_snapshot(closes), macro=macro)
+    assert result.scores == ()
+    assert result.excluded == dict.fromkeys(TICKERS, "nonfinite_factor")
+
+
+def test_a_macro_factor_name_clash_is_rejected() -> None:
+    closes = make_closes(TICKERS)
+    clash = MacroFactorSpec("low_vol", rate_beta, sign=1, min_history=WINDOW)
+    with pytest.raises(ValueError, match="duplicate factor"):
+        score(_snapshot(closes), macro=make_macro(closes.index), macro_factors=(clash,))

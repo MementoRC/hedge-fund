@@ -83,6 +83,8 @@ mkdocs-material = ">=9.5"
 # hedge-fund CLI and data/demo don't exist in a fresh checkout (no ../TradingAgents needed;
 # setup-dev would also require that sibling clone). CI runs these steps itself.
 # If data/demo already exists, skip demo (or run `pixi run -e site demo --force` to rebuild it).
+# A data/demo built before the store went to format 2 (FRED macro series) no longer loads:
+# rebuild it once with `pixi run -e site demo --force`.
 # After an interrupted demo build, delete data/demo and data/demo.store, then re-run demo.
 site = "hedge-fund site build --root data/demo --stats-dir . && mkdocs build --strict -f website/mkdocs.yml -d ../_site"
 

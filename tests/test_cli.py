@@ -19,6 +19,7 @@ from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.broker import AlpacaPaperBroker
 from hedge_fund.adapters.cost import load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
+from hedge_fund.adapters.data.fred_provider import FredProvider
 from hedge_fund.adapters.research.store import JsonResearchStore
 from hedge_fund.adapters.research.tradingagents import TradingAgentsResearcher
 from hedge_fund.domain.cost import BudgetPlan, Estimate, EstimateSource, PriceTable, Spend
@@ -28,8 +29,10 @@ from hedge_fund.domain.orders import Order, OrderAction
 from hedge_fund.domain.research import NameResearch, ResearchResult, RunRecord, Verdict
 from hedge_fund.domain.risk import BreakerState, RiskBreakdown, RiskVerdict, Violation
 from hedge_fund.domain.shortlist import Candidate, Side
+from hedge_fund.ports.macro import MacroProviderError
 from hedge_fund.services.cycle import CycleDeps, PendingOrdersError, ReportSaveError
-from tests.cycle_world import AS_OF, EVENING, SESSION, Clock, World
+from tests.cycle_world import AS_OF, EVENING, MACRO, SESSION, Clock, World
+from tests.fakes import FakeMacroProvider
 
 REPO = Path(__file__).resolve().parents[1]
 NIGHT = datetime(2026, 10, 1, 2, 0, tzinfo=UTC)  # 2026-09-30 22:00 in New York
@@ -384,6 +387,25 @@ def test_a_budget_without_an_estimate_exits_1_with_a_budget_stage_report(
     assert json.loads(path.read_text(encoding="utf-8"))["failed_stage"] == "budget"
 
 
+def test_a_fred_failure_exits_1_with_a_clean_error_and_a_data_stage_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    error = MacroProviderError("fredgraph.csv?id=DGS10: HTTP 503; gave up after 3 retries")
+    macro = FakeMacroProvider(MACRO, error=error)
+    _use(monkeypatch, World(macro=macro))
+    result = _invoke("--dry-run", "--root", str(tmp_path))
+    assert result.exit_code == 1
+    assert macro.calls
+    stderr = click.unstyle(result.stderr)
+    assert (
+        "error: MacroProviderError: fredgraph.csv?id=DGS10: HTTP 503; gave up after 3 retries; "
+        f"the partial report is under {tmp_path / 'runs'}"
+    ) in stderr
+    assert "Traceback" not in result.output
+    [path] = (tmp_path / "runs").iterdir()
+    assert json.loads(path.read_text(encoding="utf-8"))["failed_stage"] == "data"
+
+
 @pytest.mark.parametrize(
     ("budget", "spend", "lines"),
     [
@@ -457,6 +479,7 @@ def test_build_deps_wires_the_real_adapters(tmp_path: Path) -> None:
     assert isinstance(deps.snapshot_store, JsonSnapshotStore)
     assert isinstance(deps.gate, ConsoleApprovalGate)
     assert isinstance(deps.report_store, JsonCycleReportStore)
+    assert isinstance(deps.macro, FredProvider)
 
 
 @pytest.mark.usefixtures("credentials")

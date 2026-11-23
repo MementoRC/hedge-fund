@@ -41,8 +41,16 @@ from hedge_fund.adapters.cost import PRICES_FILE, load_prices
 from hedge_fund.adapters.cycle import JsonCycleReportStore
 from hedge_fund.adapters.cycle.json_report import RUNS_DIR
 from hedge_fund.adapters.data.edgar_provider import EdgarProvider
-from hedge_fund.adapters.data.factory import default_fundamentals_provider, default_provider
-from hedge_fund.adapters.data.frozen_providers import FrozenDataProvider, FrozenFundamentalsProvider
+from hedge_fund.adapters.data.factory import (
+    default_fundamentals_provider,
+    default_macro_provider,
+    default_provider,
+)
+from hedge_fund.adapters.data.frozen_providers import (
+    FrozenDataProvider,
+    FrozenFundamentalsProvider,
+    FrozenMacroProvider,
+)
 from hedge_fund.adapters.data.frozen_store import (
     MANIFEST,
     check_fresh_root,
@@ -171,7 +179,7 @@ def build_deps(root: Path, prices: Path) -> CycleDeps:
 
     The broker and the fundamentals provider are built first, so missing credentials
     (BrokerError, FundamentalsProviderError) fail before anything is read; a malformed price
-    table raises ValueError.
+    table raises ValueError. The FRED provider needs no key and cannot fail to build.
     """
     broker = AlpacaPaperBroker()
     fundamentals = default_fundamentals_provider(root / "cache" / "fundamentals", UNIVERSE)
@@ -180,6 +188,7 @@ def build_deps(root: Path, prices: Path) -> CycleDeps:
         universe=load_universe(UNIVERSE),
         prices=default_provider(root / "cache" / "prices", UNIVERSE),
         fundamentals=fundamentals,
+        macro=default_macro_provider(),
         researcher=TradingAgentsResearcher(ResearchConfig(root=root / "scratch")),
         research_store=JsonResearchStore(root),
         broker=broker,
@@ -260,13 +269,14 @@ def build_backtest_deps(
         gate=AutoApprovalGate(),
         prices=lambda day: FrozenDataProvider(data, day),
         fundamentals=FrozenFundamentalsProvider(data),
+        macro=lambda day: FrozenMacroProvider(data, day),
         researcher=NeutralResearcher,
         params=CycleParams(),
     )
 
 
 def build_snapshot_sources() -> SnapshotSources:
-    """The real vendors for ``backtest snapshot``: yfinance prices and splits, SEC EDGAR.
+    """The real vendors for ``backtest snapshot``: yfinance prices and splits, SEC EDGAR, FRED.
 
     The SEC client is built first, so a missing SEC_USER_AGENT (FundamentalsProviderError)
     fails before anything is fetched.
@@ -279,6 +289,7 @@ def build_snapshot_sources() -> SnapshotSources:
         company_ciks=sec.company_ciks,
         sic=sec.sic,
         fundamentals=EdgarProvider,
+        macro=default_macro_provider(),
     )
 
 

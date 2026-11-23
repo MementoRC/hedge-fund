@@ -20,7 +20,7 @@ from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import ExecutionReport
 from hedge_fund.domain.fundamentals import FundamentalsSnapshot
 from hedge_fund.domain.ledger import SubmittedOrder
-from hedge_fund.domain.macro import MACRO_SERIES
+from hedge_fund.domain.macro import MACRO_SERIES, RATE_SERIES, RISKOFF_SERIES
 from hedge_fund.domain.orders import OrderPlan
 from hedge_fund.domain.portfolio import TargetPortfolio
 from hedge_fund.domain.research import ResearchResult
@@ -59,7 +59,7 @@ from hedge_fund.ports.broker import Broker, OrderDataError
 from hedge_fund.ports.cycle import CycleReportStore
 from hedge_fund.ports.data import DataProvider
 from hedge_fund.ports.fundamentals import FundamentalsProvider
-from hedge_fund.ports.macro import MacroProvider
+from hedge_fund.ports.macro import MacroProvider, MacroProviderError
 from hedge_fund.ports.research import Researcher, ResearchStore
 from hedge_fund.services.account import read_snapshot
 from hedge_fund.services.approval import request_approval
@@ -448,14 +448,30 @@ class PlanData:
     macro: pd.DataFrame
 
 
+def _require_usable_macro(macro: pd.DataFrame, as_of: date) -> None:
+    """Raise MacroProviderError unless the rate and risk-off series each have a value dated
+    strictly before ``as_of`` (the engine's point-in-time cut)."""
+    if macro.empty:
+        raise MacroProviderError("macro frame is empty")
+    cutoff = pd.Timestamp(as_of)
+    for name in (RATE_SERIES, RISKOFF_SERIES):
+        if name not in macro.columns:
+            raise MacroProviderError(f"macro series {name} is missing")
+        if macro.loc[macro.index < cutoff, name].dropna().empty:
+            raise MacroProviderError(f"macro series {name} has no value before {as_of}")
+
+
 def plan_data(deps: CycleDeps, as_of: date) -> PlanData:
     """Step 4: prices for the universe, the macro series over the same calendar window, then
     fundamentals for the names that have prices.
 
-    A macro fetch failure raises MacroProviderError: the cycle fails, with no fallback.
+    A macro fetch failure or an unusable macro frame (empty, a required series missing or
+    without a value before ``as_of``) raises MacroProviderError: the cycle fails, with no
+    fallback.
     """
     prices = build_snapshot(deps.prices, deps.universe.tickers, as_of)
     macro = deps.macro.series(MACRO_SERIES, as_of - calendar_window(LOOKBACK_ROWS), as_of)
+    _require_usable_macro(macro, as_of)
     priced = [ticker for ticker in prices.snapshot.sectors if ticker not in prices.unresolved]
     splits = deps.prices.splits(priced, as_of - SPLIT_LOOKBACK, as_of)
     fundamentals = build_fundamentals_snapshot(

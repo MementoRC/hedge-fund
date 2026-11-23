@@ -19,7 +19,7 @@ from hedge_fund.domain.approval import ApprovalStatus
 from hedge_fund.domain.cycle import CycleOptions, CycleOutcome, CycleReport
 from hedge_fund.domain.execution import SubmitStatus
 from hedge_fund.domain.ledger import OrderState, OrderStatus, Split
-from hedge_fund.domain.macro import MACRO_SERIES
+from hedge_fund.domain.macro import MACRO_SERIES, RATE_SERIES, RISKOFF_SERIES
 from hedge_fund.domain.orders import Holding, OrderAction, OrderPlan
 from hedge_fund.domain.research import Rating, ResearchResult, Verdict
 from hedge_fund.domain.risk import NavPoint
@@ -442,6 +442,66 @@ def test_a_fred_failure_fails_the_cycle_at_the_data_stage() -> None:
     assert report.failed_stage == "data"
     assert report.error == "MacroProviderError: fred is down"
     assert world.researcher.calls == []
+
+
+def _macro_variant(name: str) -> pd.DataFrame:
+    frame = MACRO.copy()
+    before = frame.index < pd.Timestamp(AS_OF)
+    if name == "empty":
+        return frame.iloc[0:0]
+    if name == "all_nan":
+        return frame.mask(frame.notna())
+    if name == "rate_all_nan":
+        frame[RATE_SERIES] = float("nan")
+    elif name == "riskoff_all_nan":
+        frame[RISKOFF_SERIES] = float("nan")
+    elif name == "riskoff_missing":
+        return frame.drop(columns=[RISKOFF_SERIES])
+    elif name == "riskoff_only_from_as_of":
+        frame.loc[before, RISKOFF_SERIES] = float("nan")
+    return frame
+
+
+@pytest.mark.parametrize(
+    ("variant", "named"),
+    [
+        ("empty", "empty"),
+        ("all_nan", RATE_SERIES),
+        ("rate_all_nan", RATE_SERIES),
+        ("riskoff_all_nan", RISKOFF_SERIES),
+        ("riskoff_missing", RISKOFF_SERIES),
+        ("riskoff_only_from_as_of", RISKOFF_SERIES),
+    ],
+)
+def test_an_unusable_macro_frame_fails_the_cycle_at_the_data_stage(
+    variant: str, named: str
+) -> None:
+    world = World(macro=FakeMacroProvider(_macro_variant(variant)))
+    with pytest.raises(MacroProviderError, match=named):
+        _run(world, options=DRY)
+    [report] = world.report_store.saved
+    assert report.outcome is CycleOutcome.ERROR
+    assert report.failed_stage == "data"
+    assert report.error is not None
+    assert named in report.error
+    assert world.researcher.calls == []
+
+
+def test_a_macro_frame_lacking_a_required_column_fails_naming_it() -> None:
+    class RawMacro:
+        def series(self, ids: Sequence[str], start: date, end: date) -> pd.DataFrame:
+            return MACRO.drop(columns=[RISKOFF_SERIES])  # unlike the fake, no reindex
+
+    world = World(macro=RawMacro())
+    with pytest.raises(MacroProviderError, match=RISKOFF_SERIES):
+        cycle.plan_data(world.deps, AS_OF)
+
+
+def test_a_macro_frame_with_usable_series_passes_the_data_stage() -> None:
+    frame = MACRO.copy()
+    frame.iloc[-1] = float("nan")  # the as_of row itself is cut, earlier rows suffice
+    world = World(macro=FakeMacroProvider(frame))
+    assert cycle.plan_data(world.deps, AS_OF).macro.shape[1] == len(MACRO_SERIES)
 
 
 def test_the_shortlist_is_scored_with_the_macro_factors(monkeypatch: pytest.MonkeyPatch) -> None:

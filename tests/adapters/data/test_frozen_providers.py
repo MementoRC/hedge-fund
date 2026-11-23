@@ -165,6 +165,11 @@ def test_macro_satisfies_the_port_with_columns_in_request_order() -> None:
     pd.testing.assert_frame_equal(frame, DATA.macro[["VIXCLS", "DGS10"]], check_freq=False)
 
 
+def test_macro_repeated_ids_are_served_once_like_the_fred_provider() -> None:
+    frame = FrozenMacroProvider(DATA, LAST).series(["DGS10", "VIXCLS", "DGS10"], FIRST, LAST)
+    assert list(frame.columns) == ["DGS10", "VIXCLS"]
+
+
 def test_macro_rows_are_trimmed_to_the_request() -> None:
     frame = FrozenMacroProvider(DATA, LAST).series(
         MACRO_SERIES, date(2024, 1, 8), date(2024, 1, 19)

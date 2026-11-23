@@ -111,9 +111,10 @@ class FrozenMacroProvider:
                 f"macro end {end} is after as_of {self._as_of}: the frozen store never serves "
                 "data from after the cycle date"
             )
-        missing = [series_id for series_id in ids if series_id not in self._macro.columns]
+        unique = list(dict.fromkeys(ids))
+        missing = [series_id for series_id in unique if series_id not in self._macro.columns]
         if missing:
             raise MacroProviderError(f"the frozen store has no macro series {missing}")
         stored = self._macro.index
         rows = (stored >= pd.Timestamp(start)) & (stored <= pd.Timestamp(end))
-        return self._macro.loc[rows, list(ids)]
+        return self._macro.loc[rows, unique]

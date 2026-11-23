@@ -136,6 +136,16 @@ def _macro_cases() -> list[tuple[str, object, str]]:
         ("no-vixcls", macro.drop(columns=["VIXCLS"]), r"macro lacks series \['VIXCLS'\]"),
         ("integer", macro.astype({"DGS10": "int64"}), "macro values must be float"),
         ("tz-aware", macro.tz_localize("UTC"), "macro index must be tz-naive"),
+        (
+            "intraday",
+            macro.set_axis(macro.index + pd.Timedelta(hours=1)),
+            "macro dates must be midnight",
+        ),
+        (
+            "duplicate-column",
+            pd.concat([macro, macro[["DGS10"]]], axis=1),
+            "macro series labels must be unique",
+        ),
         ("infinite", macro.assign(DGS10=float("inf")), "macro values must be finite"),
         ("negative-infinite", macro.assign(VIXCLS=float("-inf")), "macro values must be finite"),
     ]

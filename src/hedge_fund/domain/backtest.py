@@ -127,8 +127,12 @@ def _check_macro(macro: pd.DataFrame, start: date, end: date) -> None:
         raise ValueError("macro index must be tz-naive")
     if not index.is_monotonic_increasing or index.has_duplicates:
         raise ValueError("macro index must be sorted and unique")
+    if not index.equals(index.normalize()):
+        raise ValueError("macro dates must be midnight")
     if len(index) and (index[0].date() < start or index[-1].date() > end):
         raise ValueError(f"macro dates fall outside {start}..{end}")
+    if macro.columns.has_duplicates:
+        raise ValueError("macro series labels must be unique")
     missing = [series for series in MACRO_SERIES if series not in macro.columns]
     if missing:
         raise ValueError(f"macro lacks series {missing}")

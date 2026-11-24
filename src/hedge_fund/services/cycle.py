@@ -11,6 +11,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
+import numpy as np
 import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
@@ -449,16 +450,17 @@ class PlanData:
 
 
 def _require_usable_macro(macro: pd.DataFrame, as_of: date) -> None:
-    """Raise MacroProviderError unless the rate and risk-off series each have a value dated
-    strictly before ``as_of`` (the engine's point-in-time cut)."""
+    """Raise MacroProviderError unless the rate and risk-off series each have a finite value
+    dated strictly before ``as_of`` (the engine's point-in-time cut)."""
     if macro.empty:
         raise MacroProviderError("macro frame is empty")
     cutoff = pd.Timestamp(as_of)
     for name in (RATE_SERIES, RISKOFF_SERIES):
         if name not in macro.columns:
             raise MacroProviderError(f"macro series {name} is missing")
-        if macro.loc[macro.index < cutoff, name].dropna().empty:
-            raise MacroProviderError(f"macro series {name} has no value before {as_of}")
+        known = macro.loc[macro.index < cutoff, name].astype("float64")
+        if not np.isfinite(known).any():
+            raise MacroProviderError(f"macro series {name} has no finite value before {as_of}")
 
 
 def plan_data(deps: CycleDeps, as_of: date) -> PlanData:

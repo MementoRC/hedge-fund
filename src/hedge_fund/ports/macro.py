@@ -10,7 +10,9 @@ import pandas as pd
 
 
 class MacroProviderError(Exception):
-    """A vendor, transport or parse failure while fetching macro series."""
+    """A vendor, transport or parse failure while fetching macro series, or a fetched frame the
+    caller rejects as unusable (empty, a required series missing or without a finite value
+    before the cut)."""
 
 
 class MacroProvider(Protocol):

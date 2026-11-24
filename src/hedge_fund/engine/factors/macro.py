@@ -54,6 +54,29 @@ def macro_beta(closes: pd.DataFrame, series: pd.Series, as_of: date) -> pd.Serie
     )
 
 
+def macro_series_problem(series: pd.Series, as_of: date) -> str | None:
+    """Why ``series`` gives a NaN beta for every ticker, or None if it may not.
+
+    Only rows dated strictly before ``as_of`` with a finite value (NaN and inf dropped) count.
+    The checks are exact sufficient conditions for NaN on every ticker: fewer than
+    MIN_PAIRS + 1 finite observations (no ticker can pair up enough returns) or all of them
+    exactly equal (no change in any intersection). The near-flat tolerance of ``_slope`` is
+    deliberately not applied: it runs on each ticker's own intersected dates, so a
+    whole-series version would be neither necessary nor sufficient. A caller rejects only
+    what fails for every ticker.
+    """
+    cut = pd.Timestamp(as_of)
+    values = series.loc[series.index < cut].to_numpy(dtype="float64")
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return f"has no finite value before {as_of}"
+    if finite.size < MIN_PAIRS + 1:
+        return f"has {finite.size} finite observations before {as_of}, needs {MIN_PAIRS + 1}"
+    if (finite == finite[0]).all():
+        return f"is constant before {as_of}"
+    return None
+
+
 def _as_ns[T: (pd.Series, pd.DataFrame)](frame: T) -> T:
     """Normalise the datetime unit so closes and series on different units still align."""
     return frame.set_axis(pd.DatetimeIndex(frame.index).as_unit("ns"))

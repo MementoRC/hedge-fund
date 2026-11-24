@@ -464,6 +464,10 @@ def _macro_variant(name: str) -> pd.DataFrame:
     elif name == "riskoff_inf_and_nan":
         frame.loc[before, RISKOFF_SERIES] = float("-inf")
         frame.iloc[0, frame.columns.get_loc(RISKOFF_SERIES)] = float("nan")
+    elif name == "rate_too_short":
+        frame.iloc[:-150, frame.columns.get_loc(RATE_SERIES)] = float("nan")
+    elif name == "riskoff_constant":
+        frame.loc[before, RISKOFF_SERIES] = 4.0
     return frame
 
 
@@ -478,6 +482,8 @@ def _macro_variant(name: str) -> pd.DataFrame:
         ("riskoff_only_from_as_of", RISKOFF_SERIES),
         ("rate_all_inf", RATE_SERIES),
         ("riskoff_inf_and_nan", RISKOFF_SERIES),
+        ("rate_too_short", RATE_SERIES),
+        ("riskoff_constant", RISKOFF_SERIES),
     ],
 )
 def test_an_unusable_macro_frame_fails_the_cycle_at_the_data_stage(

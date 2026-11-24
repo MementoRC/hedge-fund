@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import threading
+import time
 from collections.abc import Iterator
 from datetime import date
 from typing import Any
@@ -11,11 +13,13 @@ import pandas as pd
 import pytest
 import requests
 
+from hedge_fund.adapters.data import fred_provider
 from hedge_fund.adapters.data.fred_provider import (
     FREDGRAPH_URL,
     MAX_RETRIES,
     REQUEST_TIMEOUT,
     TOTAL_DEADLINE,
+    WORKER_NAME,
     FredProvider,
 )
 from hedge_fund.ports.macro import MacroProviderError
@@ -52,6 +56,7 @@ class FakeResponse:
         self.status_code = status_code
         self.text = text
         self.closed = False
+        self.chunks_read = 0
         self._clock = clock
         self._trickle = trickle
         self._chunk = chunk
@@ -61,6 +66,7 @@ class FakeResponse:
         for start in range(0, len(data), self._chunk):
             if self._clock is not None:
                 self._clock.now += self._trickle
+            self.chunks_read += 1
             yield data[start : start + self._chunk]
 
     def close(self) -> None:
@@ -242,18 +248,78 @@ def test_a_trickling_body_past_the_deadline_raises_is_not_retried_and_is_closed(
     assert len(get.calls) == 1
     assert sleep.sleeps == []
     assert response.closed
+    # the 6th chunk reaches 60 s; reading must stop there, not run on to the end of the body
+    assert response.chunks_read == 6
 
 
 def test_the_deadline_is_shared_across_series_ids() -> None:
     clock = FakeClock()
     first = FakeResponse(text=VIX_CSV, clock=clock, trickle=15.0, chunk=30)  # 3 chunks: 45 s
-    second = FakeResponse(clock=clock, trickle=10.0)  # would finish in time alone
+    # 11 chunks x 4 s = 44 s: finishes in time under a fresh 60 s, not under the 15 s left
+    second = FakeResponse(clock=clock, trickle=4.0)
     get = FakeGet(first, second)
     with pytest.raises(MacroProviderError, match=r"id=DGS10.*total deadline"):
         _provider(get, clock=clock, deadline=60.0).series(["VIXCLS", "DGS10"], *WINDOW)
     assert len(get.calls) == 2
     assert first.closed
     assert second.closed
+    assert second.chunks_read == 4  # 45 + 4 x 4 = 61 s: stops at the first chunk past 60 s
+
+
+@pytest.fixture
+def release() -> Iterator[threading.Event]:
+    """An event a blocked fake waits on; set and its worker threads joined at teardown."""
+    event = threading.Event()
+    yield event
+    event.set()
+    for thread in threading.enumerate():
+        if thread.name == WORKER_NAME:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+
+
+def test_a_request_blocked_past_the_deadline_raises_at_the_deadline(
+    release: threading.Event,
+) -> None:
+    def blocked_get(url: str, **kwargs: Any) -> FakeResponse:
+        release.wait(timeout=3)  # a socket read that the per-read timeout does not stop
+        return FakeResponse()
+
+    provider = FredProvider(get=blocked_get, deadline=0.2)
+    started = time.monotonic()
+    with pytest.raises(MacroProviderError, match=r"fredgraph\.csv\?id=DGS10.*0\.2s total deadline"):
+        provider.series(["DGS10"], *WINDOW)
+    assert time.monotonic() - started < 2.0
+
+
+def test_a_parse_running_past_the_deadline_raises(
+    release: threading.Event, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_parse = fred_provider._parse
+
+    def slow_parse(text: str, series_id: str, url: str) -> pd.Series:
+        release.wait(timeout=3)
+        return real_parse(text, series_id, url)
+
+    monkeypatch.setattr(fred_provider, "_parse", slow_parse)
+    provider = FredProvider(get=FakeGet(FakeResponse()), deadline=0.2)
+    started = time.monotonic()
+    with pytest.raises(MacroProviderError, match="0.2s total deadline"):
+        provider.series(["DGS10"], *WINDOW)
+    assert time.monotonic() - started < 2.0
+
+
+def test_an_error_in_the_worker_reaches_the_caller_unchanged() -> None:
+    with pytest.raises(MacroProviderError, match="HTTP 404"):
+        _provider(FakeGet(FakeResponse(status_code=404))).series(["DGS10"], *WINDOW)
+
+
+def test_a_body_that_is_not_utf8_raises_a_provider_error_naming_the_url() -> None:
+    response = FakeResponse(text="")
+    response.iter_content = lambda chunk_size=None: iter([b"observation_date,DGS10\n\xff\xfe\n"])  # type: ignore[method-assign]
+    with pytest.raises(MacroProviderError, match=r"fredgraph\.csv\?id=DGS10.*UTF-8"):
+        _provider(FakeGet(response)).series(["DGS10"], *WINDOW)
+    assert response.closed
 
 
 def test_a_backoff_sleep_is_capped_at_the_time_remaining() -> None:

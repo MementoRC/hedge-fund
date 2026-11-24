@@ -9,6 +9,7 @@ fred.stlouisfed.org stalls on custom ones.
 from __future__ import annotations
 
 import io
+import threading
 import time
 from collections.abc import Callable, Sequence
 from datetime import date
@@ -27,6 +28,7 @@ BACKOFF_SECONDS = 1.0  # 1 s, 2 s, 4 s
 REQUEST_TIMEOUT = 30  # per socket read only: a trickling server resets it with every byte
 TOTAL_DEADLINE = 60.0  # wall-clock cap per series() call, over every id, retry and backoff sleep
 CHUNK_SIZE = 8192
+WORKER_NAME = "fred-series"
 
 # requests.get-compatible: called as get(url, timeout=..., stream=True); the response must offer
 # status_code, iter_content(chunk_size=...) yielding bytes, and close().
@@ -39,8 +41,11 @@ class FredProvider:
     HTTP 429, 5xx, timeouts and connection errors are retried MAX_RETRIES times with
     exponential backoff. One ``deadline`` (seconds, default TOTAL_DEADLINE) bounds a whole
     series() call, bodies read in chunks and backoff sleeps included; expiry raises
-    MacroProviderError and is not retried. Each request's socket timeout is capped at the time
-    left, so the total time is bounded by the deadline plus at most one in-flight read. Every
+    MacroProviderError and is not retried. The work runs in a worker thread and the caller waits
+    at most ``deadline`` seconds for it, so series() returns or raises within the deadline
+    (plus scheduling) even when a read, DNS lookup or parse blocks. An abandoned worker is a
+    daemon; its chunk checks and request timeouts (capped at the time left) end it within one
+    more read. Every
     vendor or parse failure raises MacroProviderError, including a body that is not a fredgraph
     CSV but came with HTTP 200 (FRED's HTML maintenance page).
     """
@@ -63,11 +68,39 @@ class FredProvider:
         if not unique:
             return pd.DataFrame(index=pd.DatetimeIndex([], dtype="datetime64[ns]"), dtype="float64")
         expires = self._clock() + self._deadline
-        found = {series_id: self._series(series_id, expires) for series_id in unique}
+        found = self._within_deadline(unique, expires)
         frame = pd.DataFrame(found, dtype="float64").sort_index()
         index = pd.DatetimeIndex(frame.index)
         rows = (index >= pd.Timestamp(start)) & (index <= pd.Timestamp(end))
         return frame.loc[rows, unique].rename_axis(index=None, columns=None)
+
+    def _within_deadline(self, ids: list[str], expires: float) -> dict[str, pd.Series]:
+        """Fetch and parse every id in a worker thread, giving up when the deadline passes.
+
+        The watchdog is what makes the deadline hard: a single ``get`` or ``iter_content`` step may
+        perform many socket reads (each resetting the per-read timeout) and DNS has no timeout.
+        An abandoned worker is a daemon, and its own deadline checks and capped read timeouts end
+        it within one further read.
+        """
+        done = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def work() -> None:
+            try:
+                outcome["found"] = {sid: self._series(sid, expires) for sid in ids}
+            except BaseException as exc:  # noqa: BLE001 - re-raised in the caller
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=work, name=WORKER_NAME, daemon=True).start()
+        if not done.wait(self._deadline):
+            names = ", ".join(FREDGRAPH_URL.format(id=sid) for sid in ids)
+            raise MacroProviderError(f"{names}: exceeded the {self._deadline:g}s total deadline")
+        if "error" in outcome:
+            raise outcome["error"]
+        found: dict[str, pd.Series] = outcome["found"]
+        return found
 
     def _series(self, series_id: str, expires: float) -> pd.Series:
         url = FREDGRAPH_URL.format(id=series_id)
@@ -112,7 +145,10 @@ class FredProvider:
         for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
             chunks.append(chunk)
             self._remaining(url, expires)
-        return b"".join(chunks).decode("utf-8")
+        try:
+            return b"".join(chunks).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise MacroProviderError(f"{url}: body is not valid UTF-8: {exc}") from exc
 
 
 def _parse(text: str, series_id: str, url: str) -> pd.Series:

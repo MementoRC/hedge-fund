@@ -252,6 +252,38 @@ def test_rows_on_or_after_as_of_are_not_counted() -> None:
     assert f"has {MIN_PAIRS} finite observations" in problem
 
 
+def test_an_inf_in_the_series_acts_like_a_missing_day() -> None:
+    macro = _macro()
+    closes = _closes(macro, {"R": (0.02, 0.0)})
+    with_nan = macro[RATE_SERIES].copy()
+    with_nan.iloc[100] = math.nan
+    with_inf = macro[RATE_SERIES].copy()
+    with_inf.iloc[100] = math.inf
+    expected = macro_beta(closes, with_nan, AS_OF)
+    assert np.isfinite(expected["R"])
+    pd.testing.assert_series_equal(macro_beta(closes, with_inf, AS_OF), expected)
+    with_inf.iloc[100] = -math.inf
+    pd.testing.assert_series_equal(macro_beta(closes, with_inf, AS_OF), expected)
+
+
+def test_a_nullable_series_with_na_is_handled() -> None:
+    macro = _macro()
+    closes = _closes(macro, {"R": (0.02, 0.0)})
+    plain = macro[RATE_SERIES].copy()
+    plain.iloc[100] = math.nan
+    nullable = plain.astype("Float64")
+    assert nullable.isna().iloc[100]
+    pd.testing.assert_series_equal(
+        macro_beta(closes, nullable, AS_OF), macro_beta(closes, plain, AS_OF)
+    )
+    assert macro_series_problem(nullable, AS_OF) is None
+    short = _walk(MIN_PAIRS).astype("Float64")
+    short.iloc[0] = pd.NA
+    problem = macro_series_problem(short, AS_OF)
+    assert problem is not None
+    assert f"has {MIN_PAIRS - 1} finite observations" in problem
+
+
 def test_a_constant_series_gives_nan() -> None:
     macro = _macro()
     closes = _closes(macro, {"R": (0.02, 0.0)})

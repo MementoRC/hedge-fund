@@ -40,13 +40,14 @@ class MacroFactorSpec:
 def macro_beta(closes: pd.DataFrame, series: pd.Series, as_of: date) -> pd.Series:
     """OLS slope of each ticker's daily log returns on ``series``' daily changes before ``as_of``.
 
-    Per ticker, its non-NaN closes are intersected with the non-NaN series dates, and returns
+    Per ticker, its non-NaN closes are intersected with the finite series dates (NaN and inf
+    are missing days), and returns
     and changes are taken over consecutive rows of that intersection. NaN when fewer than
     MIN_PAIRS returns pair up, or when the series does not move.
     """
     cut = pd.Timestamp(as_of)
     window = _as_ns(closes.loc[closes.index < cut])
-    known = _as_ns(series.loc[series.index < cut].dropna())
+    known = _as_ns(_finite(series.loc[series.index < cut]))
     return pd.Series(
         {ticker: _slope(window[ticker].dropna(), known) for ticker in window.columns},
         index=window.columns,
@@ -66,7 +67,7 @@ def macro_series_problem(series: pd.Series, as_of: date) -> str | None:
     what fails for every ticker.
     """
     cut = pd.Timestamp(as_of)
-    values = series.loc[series.index < cut].to_numpy(dtype="float64")
+    values = _to_float(series.loc[series.index < cut])
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         return f"has no finite value before {as_of}"
@@ -75,6 +76,17 @@ def macro_series_problem(series: pd.Series, as_of: date) -> str | None:
     if (finite == finite[0]).all():
         return f"is constant before {as_of}"
     return None
+
+
+def _to_float(series: pd.Series) -> np.ndarray:
+    """Values as float64 with missing entries (NaN or pd.NA) as NaN."""
+    values: np.ndarray = series.to_numpy(dtype="float64", na_value=np.nan)
+    return values
+
+
+def _finite(series: pd.Series) -> pd.Series:
+    """``series`` without NaN, pd.NA and +-inf: a non-finite value is a missing day."""
+    return series.loc[np.isfinite(_to_float(series))]
 
 
 def _as_ns[T: (pd.Series, pd.DataFrame)](frame: T) -> T:

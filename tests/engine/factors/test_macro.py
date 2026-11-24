@@ -17,6 +17,7 @@ from hedge_fund.engine.factors.macro import (
     MIN_PAIRS,
     MacroFactorSpec,
     macro_beta,
+    macro_series_problem,
     rate_beta,
     riskoff_beta,
 )
@@ -202,6 +203,85 @@ def test_a_near_constant_series_gives_nan() -> None:
     assert math.isnan(macro_beta(closes, near_flat, AS_OF)["R"])
     residue = pd.Series(0.1 + 0.2, index=macro.index)
     assert math.isnan(macro_beta(closes, residue, AS_OF)["R"])
+
+
+def _walk(count: int) -> pd.Series:
+    """``count`` strictly varying values on the business days ending before AS_OF."""
+    index = pd.bdate_range(end=pd.Timestamp(AS_OF) - pd.Timedelta(days=1), periods=count)
+    return pd.Series(np.arange(count, dtype="float64") ** 1.5, index=index)
+
+
+def test_a_series_with_min_pairs_plus_one_observations_has_no_problem() -> None:
+    assert macro_series_problem(_walk(MIN_PAIRS + 1), AS_OF) is None
+
+
+def test_a_series_with_min_pairs_observations_is_a_problem() -> None:
+    problem = macro_series_problem(_walk(MIN_PAIRS), AS_OF)
+    assert problem is not None
+    assert f"has {MIN_PAIRS} finite observations" in problem
+    assert f"needs {MIN_PAIRS + 1}" in problem
+
+
+def test_a_constant_series_is_a_problem() -> None:
+    flat = pd.Series(4.0, index=_walk(MIN_PAIRS + 50).index)
+    assert macro_series_problem(flat, AS_OF) == f"is constant before {AS_OF}"
+
+
+def test_a_series_without_a_finite_value_is_a_problem() -> None:
+    empty = pd.Series(math.nan, index=_walk(MIN_PAIRS + 50).index)
+    assert macro_series_problem(empty, AS_OF) == f"has no finite value before {AS_OF}"
+
+
+def test_inf_and_nan_are_not_counted_as_observations() -> None:
+    series = _walk(MIN_PAIRS + 2)
+    series.iloc[0] = math.nan
+    assert macro_series_problem(series, AS_OF) is None
+    series.iloc[1] = math.inf
+    problem = macro_series_problem(series, AS_OF)
+    assert problem is not None
+    assert f"has {MIN_PAIRS} finite observations" in problem
+
+
+def test_rows_on_or_after_as_of_are_not_counted() -> None:
+    series = _walk(MIN_PAIRS)
+    later = pd.Series(
+        [1.0, 2.0], index=[pd.Timestamp(AS_OF), pd.Timestamp(AS_OF) + pd.Timedelta(days=1)]
+    )
+    problem = macro_series_problem(pd.concat([series, later]), AS_OF)
+    assert problem is not None
+    assert f"has {MIN_PAIRS} finite observations" in problem
+
+
+def test_an_inf_in_the_series_acts_like_a_missing_day() -> None:
+    macro = _macro()
+    closes = _closes(macro, {"R": (0.02, 0.0)})
+    with_nan = macro[RATE_SERIES].copy()
+    with_nan.iloc[100] = math.nan
+    with_inf = macro[RATE_SERIES].copy()
+    with_inf.iloc[100] = math.inf
+    expected = macro_beta(closes, with_nan, AS_OF)
+    assert np.isfinite(expected["R"])
+    pd.testing.assert_series_equal(macro_beta(closes, with_inf, AS_OF), expected)
+    with_inf.iloc[100] = -math.inf
+    pd.testing.assert_series_equal(macro_beta(closes, with_inf, AS_OF), expected)
+
+
+def test_a_nullable_series_with_na_is_handled() -> None:
+    macro = _macro()
+    closes = _closes(macro, {"R": (0.02, 0.0)})
+    plain = macro[RATE_SERIES].copy()
+    plain.iloc[100] = math.nan
+    nullable = plain.astype("Float64")
+    assert nullable.isna().iloc[100]
+    pd.testing.assert_series_equal(
+        macro_beta(closes, nullable, AS_OF), macro_beta(closes, plain, AS_OF)
+    )
+    assert macro_series_problem(nullable, AS_OF) is None
+    short = _walk(MIN_PAIRS).astype("Float64")
+    short.iloc[0] = pd.NA
+    problem = macro_series_problem(short, AS_OF)
+    assert problem is not None
+    assert f"has {MIN_PAIRS - 1} finite observations" in problem
 
 
 def test_a_constant_series_gives_nan() -> None:

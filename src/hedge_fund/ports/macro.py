@@ -11,8 +11,9 @@ import pandas as pd
 
 class MacroProviderError(Exception):
     """A vendor, transport or parse failure while fetching macro series, or a fetched frame the
-    caller rejects as unusable (empty, a required series missing or without a finite value
-    before the cut)."""
+    caller rejects as unusable (empty, a required series missing, without a finite value
+    before the cut, with too few finite observations before the cut for any ticker to pair
+    up enough returns, or constant over them)."""
 
 
 class MacroProvider(Protocol):

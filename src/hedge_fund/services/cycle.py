@@ -11,7 +11,6 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-import numpy as np
 import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
@@ -41,6 +40,7 @@ from hedge_fund.engine.execution import (
     prepare_submission,
     session_opened,
 )
+from hedge_fund.engine.factors.macro import macro_series_problem
 from hedge_fund.engine.factors.score import score
 from hedge_fund.engine.ledger.deadline import fill_deadline
 from hedge_fund.engine.ledger.open_order import is_open
@@ -450,26 +450,25 @@ class PlanData:
 
 
 def _require_usable_macro(macro: pd.DataFrame, as_of: date) -> None:
-    """Raise MacroProviderError unless the rate and risk-off series each have a finite value
-    dated strictly before ``as_of`` (the engine's point-in-time cut)."""
+    """Raise MacroProviderError unless the rate and risk-off series can give a beta for some
+    ticker: see ``macro_series_problem`` (too few finite values before ``as_of``, or constant)."""
     if macro.empty:
         raise MacroProviderError("macro frame is empty")
-    cutoff = pd.Timestamp(as_of)
     for name in (RATE_SERIES, RISKOFF_SERIES):
         if name not in macro.columns:
             raise MacroProviderError(f"macro series {name} is missing")
-        known = macro.loc[macro.index < cutoff, name].astype("float64")
-        if not np.isfinite(known).any():
-            raise MacroProviderError(f"macro series {name} has no finite value before {as_of}")
+        reason = macro_series_problem(macro[name], as_of)
+        if reason is not None:
+            raise MacroProviderError(f"macro series {name} {reason}")
 
 
 def plan_data(deps: CycleDeps, as_of: date) -> PlanData:
     """Step 4: prices for the universe, the macro series over the same calendar window, then
     fundamentals for the names that have prices.
 
-    A macro fetch failure or an unusable macro frame (empty, a required series missing or
-    without a value before ``as_of``) raises MacroProviderError: the cycle fails, with no
-    fallback.
+    A macro fetch failure or an unusable macro frame (empty, a required series missing,
+    without enough finite values before ``as_of``, or constant) raises MacroProviderError:
+    the cycle fails, with no fallback.
     """
     prices = build_snapshot(deps.prices, deps.universe.tickers, as_of)
     macro = deps.macro.series(MACRO_SERIES, as_of - calendar_window(LOOKBACK_ROWS), as_of)

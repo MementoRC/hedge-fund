@@ -24,8 +24,12 @@ DATE_HEADERS = ("observation_date", "DATE")  # FRED's current header and its leg
 MISSING_VALUE = "."
 MAX_RETRIES = 3
 BACKOFF_SECONDS = 1.0  # 1 s, 2 s, 4 s
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 30  # per socket read only: a trickling server resets it with every byte
+TOTAL_DEADLINE = 60.0  # wall-clock cap per series() call, over every id, retry and backoff sleep
+CHUNK_SIZE = 8192
 
+# requests.get-compatible: called as get(url, timeout=..., stream=True); the response must offer
+# status_code, iter_content(chunk_size=...) yielding bytes, and close().
 HttpGet = Callable[..., Any]
 
 
@@ -33,8 +37,12 @@ class FredProvider:
     """FRED series as float columns by observation date; FRED's "." (no value) is NaN.
 
     HTTP 429, 5xx, timeouts and connection errors are retried MAX_RETRIES times with
-    exponential backoff. Every vendor or parse failure raises MacroProviderError, including a
-    body that is not a fredgraph CSV but came with HTTP 200 (FRED's HTML maintenance page).
+    exponential backoff. One ``deadline`` (seconds, default TOTAL_DEADLINE) bounds a whole
+    series() call, bodies read in chunks and backoff sleeps included; expiry raises
+    MacroProviderError and is not retried. Each request's socket timeout is capped at the time
+    left, so the total time is bounded by the deadline plus at most one in-flight read. Every
+    vendor or parse failure raises MacroProviderError, including a body that is not a fredgraph
+    CSV but came with HTTP 200 (FRED's HTML maintenance page).
     """
 
     def __init__(
@@ -42,45 +50,69 @@ class FredProvider:
         *,
         get: HttpGet | None = None,
         sleep: Callable[[float], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        deadline: float = TOTAL_DEADLINE,
     ) -> None:
         self._get: HttpGet = get if get is not None else requests.get
         self._sleep = sleep if sleep is not None else time.sleep
+        self._clock = clock
+        self._deadline = deadline
 
     def series(self, ids: Sequence[str], start: date, end: date) -> pd.DataFrame:
         unique = list(dict.fromkeys(ids))
         if not unique:
             return pd.DataFrame(index=pd.DatetimeIndex([], dtype="datetime64[ns]"), dtype="float64")
-        found = {series_id: self._series(series_id) for series_id in unique}
+        expires = self._clock() + self._deadline
+        found = {series_id: self._series(series_id, expires) for series_id in unique}
         frame = pd.DataFrame(found, dtype="float64").sort_index()
         index = pd.DatetimeIndex(frame.index)
         rows = (index >= pd.Timestamp(start)) & (index <= pd.Timestamp(end))
         return frame.loc[rows, unique].rename_axis(index=None, columns=None)
 
-    def _series(self, series_id: str) -> pd.Series:
+    def _series(self, series_id: str, expires: float) -> pd.Series:
         url = FREDGRAPH_URL.format(id=series_id)
-        return _parse(self._fetch(url), series_id, url)
+        return _parse(self._fetch(url, expires), series_id, url)
 
-    def _fetch(self, url: str) -> str:
-        """The body at ``url``, retrying transient failures."""
+    def _remaining(self, url: str, expires: float) -> float:
+        """Seconds left before ``expires``; raises once none are left."""
+        remaining = expires - self._clock()
+        if remaining <= 0:
+            raise MacroProviderError(f"{url}: exceeded the {self._deadline:g}s total deadline")
+        return remaining
+
+    def _fetch(self, url: str, expires: float) -> str:
+        """The body at ``url``, retrying transient failures until ``expires``."""
         failure = ""
         for attempt in range(MAX_RETRIES + 1):
+            remaining = self._remaining(url, expires)
             if attempt:
-                self._sleep(BACKOFF_SECONDS * 2 ** (attempt - 1))
+                self._sleep(min(BACKOFF_SECONDS * 2 ** (attempt - 1), remaining))
+                remaining = self._remaining(url, expires)
             try:
-                response = self._get(url, timeout=REQUEST_TIMEOUT)
+                response = self._get(url, timeout=min(REQUEST_TIMEOUT, remaining), stream=True)
+                try:
+                    status = response.status_code
+                    if status == 429 or status >= 500:
+                        failure = f"HTTP {status}"
+                        continue
+                    if status != 200:
+                        raise MacroProviderError(f"{url}: HTTP {status}")
+                    return self._read(response, url, expires)
+                finally:
+                    response.close()
             except (requests.Timeout, requests.ConnectionError) as exc:
                 failure = f"{type(exc).__name__}: {exc}"
-                continue
             except requests.RequestException as exc:
                 raise MacroProviderError(f"{url}: {exc}") from exc
-            status = response.status_code
-            if status == 429 or status >= 500:
-                failure = f"HTTP {status}"
-                continue
-            if status != 200:
-                raise MacroProviderError(f"{url}: HTTP {status}")
-            return str(response.text)
         raise MacroProviderError(f"{url}: {failure}; gave up after {MAX_RETRIES} retries")
+
+    def _read(self, response: Any, url: str, expires: float) -> str:
+        """The UTF-8 body of a streamed ``response``, checking ``expires`` after every chunk."""
+        chunks: list[bytes] = []
+        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+            chunks.append(chunk)
+            self._remaining(url, expires)
+        return b"".join(chunks).decode("utf-8")
 
 
 def _parse(text: str, series_id: str, url: str) -> pd.Series:

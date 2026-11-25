@@ -5,6 +5,7 @@ from datetime import date
 
 import pytest
 
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.research import NameResearch, Rating, ResearchResult, RunRecord, Verdict
 from hedge_fund.domain.shortlist import Candidate, Side
 
@@ -81,3 +82,9 @@ def test_research_types_are_frozen() -> None:
         name.valid = 2  # type: ignore[misc]
     with pytest.raises(dataclasses.FrozenInstanceError):
         result.names = ()  # type: ignore[misc]
+
+
+def test_run_record_usage_defaults_to_none() -> None:
+    assert _run(Rating.BUY).usage is None
+    usage = (ModelUsage("m", 1, 10, 5, 0, 0),)
+    assert dataclasses.replace(_run(Rating.BUY), usage=usage).usage == usage

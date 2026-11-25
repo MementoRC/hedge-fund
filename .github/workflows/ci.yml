@@ -21,7 +21,7 @@ jobs:
     with:
       pixi-environment: "ci"
       pixi-version: "v0.74.0"
-      python-versions: '["3.11", "3.12"]'
+      python-versions: '["3.12"]'
       os-matrix: '["ubuntu-latest"]'
       enable-performance: false
       enable-hygiene-check: true

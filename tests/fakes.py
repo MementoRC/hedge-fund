@@ -2,15 +2,29 @@
 
 import threading
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import UTC, date
+from decimal import Decimal
 from typing import Any
 
 import pandas as pd
 
 from hedge_fund.domain.account import AccountSnapshot
+from hedge_fund.domain.attribution import AttributionReport
+from hedge_fund.domain.cost import ModelUsage
+from hedge_fund.domain.cycle import CycleReport
 from hedge_fund.domain.execution import Account, OrderRequest, SubmitResult, SubmitStatus
+from hedge_fund.domain.ledger import (
+    Fill,
+    OpeningEntry,
+    OrderState,
+    OrderStatus,
+    ReportLoad,
+    SettlementReport,
+    Split,
+)
 from hedge_fund.domain.orders import Holding
-from hedge_fund.domain.research import Rating, RunRecord
+from hedge_fund.domain.research import Rating, ResearchResult, RunRecord
+from hedge_fund.domain.verification import VerificationReport
 
 
 class FakeProvider:
@@ -19,10 +33,17 @@ class FakeProvider:
     Tests may replace `frame` between calls to simulate vendor restatements.
     """
 
-    def __init__(self, frame: pd.DataFrame, sectors: Mapping[str, str | None]) -> None:
+    def __init__(
+        self,
+        frame: pd.DataFrame,
+        sectors: Mapping[str, str | None],
+        splits: Sequence[Split] = (),
+    ) -> None:
         self.frame = frame
         self.sector_map = dict(sectors)
+        self.split_list = tuple(splits)
         self.closes_calls: list[tuple[tuple[str, ...], date, date]] = []
+        self.splits_calls: list[tuple[tuple[str, ...], date, date]] = []
         self.sectors_calls: list[tuple[str, ...]] = []
 
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
@@ -30,6 +51,15 @@ class FakeProvider:
         self.closes_calls.append((requested, start, end))
         window = self.frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
         return window.reindex(columns=list(requested))
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        requested = tuple(tickers)
+        self.splits_calls.append((requested, start, end))
+        return tuple(
+            split
+            for split in self.split_list
+            if split.ticker in requested and start < split.ex_date <= end
+        )
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         requested = tuple(tickers)
@@ -51,6 +81,26 @@ class FakeFundamentalsProvider:
         requested = tuple(tickers)
         self.calls.append(requested)
         return self.frame.loc[self.frame["ticker"].isin(requested)].reset_index(drop=True)
+
+
+class FakeMacroProvider:
+    """MacroProvider serving a canned macro frame, recording every call.
+
+    ``series`` raises ``error`` instead when it is set (a plain attribute a test may change).
+    """
+
+    def __init__(self, frame: pd.DataFrame, *, error: Exception | None = None) -> None:
+        self.frame = frame
+        self.error = error
+        self.calls: list[tuple[tuple[str, ...], date, date]] = []
+
+    def series(self, ids: Sequence[str], start: date, end: date) -> pd.DataFrame:
+        requested = tuple(ids)
+        self.calls.append((requested, start, end))
+        if self.error is not None:
+            raise self.error
+        window = self.frame.loc[pd.Timestamp(start) : pd.Timestamp(end)]
+        return window.reindex(columns=list(requested))
 
 
 class RecordingDownload:
@@ -93,17 +143,19 @@ def assert_closes_equal(actual: pd.DataFrame, expected: pd.DataFrame) -> None:
 class ScriptedResearcher:
     """Researcher returning a scripted Rating (or raising) per (ticker, run_index).
 
-    Unscripted runs return `default`. Safe to call from several threads; every call is
-    recorded in `calls`.
+    Unscripted runs return `default`. Every record carries `usage` (a plain attribute a test
+    may change). Safe to call from several threads; every call is recorded in `calls`.
     """
 
     def __init__(
         self,
         script: Mapping[tuple[str, int], Rating | BaseException] | None = None,
         default: Rating = Rating.HOLD,
+        usage: tuple[ModelUsage, ...] | None = None,
     ) -> None:
         self.script = dict(script or {})
         self.default = default
+        self.usage = usage
         self.calls: list[tuple[str, date, int]] = []
         self._lock = threading.Lock()
 
@@ -122,11 +174,27 @@ class ScriptedResearcher:
             reports={},
             seconds=0.5,
             error=None,
+            usage=self.usage,
         )
 
 
 SCRIPTED_REJECTION = "scripted rejection"
 BROKER_STATUSES = frozenset({SubmitStatus.ACCEPTED, SubmitStatus.DUPLICATE, SubmitStatus.REJECTED})
+
+
+def not_found(client_order_id: str) -> OrderStatus:
+    """The NOT_FOUND status a broker reports for an id it has never seen."""
+    return OrderStatus(
+        client_order_id=client_order_id,
+        state=OrderState.NOT_FOUND,
+        broker_order_id=None,
+        ticker=None,
+        side=None,
+        filled_shares=Decimal(0),
+        avg_price=None,
+        filled_at=None,
+        broker_state=None,
+    )
 
 
 class ScriptedBroker:
@@ -137,6 +205,8 @@ class ScriptedBroker:
     submitted id is appended to ``submitted``, including ids whose script raises.
     ``account()`` and ``positions()`` raise ``account_error`` / ``positions_error`` when
     set; like ``equity`` and ``holdings`` they are plain attributes a test may change.
+    ``order_status`` returns the status scripted in ``orders`` (or raises it), else
+    ``not_found(id)``; every looked-up id is appended to ``looked_up``.
     """
 
     def __init__(
@@ -147,6 +217,7 @@ class ScriptedBroker:
         holdings: tuple[Holding, ...] = (),
         account_error: Exception | None = None,
         positions_error: Exception | None = None,
+        orders: Mapping[str, OrderStatus | BaseException] | None = None,
     ) -> None:
         self.script = dict(script or {})
         for outcome in self.script.values():
@@ -160,6 +231,8 @@ class ScriptedBroker:
         self.account_error = account_error
         self.positions_error = positions_error
         self.submitted: list[str] = []
+        self.orders = dict(orders or {})
+        self.looked_up: list[str] = []
 
     def account(self) -> Account:
         if self.account_error is not None:
@@ -187,6 +260,15 @@ class ScriptedBroker:
             broker_order_id=f"b-{client_order_id}",
             reason=None,
         )
+
+    def order_status(self, client_order_id: str) -> OrderStatus:
+        self.looked_up.append(client_order_id)
+        outcome = self.orders.get(client_order_id)
+        if outcome is None:
+            return not_found(client_order_id)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 class ScriptedApprovalGate:
@@ -229,3 +311,177 @@ class InMemorySnapshotStore:
         if self.fail_on_read is not None:
             raise self.fail_on_read
         return tuple(self.saved)
+
+
+class InMemoryResearchStore:
+    """ResearchStore keeping results in ``saved``, in save order; ``save`` appends.
+
+    ``load`` returns the last saved result for the date (None if there is none) and
+    records the date in ``loaded``. ``dates`` returns the sorted unique ``as_of`` of the saved
+    results (it does not record in ``loaded``).
+    """
+
+    def __init__(self, results: Sequence[ResearchResult] = ()) -> None:
+        self.saved = list(results)
+        self.loaded: list[date] = []
+
+    def save(self, result: ResearchResult) -> None:
+        self.saved.append(result)
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        self.loaded.append(as_of)
+        matches = [result for result in self.saved if result.as_of == as_of]
+        return matches[-1] if matches else None
+
+    def dates(self) -> tuple[date, ...]:
+        return tuple(sorted({result.as_of for result in self.saved}))
+
+
+class InMemoryReportStore:
+    """CycleReportStore keeping reports in ``saved``, in save order.
+
+    ``save`` raises ``fail`` instead, keeping nothing, when it is set. Like
+    JsonCycleReportStore, whose file is named ``<as_of>_<HHMMSS>.json`` (UTC), it raises
+    FileExistsError, keeping the first, for a report whose ``as_of`` and ``started_at``
+    second were already saved. ``load_all`` returns the saved reports sorted by
+    ``started_at`` and ``unreadable`` (a plain attribute).
+    """
+
+    def __init__(
+        self, reports: Sequence[CycleReport] = (), *, fail: Exception | None = None
+    ) -> None:
+        self.saved = list(reports)
+        self.fail = fail
+        self.unreadable: dict[str, str] = {}
+
+    def save(self, report: CycleReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for a cycle started in this second exists")
+        self.saved.append(report)
+
+    @staticmethod
+    def _name(report: CycleReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.as_of.isoformat()}_{stamp}"
+
+    def load_all(self) -> ReportLoad:
+        reports = tuple(sorted(self.saved, key=lambda report: report.started_at))
+        return ReportLoad(reports=reports, unreadable=dict(self.unreadable))
+
+
+class InMemoryFillStore:
+    """FillStore keeping fills in ``saved``, in save order.
+
+    ``save`` raises FileExistsError for an id already saved, keeping the first; ``load_all``
+    raises ``load_error`` when it is set.
+    """
+
+    def __init__(self, fills: Sequence[Fill] = (), *, load_error: Exception | None = None) -> None:
+        self.saved = list(fills)
+        self.load_error = load_error
+
+    def save(self, fill: Fill) -> None:
+        if any(saved.client_order_id == fill.client_order_id for saved in self.saved):
+            raise FileExistsError(f"fill {fill.client_order_id!r} is already recorded")
+        self.saved.append(fill)
+
+    def load_all(self) -> tuple[Fill, ...]:
+        if self.load_error is not None:
+            raise self.load_error
+        return tuple(self.saved)
+
+
+class StaticOpeningBalance:
+    """OpeningBalance returning ``entries``, or raising ``error`` when it is set."""
+
+    def __init__(
+        self, entries: Sequence[OpeningEntry] = (), *, error: Exception | None = None
+    ) -> None:
+        self.entries = tuple(entries)
+        self.error = error
+
+    def load(self) -> tuple[OpeningEntry, ...]:
+        if self.error is not None:
+            raise self.error
+        return self.entries
+
+
+class InMemorySettlementStore:
+    """SettlementReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set.
+
+    Like JsonSettlementReportStore, whose file is named ``<as_of>_<HHMMSS>.json`` (UTC),
+    ``save`` raises FileExistsError for a report whose ``as_of`` and ``started_at`` second
+    were already saved.
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[SettlementReport] = []
+        self.fail = fail
+
+    def save(self, report: SettlementReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for a settle started in this second exists")
+        self.saved.append(report)
+
+    @staticmethod
+    def _name(report: SettlementReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.as_of.isoformat()}_{stamp}"
+
+
+class InMemoryAttributionStore:
+    """AttributionReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set.
+
+    Like JsonAttributionReportStore, whose file is named ``<start>_<end>_<HHMMSS>.json``
+    (UTC), ``save`` raises FileExistsError for a report whose window and ``started_at``
+    second were already saved.
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[AttributionReport] = []
+        self.fail = fail
+
+    def save(self, report: AttributionReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for this window and second exists")
+        self.saved.append(report)
+
+    @staticmethod
+    def _name(report: AttributionReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.start}_{report.end}_{stamp}"
+
+
+class InMemoryVerificationStore:
+    """VerificationReportStore keeping reports in ``saved``; ``save`` raises ``fail`` when set.
+
+    Like JsonVerificationReportStore, whose file is named ``<start>_<end>_<HHMMSS>.json``
+    (UTC), ``save`` raises FileExistsError for a report whose window and ``started_at``
+    second were already saved.
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.saved: list[VerificationReport] = []
+        self.fail = fail
+
+    def save(self, report: VerificationReport) -> None:
+        if self.fail is not None:
+            raise self.fail
+        name = self._name(report)
+        if any(self._name(saved) == name for saved in self.saved):
+            raise FileExistsError(f"{name}: a report for this window and second exists")
+        self.saved.append(report)
+
+    @staticmethod
+    def _name(report: VerificationReport) -> str:
+        stamp = report.started_at.astimezone(UTC).strftime("%H%M%S")
+        return f"{report.start}_{report.end}_{stamp}"

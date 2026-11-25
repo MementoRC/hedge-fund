@@ -27,6 +27,25 @@ class FundamentalFactorSpec:
     sign: int
 
 
+def derive_metrics(metrics: pd.DataFrame) -> pd.DataFrame:
+    """Copy of ``metrics`` with untagged ``total_liabilities`` and ``gross_profit`` derived.
+
+    ``total_liabilities`` falls back to ``liabilities_and_equity - stockholders_equity`` and
+    ``gross_profit`` to ``revenue - cost_of_revenue``. Only NaN entries are filled, so a tagged
+    value always wins; a derivation is NaN when either input is NaN. ``stockholders_equity``
+    maps to the parent-only ``StockholdersEquity`` tag when present (the total-equity tag is
+    only its fallback), so derived liabilities then include noncontrolling interest.
+    """
+    derived = metrics.copy()
+    derived["total_liabilities"] = metrics["total_liabilities"].fillna(
+        metrics["liabilities_and_equity"] - metrics["stockholders_equity"]
+    )
+    derived["gross_profit"] = metrics["gross_profit"].fillna(
+        metrics["revenue"] - metrics["cost_of_revenue"]
+    )
+    return derived
+
+
 def _positive(values: pd.Series) -> pd.Series:
     """``values`` with entries <= 0 (and NaN) as NaN, so they are safe as a denominator."""
     return values.where(values > 0)

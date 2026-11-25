@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -16,7 +17,9 @@ from hedge_fund.engine.factors.fundamental import (
     FUNDAMENTAL_FACTORS,
     FundamentalFactorSpec,
     FundamentalInputs,
+    derive_metrics,
 )
+from hedge_fund.engine.factors.macro import MACRO_FACTORS, MacroFactorSpec
 from hedge_fund.engine.factors.normalize import sector_zscore, winsorize
 from hedge_fund.engine.factors.quality import DEFAULT_GATES, QualityGates, altman_z, piotroski
 
@@ -29,23 +32,30 @@ def score(
     factors: Sequence[FactorSpec] = FACTORS,
     fundamental_factors: Sequence[FundamentalFactorSpec] = FUNDAMENTAL_FACTORS,
     quality_gates: QualityGates | None = DEFAULT_GATES,
+    macro: pd.DataFrame | None = None,
+    macro_factors: Sequence[MacroFactorSpec] = MACRO_FACTORS,
 ) -> ScoreResult:
     """Score every ticker in ``snapshot`` on price factors.
 
     When ``fundamentals`` is given, also score on ``fundamental_factors`` (ignored when None)
     and, unless ``quality_gates`` is None, exclude tickers failing the Piotroski / Altman
     gates (``nonfinite_quality``, ``low_piotroski``, ``altman_distress``) before z-scoring.
-    Unscorable tickers land in ``excluded``, including ``missing_fundamentals`` for tickers
-    with no row in the fundamentals snapshot. Raises ValueError on empty factors, an
-    ``as_of`` mismatch, or duplicate factor names.
+    When ``macro`` (FRED series by observation date) is given, also score on
+    ``macro_factors`` (ignored when None) over the unfilled window, cut at ``as_of``.
+    Factors are ordered price, fundamental, macro. Unscorable tickers land in ``excluded``,
+    including ``missing_fundamentals`` for tickers with no row in the fundamentals snapshot.
+    Raises ValueError on empty factors, an ``as_of`` mismatch, or duplicate factor names.
     """
     active: Sequence[FundamentalFactorSpec] = ()
     if fundamentals is not None:
         active = fundamental_factors
-    signs = _signs(snapshot, fundamentals, factors, active)
+    macro_active = macro_factors if macro is not None else ()
+    signs = _signs(snapshot, fundamentals, factors, active, macro_active)
     names = list(signs)
 
-    window_size = max(spec.min_history for spec in factors)
+    # macro history counts toward the window only when macro is given (macro_active is empty)
+    timed: tuple[FactorSpec | MacroFactorSpec, ...] = (*factors, *macro_active)
+    window_size = max(spec.min_history for spec in timed)
     window = snapshot.closes.iloc[-window_size:]
 
     excluded: dict[str, str] = {}
@@ -61,7 +71,12 @@ def score(
 
     filled = window[scorable].ffill()
     inputs = None if fundamentals is None else _fundamental_inputs(fundamentals, filled)
-    raw = _raw_frame(filled, inputs, factors, active)
+    macro_raw = (
+        _macro_raw(window[scorable], macro, snapshot.as_of, macro_active)
+        if macro is not None
+        else None
+    )
+    raw = _raw_frame(filled, inputs, factors, active, macro_raw)
     finite = np.isfinite(raw).all(axis=1)
     for ticker in raw.index[~finite]:
         excluded[ticker] = "nonfinite_factor"
@@ -109,27 +124,34 @@ def _signs(
     fundamentals: FundamentalsSnapshot | None,
     factors: Sequence[FactorSpec],
     active: Sequence[FundamentalFactorSpec],
+    macro_active: Sequence[MacroFactorSpec],
 ) -> dict[str, int]:
-    """Validate the inputs; return the sign of every scored factor, price factors first."""
+    """Validate the inputs; return the sign of every scored factor: price, fundamental, macro."""
     if not factors:
         raise ValueError("score needs at least one factor")
     if fundamentals is not None and fundamentals.as_of != snapshot.as_of:
         raise ValueError(
             f"fundamentals as_of {fundamentals.as_of} != snapshot as_of {snapshot.as_of}"
         )
-    names = [spec.name for spec in factors] + [spec.name for spec in active]
+    specs: tuple[FactorSpec | FundamentalFactorSpec | MacroFactorSpec, ...] = (
+        *factors,
+        *active,
+        *macro_active,
+    )
+    names = [spec.name for spec in specs]
     if len(set(names)) != len(names):
         raise ValueError(f"duplicate factor names: {names}")
-    return {spec.name: spec.sign for spec in factors} | {spec.name: spec.sign for spec in active}
+    return {spec.name: spec.sign for spec in specs}
 
 
 def _fundamental_inputs(
     fundamentals: FundamentalsSnapshot, filled: pd.DataFrame
 ) -> FundamentalInputs:
-    """Fundamentals reindexed to the scorable tickers, plus the last forward-filled close."""
+    """Fundamentals reindexed to the scorable tickers, with derived metrics filled in, plus the
+    last forward-filled close."""
     return FundamentalInputs(
-        current=fundamentals.current.reindex(filled.columns),
-        prior=fundamentals.prior.reindex(filled.columns),
+        current=derive_metrics(fundamentals.current.reindex(filled.columns)),
+        prior=derive_metrics(fundamentals.prior.reindex(filled.columns)),
         close=filled.iloc[-1],
     )
 
@@ -139,15 +161,27 @@ def _raw_frame(
     inputs: FundamentalInputs | None,
     factors: Sequence[FactorSpec],
     active: Sequence[FundamentalFactorSpec],
+    macro_raw: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """Raw value per scorable ticker (rows) and factor (columns, price factors first)."""
+    """Raw value per scorable ticker (rows) and factor (columns: price, fundamental, macro)."""
     price_raw = pd.DataFrame({spec.name: spec.fn(filled) for spec in factors})
-    if inputs is None:
-        return price_raw
-    fundamental_raw = pd.DataFrame(
-        {spec.name: spec.fn(inputs) for spec in active}, index=price_raw.index
+    frames = [price_raw]
+    if inputs is not None:
+        frames.append(
+            pd.DataFrame({spec.name: spec.fn(inputs) for spec in active}, index=price_raw.index)
+        )
+    if macro_raw is not None:
+        frames.append(macro_raw)
+    return pd.concat(frames, axis=1)
+
+
+def _macro_raw(
+    closes: pd.DataFrame, macro: pd.DataFrame, as_of: date, specs: Sequence[MacroFactorSpec]
+) -> pd.DataFrame:
+    """Raw macro factor values per scorable ticker, from the unfilled closes window."""
+    return pd.DataFrame(
+        {spec.name: spec.fn(closes, macro, as_of) for spec in specs}, index=closes.columns
     )
-    return pd.concat([price_raw, fundamental_raw], axis=1)
 
 
 def _apply_gates(

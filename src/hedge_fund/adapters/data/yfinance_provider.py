@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
+from fractions import Fraction
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
 
+from hedge_fund.adapters.data._clock import market_today
+from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.data import DataProviderError
 
 YAHOO_TO_GICS: Mapping[str, str] = {
@@ -27,6 +30,7 @@ YAHOO_TO_GICS: Mapping[str, str] = {
 
 Download = Callable[..., pd.DataFrame | None]
 InfoFetcher = Callable[[str], Mapping[str, Any] | None]
+SplitsFetcher = Callable[[str], pd.Series | None]
 
 
 class YFinanceProvider:
@@ -34,18 +38,20 @@ class YFinanceProvider:
 
     Vendor calls are injectable so tests never touch the network. yfinance reports
     per-ticker failures as empty data, which surfaces here as all-NaN columns.
-    Bars dated on or after the clock's today are dropped, even after the close, so a
-    session's unfinished bar is never returned.
+    Bars dated on or after the clock's today (New York's date by default) are dropped, even
+    after the close, so a session's unfinished bar is never returned.
     """
 
     def __init__(
         self,
         download: Download = yf.download,
         info_fetcher: InfoFetcher = lambda ticker: yf.Ticker(ticker).info,
-        clock: Callable[[], date] = date.today,
+        clock: Callable[[], date] = market_today,
+        splits_fetcher: SplitsFetcher = lambda ticker: yf.Ticker(ticker).splits,
     ) -> None:
         self._download = download
         self._info_fetcher = info_fetcher
+        self._splits_fetcher = splits_fetcher
         self._clock = clock
 
     def closes(self, tickers: Sequence[str], start: date, end: date) -> pd.DataFrame:
@@ -65,6 +71,20 @@ class YFinanceProvider:
             raise DataProviderError(f"yfinance download failed for {requested}: {exc}") from exc
         closes = _normalize_closes(raw, requested)
         return closes.loc[closes.index < pd.Timestamp(self._clock())]
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        found: list[Split] = []
+        for ticker in tickers:
+            try:
+                series = self._splits_fetcher(ticker)
+                for stamp, value in (series if series is not None else pd.Series()).items():
+                    ex_date = pd.Timestamp(stamp).date()
+                    if start < ex_date <= end:
+                        ratio = Fraction(float(value)).limit_denominator(1000)
+                        found.append(Split(ticker=ticker, ex_date=ex_date, ratio=ratio))
+            except Exception as exc:
+                raise DataProviderError(f"yfinance splits failed for {ticker}: {exc}") from exc
+        return tuple(sorted(found, key=lambda split: split.ex_date))
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:
         result: dict[str, str | None] = {}

@@ -1,0 +1,333 @@
+"""Tests for the JSON settlement report store."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import math
+from datetime import UTC, date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from hedge_fund.adapters.ledger.settlement_report import JsonSettlementReportStore
+from hedge_fund.domain.ledger import (
+    ClosedLot,
+    Fill,
+    FillStatus,
+    Lot,
+    MarkedLot,
+    PendingOrder,
+    ReconciliationBreak,
+    SettlementReport,
+    SettleOutcome,
+    UnsettledOrder,
+)
+from hedge_fund.domain.orders import Holding, OrderAction
+from hedge_fund.ports.ledger import SettlementReportStore
+
+EASTERN = timezone(timedelta(hours=-4))
+OPEN = datetime(2026, 10, 1, 13, 30, tzinfo=UTC)
+MIDNIGHT = datetime(2026, 9, 1, tzinfo=UTC)
+CID = "hf-2026-09-30-AAA-buy-10"
+LOT = Lot(ticker="AAA", shares=10, entry_price=101.0, entered_at=OPEN, source=CID)
+
+# Every field populated; the totals pin the non-finite strings.
+REPORT = SettlementReport(
+    as_of=date(2026, 10, 1),
+    started_at=datetime(2026, 10, 1, 10, 0, 5, tzinfo=EASTERN),  # 14:00:05 UTC
+    outcome=SettleOutcome.BREAK,
+    failed_stage="lookup",
+    error="BrokerError: down",
+    new_fills=(
+        Fill(
+            client_order_id=CID,
+            broker_order_id="b-1",
+            cycle_as_of=date(2026, 9, 30),
+            ticker="AAA",
+            action=OrderAction.BUY,
+            requested_shares=10,
+            filled_shares=10,
+            avg_price=101.0,
+            filled_at=OPEN,
+            status=FillStatus.FILLED,
+            recorded_at=datetime(2026, 10, 1, 14, 0, 6, tzinfo=UTC),
+        ),
+    ),
+    pending=(PendingOrder(client_order_id="hf-x", ticker="BBB", reason="open at broker: new"),),
+    unreadable_reports={"bad.json": "ValueError: x"},
+    unsettled=(
+        UnsettledOrder(client_order_id="hf-y", ticker="", reason="no planned order for id"),
+    ),
+    broker_positions=(Holding(ticker="BRK.B", shares=3),),
+    open_lots=(MarkedLot(lot=LOT, price=102.0, close_date=date(2026, 10, 1), unrealised_pnl=10.0),),
+    unmarked=(Lot("CCC", -2, 30.0, MIDNIGHT, "opening"),),
+    closed_lots=(ClosedLot("DDD", 5, 20.0, MIDNIGHT, "opening", 22.0, OPEN, "hf-z", 10.0),),
+    breaks=(ReconciliationBreak(ticker="BRK-B", ledger_shares=0, broker_shares=3),),
+    realised_total=math.inf,
+    unrealised_total=math.nan,
+)
+LOT_JSON = {
+    "ticker": "AAA",
+    "shares": 10,
+    "entry_price": 101.0,
+    "entered_at": "2026-10-01T13:30:00+00:00",
+    "source": CID,
+}
+EXPECTED: dict[str, Any] = {
+    "as_of": "2026-10-01",
+    "started_at": "2026-10-01T10:00:05-04:00",
+    "outcome": "break",
+    "failed_stage": "lookup",
+    "error": "BrokerError: down",
+    "new_fills": [
+        {
+            "client_order_id": CID,
+            "broker_order_id": "b-1",
+            "cycle_as_of": "2026-09-30",
+            "ticker": "AAA",
+            "action": "buy",
+            "requested_shares": 10,
+            "filled_shares": 10,
+            "avg_price": 101.0,
+            "filled_at": "2026-10-01T13:30:00+00:00",
+            "status": "filled",
+            "recorded_at": "2026-10-01T14:00:06+00:00",
+        }
+    ],
+    "pending": [{"client_order_id": "hf-x", "ticker": "BBB", "reason": "open at broker: new"}],
+    "unreadable_reports": {"bad.json": "ValueError: x"},
+    "unsettled": [{"client_order_id": "hf-y", "ticker": "", "reason": "no planned order for id"}],
+    "broker_positions": [{"ticker": "BRK.B", "shares": 3}],
+    "open_lots": [
+        {"lot": LOT_JSON, "price": 102.0, "close_date": "2026-10-01", "unrealised_pnl": 10.0}
+    ],
+    "unmarked": [
+        {
+            "ticker": "CCC",
+            "shares": -2,
+            "entry_price": 30.0,
+            "entered_at": "2026-09-01T00:00:00+00:00",
+            "source": "opening",
+        }
+    ],
+    "closed_lots": [
+        {
+            "ticker": "DDD",
+            "shares": 5,
+            "entry_price": 20.0,
+            "entered_at": "2026-09-01T00:00:00+00:00",
+            "source": "opening",
+            "exit_price": 22.0,
+            "exited_at": "2026-10-01T13:30:00+00:00",
+            "exit_client_order_id": "hf-z",
+            "realised_pnl": 10.0,
+        }
+    ],
+    "breaks": [{"ticker": "BRK-B", "ledger_shares": 0, "broker_shares": 3}],
+    "realised_total": "inf",
+    "unrealised_total": "nan",
+}
+
+
+def _files(root: Path) -> list[Path]:
+    return sorted((root / "settlements").iterdir())
+
+
+def test_satisfies_the_port_and_writes_the_pinned_shape(tmp_path: Path) -> None:
+    store: SettlementReportStore = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [path] = _files(tmp_path)
+    text = path.read_text(encoding="utf-8")
+    assert json.loads(text) == EXPECTED
+    assert text == json.dumps(EXPECTED, indent=2)
+
+
+def test_keys_are_the_report_fields_in_order(tmp_path: Path) -> None:
+    JsonSettlementReportStore(tmp_path).save(REPORT)
+    [path] = _files(tmp_path)
+    keys = list(json.loads(path.read_text(encoding="utf-8")))
+    assert keys == [field.name for field in dataclasses.fields(SettlementReport)]
+    assert {"unreadable_reports", "unsettled"} <= set(keys)
+
+
+@pytest.mark.parametrize(
+    ("started_at", "name"),
+    [
+        pytest.param(REPORT.started_at, "2026-10-01_140005.json", id="eastern-offset"),
+        pytest.param(
+            datetime(2026, 10, 2, 1, 2, 3, tzinfo=UTC), "2026-10-01_010203.json", id="utc"
+        ),
+    ],
+)
+def test_file_name_is_as_of_and_utc_start_time(
+    tmp_path: Path, started_at: datetime, name: str
+) -> None:
+    JsonSettlementReportStore(tmp_path).save(dataclasses.replace(REPORT, started_at=started_at))
+    assert [path.name for path in _files(tmp_path)] == [name]
+
+
+def test_an_existing_report_is_never_overwritten(tmp_path: Path) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [path] = _files(tmp_path)
+    first = path.read_text(encoding="utf-8")
+    with pytest.raises(FileExistsError, match="2026-10-01_140005.json"):
+        store.save(dataclasses.replace(REPORT, outcome=SettleOutcome.CLEAN))
+    assert path.read_text(encoding="utf-8") == first
+    assert _files(tmp_path) == [path]
+
+
+def test_a_failed_write_leaves_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    write_text = Path.write_text
+
+    def partial_then_fail(self: Path, data: str, *args: Any, **kwargs: Any) -> int:
+        write_text(self, data[:10], *args, **kwargs)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", partial_then_fail)
+    with pytest.raises(OSError, match="disk full"):
+        JsonSettlementReportStore(tmp_path).save(REPORT)
+    assert _files(tmp_path) == []
+
+
+def test_package_exports() -> None:
+    import hedge_fund.adapters.ledger as ledger
+    from hedge_fund.adapters.ledger.fills import JsonFillStore
+    from hedge_fund.adapters.ledger.opening import JsonOpeningBalance
+
+    assert ledger.__all__ == ["JsonFillStore", "JsonOpeningBalance", "JsonSettlementReportStore"]
+    assert ledger.JsonFillStore is JsonFillStore
+    assert ledger.JsonOpeningBalance is JsonOpeningBalance
+    assert ledger.JsonSettlementReportStore is JsonSettlementReportStore
+
+
+def test_load_all_round_trips_a_saved_report(tmp_path: Path) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+
+    loaded = store.load_all()
+
+    # Python 3.13 dataclass equality compares field by field, so NaN != NaN: check it apart.
+    (report,) = loaded.items
+    assert math.isnan(report.unrealised_total)
+    assert report.started_at.utcoffset() == REPORT.started_at.utcoffset() == timedelta(hours=-4)
+    assert dataclasses.replace(report, unrealised_total=0.0) == dataclasses.replace(
+        REPORT, unrealised_total=0.0
+    )
+    assert loaded.unreadable == {}
+
+
+def test_load_all_round_trips_a_failed_run_with_nothing_reached(tmp_path: Path) -> None:
+    bare = dataclasses.replace(
+        REPORT,
+        outcome=SettleOutcome.ERROR,
+        new_fills=(),
+        pending=(),
+        unreadable_reports={},
+        unsettled=(),
+        broker_positions=None,
+        open_lots=(),
+        unmarked=(),
+        closed_lots=(),
+        breaks=(),
+        realised_total=0.0,
+        unrealised_total=0.0,
+    )
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(bare)
+
+    assert store.load_all().items == (bare,)
+
+
+@pytest.mark.parametrize(
+    "bad", [[["bad.json", "x"]], ["ab"], 3], ids=["pairs", "two-char-strings", "int"]
+)
+def test_unreadable_reports_that_is_not_a_mapping_makes_the_file_unreadable(
+    tmp_path: Path, bad: object
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    body["unreadable_reports"] = bad
+    (tmp_path / "settlements" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
+def test_a_truncated_file_is_unreadable_and_the_good_report_still_loads(tmp_path: Path) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    text = good.read_text(encoding="utf-8")
+    (tmp_path / "settlements" / "cut.json").write_text(text[: len(text) // 2], encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert loaded.items[0].outcome is SettleOutcome.BREAK
+    assert list(loaded.unreadable) == ["cut.json"]
+
+
+@pytest.mark.parametrize("key", ["started_at", "breaks", "realised_total"])
+def test_a_file_missing_a_key_is_unreadable_and_the_good_report_still_loads(
+    tmp_path: Path, key: str
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    del body[key]
+    (tmp_path / "settlements" / "gap.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["gap.json"]
+    assert key in loaded.unreadable["gap.json"]
+
+
+@pytest.mark.parametrize("bad", [2.0, True], ids=["float", "bool"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("new_fills", 0, "requested_shares"),
+        ("new_fills", 0, "filled_shares"),
+        ("broker_positions", 0, "shares"),
+        ("open_lots", 0, "lot", "shares"),
+        ("unmarked", 0, "shares"),
+        ("closed_lots", 0, "shares"),
+        ("breaks", 0, "ledger_shares"),
+        ("breaks", 0, "broker_shares"),
+    ],
+    ids=lambda path: ".".join(map(str, path)),
+)
+def test_a_share_count_that_is_not_a_whole_number_makes_the_file_unreadable(
+    tmp_path: Path, path: tuple[str | int, ...], bad: object
+) -> None:
+    store = JsonSettlementReportStore(tmp_path)
+    store.save(REPORT)
+    [good] = _files(tmp_path)
+    body = json.loads(good.read_text(encoding="utf-8"))
+    target = body
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = bad
+    (tmp_path / "settlements" / "bad.json").write_text(json.dumps(body), encoding="utf-8")
+
+    loaded = store.load_all()
+
+    assert len(loaded.items) == 1
+    assert list(loaded.unreadable) == ["bad.json"]
+
+
+def test_load_all_of_a_root_without_reports_is_empty(tmp_path: Path) -> None:
+    loaded = JsonSettlementReportStore(tmp_path).load_all()
+
+    assert loaded.items == ()
+    assert loaded.unreadable == {}

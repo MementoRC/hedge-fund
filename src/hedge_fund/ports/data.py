@@ -8,6 +8,8 @@ from typing import Protocol
 
 import pandas as pd
 
+from hedge_fund.domain.ledger import Split
+
 
 class DataProviderError(Exception):
     """A vendor or transport failure while fetching data."""
@@ -22,6 +24,13 @@ class DataProvider(Protocol):
         Returns a tz-naive, sorted, unique DatetimeIndex and one column per requested
         ticker, in request order. A ticker with no data is an all-NaN column, not an
         error. Raises DataProviderError on vendor or transport failure.
+        """
+
+    def splits(self, tickers: Sequence[str], start: date, end: date) -> tuple[Split, ...]:
+        """The splits the closes are already adjusted for, with ``start < ex_date <= end``.
+
+        Ordered by ex-date, then request order. A ticker with no splits contributes nothing.
+        Raises DataProviderError on vendor or transport failure.
         """
 
     def sectors(self, tickers: Sequence[str]) -> dict[str, str | None]:

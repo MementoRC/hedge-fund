@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from hedge_fund.engine.factors.score import score
-from hedge_fund.services.snapshots import build_snapshot
+from hedge_fund.services.snapshots import build_snapshot, calendar_window
 from tests.factories import make_closes
 from tests.fakes import FakeProvider
 
@@ -109,3 +109,13 @@ def test_end_to_end_build_then_score_ranks_tickers() -> None:
     assert dict(build.unresolved) == {"NEW": "no_prices"}
     assert {s.ticker for s in result.scores} == set(SECTORS)
     assert dict(result.excluded) == {"NEW": "insufficient_history"}
+
+
+@pytest.mark.parametrize(
+    ("lookback", "days"),
+    [(252, 395), (300, 465), (31, 75), (1, 32)],
+)
+def test_calendar_window_covers_the_lookback_plus_a_holiday_buffer(
+    lookback: int, days: int
+) -> None:
+    assert calendar_window(lookback) == timedelta(days=days)

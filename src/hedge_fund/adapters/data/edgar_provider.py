@@ -81,7 +81,14 @@ class EdgarProvider:
 
     def _fetch(self, cik: str) -> Mapping[str, Any] | None:
         """Parsed companyfacts JSON for `cik`, or None on HTTP 404."""
-        url = COMPANYFACTS_URL.format(cik=cik)
+        return self.get_json(COMPANYFACTS_URL.format(cik=cik))
+
+    def get_json(self, url: str) -> Mapping[str, Any] | None:
+        """The JSON object at an SEC `url`, or None on HTTP 404.
+
+        Uses this provider's User-Agent, request spacing and retries; raises
+        FundamentalsProviderError as `facts` does.
+        """
         failure = ""
         for attempt in range(MAX_RETRIES + 1):
             if attempt:

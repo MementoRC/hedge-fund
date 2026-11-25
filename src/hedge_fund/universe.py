@@ -67,7 +67,11 @@ def parse_universe(name: str, text: str) -> Universe:
     for row in reader:
         if any(row[column] is None for column in columns):
             raise ValueError(f"universe {name!r}: line {reader.line_num + 1} is missing a column")
+        if row.get(None):
+            raise ValueError(f"universe {name!r}: line {reader.line_num + 1} has an extra field")
         ticker = row["ticker"].strip()
+        if not ticker:
+            raise ValueError(f"universe {name!r}: line {reader.line_num + 1} has an empty ticker")
         sector = row["gics_sector"].strip()
         if ticker in sectors:
             raise ValueError(f"universe {name!r}: duplicate ticker {ticker}")
@@ -88,13 +92,21 @@ def parse_universe(name: str, text: str) -> Universe:
 
 def load_universe(name: str) -> Universe:
     """Load resources/universes/<name>.csv shipped with the package."""
+    return parse_universe(name, resource_text(name))
+
+
+def resource_text(name: str) -> str:
+    """The text of resources/universes/<name>.csv shipped with the package.
+
+    Raises ValueError for a name that is not [a-z0-9_]+ or has no file.
+    """
     if not _UNIVERSE_NAME.fullmatch(name):
         raise ValueError(f"unknown universe: {name!r}")
     universes = resources.files("hedge_fund").joinpath("resources").joinpath("universes")
     resource = universes.joinpath(f"{name}.csv")
     if not resource.is_file():
         raise ValueError(f"unknown universe: {name!r}")
-    return parse_universe(name, resource.read_text(encoding="utf-8"))
+    return resource.read_text(encoding="utf-8")
 
 
 def _list_date(name: str, first_line: str) -> date:

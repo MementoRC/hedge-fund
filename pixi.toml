@@ -6,14 +6,15 @@ channels = ["conda-forge"]
 platforms = ["linux-64"]
 
 [dependencies]
-python = ">=3.11,<3.14"
+python = ">=3.12,<3.14"
 pandas = ">=3.0"
 numpy = ">=1.26"
 scipy = ">=1.11"
-plotly = ">=5.18.0"
+plotly = ">=7.1,<7.2"
 streamlit = ">=1.50"
 requests = ">=2.31.0"
 pyyaml = ">=6.0"
+defusedxml = ">=0.7.1"
 pip = "*"
 setuptools = ">=61"
 # TradingAgents (sibling fork ../TradingAgents) runtime deps, from conda-forge
@@ -37,6 +38,10 @@ pandas-ta = "*"
 install-editable = "python -m pip install --no-deps --no-build-isolation -e ."
 install-tradingagents = "python -m pip install --no-deps --no-build-isolation -e ../TradingAgents"
 setup-dev = { depends-on = ["install-editable", "install-tradingagents"] }
+cycle = "hedge-fund cycle"
+settle = "hedge-fund settle"
+attribute = "hedge-fund attribute"
+verify = "hedge-fund verify"
 
 [feature.ci.dependencies]
 ruff = ">=0.8.4"
@@ -55,7 +60,9 @@ format = "ruff format ."
 format-check = "ruff format --check ."
 type-check = "mypy src/"
 quality = { depends-on = ["lint", "format-check", "type-check"] }
-test = "pytest tests/ --cov=hedge_fund --cov-report=term-missing"
+test = "pytest tests/ --cov=hedge_fund --cov-report=term-missing --cov-fail-under=100"
+# Targeted run for TDD loops: `pixi run -e dev test-file tests/path/test_x.py`
+test-file = "pytest -q"
 security = "bandit -c pyproject.toml -r src/"
 pre-commit-install = "pre-commit install"
 pre-commit-run = "pre-commit run --all-files"
@@ -63,9 +70,23 @@ build = "python -m build"
 
 [feature.dev.tasks]
 app = "streamlit run app.py"
+demo = "hedge-fund demo build --root data/demo"
 
-[feature.py311.dependencies]
-python = "3.11.*"
+[feature.site.dependencies]
+mkdocs-material = ">=9.5"
+
+[feature.site.tasks]
+# The sitegen builder renders data/demo into website/docs/generated/ (stats from ./junit.xml
+# and ./coverage.json), then MkDocs builds strictly. The path after -d is relative to
+# website/mkdocs.yml. Locally, `mkdocs serve` needs the builder run first.
+# The first local run needs `pixi run -e site install-editable && pixi run -e site demo`: the
+# hedge-fund CLI and data/demo don't exist in a fresh checkout (no ../TradingAgents needed;
+# setup-dev would also require that sibling clone). CI runs these steps itself.
+# If data/demo already exists, skip demo (or run `pixi run -e site demo --force` to rebuild it).
+# A data/demo built before the store went to format 2 (FRED macro series) no longer loads:
+# rebuild it once with `pixi run -e site demo --force`.
+# After an interrupted demo build, delete data/demo and data/demo.store, then re-run demo.
+site = "hedge-fund site build --root data/demo --stats-dir . && mkdocs build --strict -f website/mkdocs.yml -d ../_site"
 
 [feature.py312.dependencies]
 python = "3.12.*"
@@ -74,7 +95,7 @@ python = "3.12.*"
 default = { solve-group = "default" }
 dev = { features = ["ci", "dev"], solve-group = "default" }
 ci = { features = ["ci"], solve-group = "default" }
-py311 = { features = ["py311", "ci"], solve-group = "py311" }
+site = { features = ["ci", "dev", "site"], solve-group = "default" }
 py312 = { features = ["py312", "ci"], solve-group = "py312" }
 quality-extended = { features = ["ci"], solve-group = "default" }
 quality-ci = { features = ["ci"], solve-group = "default" }

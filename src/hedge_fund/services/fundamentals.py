@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from hedge_fund.domain.fundamentals import FundamentalsSnapshot
+from hedge_fund.domain.ledger import Split
 from hedge_fund.engine.fundamentals.derive import derive_fundamentals
 from hedge_fund.ports.fundamentals import FundamentalsProvider, coerce_facts, empty_facts
 from hedge_fund.services.snapshots import normalize_tickers
@@ -28,8 +29,11 @@ def build_fundamentals_snapshot(
     as_of: date,
     *,
     ciks: Mapping[str, str],
+    splits: Sequence[Split] = (),
 ) -> FundamentalsBuild:
     """Fetch facts for `tickers` and derive a snapshot from filings with `filed < as_of`.
+
+    `splits` restate reported share counts onto the split-adjusted price basis at `as_of`.
 
     Tickers absent from `ciks` are "no_cik" and are not requested. Others may be
     "no_filings", "no_reference_period" or "stale_fundamentals" (see engine derive).
@@ -41,7 +45,7 @@ def build_fundamentals_snapshot(
     with_cik = [ticker for ticker in requested if ticker in ciks]
     unresolved = {ticker: NO_CIK for ticker in requested if ticker not in ciks}
     facts = coerce_facts(provider.facts(with_cik)) if with_cik else empty_facts()
-    derived = derive_fundamentals(facts, with_cik, as_of)
+    derived = derive_fundamentals(facts, with_cik, as_of, splits)
     unresolved.update(derived.unresolved)
     if derived.current.empty:
         raise ValueError("no fundamentals for the requested tickers at as_of")

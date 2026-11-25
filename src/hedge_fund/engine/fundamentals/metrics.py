@@ -18,7 +18,11 @@ class MetricSpec:
     """A canonical metric with XBRL tags in fallback order.
 
     ``kind`` is "flow" (trailing twelve months) or "stock" (balance-sheet instant). Fallback
-    tags share one definition; tags that change meaning are excluded.
+    tags are close substitutes, not identical definitions; the tag is chosen per period, so
+    one column (and one ticker's E and E') can mix them. Known differences: revenue mixes
+    the totals with and without assessed taxes; ``DebtCurrent`` adds short-term borrowings
+    and commercial paper to the current portion of long-term debt; the second equity tag
+    includes noncontrolling interest.
     """
 
     name: str

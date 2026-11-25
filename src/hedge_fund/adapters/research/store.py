@@ -5,17 +5,56 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
+from hedge_fund.adapters._json import decode_float
 from hedge_fund.adapters.data._atomic import atomic_write
+from hedge_fund.domain.cost import ModelUsage
 from hedge_fund.domain.research import NameResearch, Rating, ResearchResult, RunRecord, Verdict
 from hedge_fund.domain.shortlist import Candidate, Side
 
 RESEARCH_DIR = "research"
+_FILE_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})_[0-9a-f]{12}\.json")
+
+
+class JsonResearchStore:
+    """ResearchStore over ``save_research`` / ``load_research`` under ``root``."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root)
+
+    def save(self, result: ResearchResult) -> None:
+        save_research(result, self._root)
+
+    def load(self, as_of: date) -> ResearchResult | None:
+        """The ``research/<as_of>_*.json`` result with the greatest ``created_at``.
+
+        Ties go to the greater file name; None when no file matches. Every match is loaded
+        with ``load_research`` (as_of and digest verified), so one malformed file raises
+        ValueError, as does a ``created_at`` that is missing, not ISO 8601 or naive.
+        """
+        newest: tuple[datetime, str, ResearchResult] | None = None
+        for path in sorted((self._root / RESEARCH_DIR).glob(f"{as_of.isoformat()}_*.json")):
+            result = load_research(path)
+            created_at = _created_at(path)
+            if newest is None or (created_at, path.name) > newest[:2]:
+                newest = (created_at, path.name, result)
+        return None if newest is None else newest[2]
+
+    def dates(self) -> tuple[date, ...]:
+        """The sorted, de-duplicated dates of the ``research/<as_of>_<sha12>.json`` files.
+
+        Only file names are read; directories, names that do not match, or whose date is not
+        a calendar date, are ignored. ``()`` when the directory does not exist.
+        """
+        paths = (self._root / RESEARCH_DIR).glob("*.json")
+        found = {_name_date(path.name) for path in paths if path.is_file()}
+        return tuple(sorted(day for day in found if day is not None))
 
 
 def save_research(result: ResearchResult, root: Path) -> Path:
@@ -62,10 +101,36 @@ def load_research(path: Path) -> ResearchResult:
     try:
         return ResearchResult(
             as_of=date.fromisoformat(file_as_of),
-            names=tuple(_name(item) for item in payload["names"]),
+            names=tuple(decode_name(item) for item in payload["names"]),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"{path.name}: malformed research file") from exc
+
+
+def _created_at(path: Path) -> datetime:
+    """The file body's tz-aware ``created_at``; ValueError naming the file otherwise."""
+    try:
+        created_at = datetime.fromisoformat(
+            json.loads(path.read_text(encoding="utf-8"))["created_at"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{path.name}: malformed created_at") from exc
+    if created_at.utcoffset() is None:
+        raise ValueError(
+            f"{path.name}: malformed created_at {created_at.isoformat()!r} (no offset)"
+        )
+    return created_at
+
+
+def _name_date(name: str) -> date | None:
+    """The date of a ``<as_of>_<sha12>.json`` file name, None when it is not one."""
+    match = _FILE_NAME.fullmatch(name)
+    if match is None:
+        return None
+    try:
+        return date.fromisoformat(match[1])
+    except ValueError:
+        return None
 
 
 def _payload(result: ResearchResult) -> dict[str, Any]:
@@ -91,27 +156,37 @@ def _digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-def _name(item: Mapping[str, Any]) -> NameResearch:
-    candidate = item["candidate"]
+def decode_candidate(item: Mapping[str, Any]) -> Candidate:
+    """A Candidate from its JSON object; KeyError, TypeError or ValueError if malformed."""
+    return Candidate(
+        ticker=item["ticker"],
+        sector=item["sector"],
+        side=Side(item["side"]),
+        depth=item["depth"],
+        composite=decode_float(item["composite"]),
+    )
+
+
+def decode_name(item: Mapping[str, Any]) -> NameResearch:
+    """A NameResearch from its JSON object (floats through ``decode_float``)."""
     return NameResearch(
-        candidate=Candidate(
-            ticker=candidate["ticker"],
-            sector=candidate["sector"],
-            side=Side(candidate["side"]),
-            depth=candidate["depth"],
-            composite=candidate["composite"],
-        ),
-        runs=tuple(_run(run) for run in item["runs"]),
+        candidate=decode_candidate(item["candidate"]),
+        runs=tuple(decode_run(run) for run in item["runs"]),
         valid=item["valid"],
-        mean=item["mean"],
-        std=item["std"],
-        agreement=item["agreement"],
+        mean=_optional_float(item["mean"]),
+        std=_optional_float(item["std"]),
+        agreement=_optional_float(item["agreement"]),
         verdict=Verdict(item["verdict"]),
     )
 
 
-def _run(item: Mapping[str, Any]) -> RunRecord:
+def decode_run(item: Mapping[str, Any]) -> RunRecord:
+    """A RunRecord from its JSON object (floats through ``decode_float``).
+
+    ``usage`` is absent from files written before 7c: they decode with ``usage=None``.
+    """
     rating = item["rating"]
+    usage = item.get("usage")
     return RunRecord(
         ticker=item["ticker"],
         as_of=date.fromisoformat(item["as_of"]),
@@ -119,6 +194,35 @@ def _run(item: Mapping[str, Any]) -> RunRecord:
         rating=None if rating is None else Rating(rating),
         decision=item["decision"],
         reports=dict(item["reports"]),
-        seconds=item["seconds"],
+        seconds=decode_float(item["seconds"]),
         error=item["error"],
+        usage=None if usage is None else tuple(decode_usage(row) for row in usage),
     )
+
+
+def decode_usage(item: Mapping[str, Any]) -> ModelUsage:
+    """A ModelUsage from its JSON object; KeyError if a field is missing, ValueError if
+    ``model`` is not a string or a count is not an int (a bool is not one).
+    """
+    model = item["model"]
+    if not isinstance(model, str):
+        raise ValueError(f"usage model must be a string, got {model!r}")
+    return ModelUsage(
+        model=model,
+        calls=_count(item, "calls"),
+        input_tokens=_count(item, "input_tokens"),
+        output_tokens=_count(item, "output_tokens"),
+        cache_write_tokens=_count(item, "cache_write_tokens"),
+        cache_read_tokens=_count(item, "cache_read_tokens"),
+    )
+
+
+def _count(item: Mapping[str, Any], key: str) -> int:
+    value = item[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"usage {key} must be an int, got {value!r}")
+    return value
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else decode_float(value)

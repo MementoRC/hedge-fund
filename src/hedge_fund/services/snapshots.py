@@ -19,7 +19,7 @@ _TRADING_DAYS_PER_YEAR = 252
 _CALENDAR_BUFFER_DAYS = 30
 
 
-def _calendar_window(lookback: int) -> timedelta:
+def calendar_window(lookback: int) -> timedelta:
     """Calendar span expected to hold `lookback` trading rows, plus a holiday buffer."""
     days = math.ceil(lookback * 365 / _TRADING_DAYS_PER_YEAR) + _CALENDAR_BUFFER_DAYS
     return timedelta(days=days)
@@ -48,7 +48,7 @@ def build_snapshot(
     requested = normalize_tickers(tickers)
     if not requested:
         raise ValueError("no tickers requested")
-    closes = provider.closes(requested, as_of - _calendar_window(lookback), as_of)
+    closes = provider.closes(requested, as_of - calendar_window(lookback), as_of)
     closes = closes.loc[closes.index <= pd.Timestamp(as_of)].tail(lookback)
     found = provider.sectors(requested)
     sectors: dict[str, str] = {}

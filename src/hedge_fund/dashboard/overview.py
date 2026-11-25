@@ -1,0 +1,84 @@
+"""Overview page: the headline figures of a root and its backtest runs.
+
+Every SPY figure carries the window it covers: the strategy return is labelled "full
+history", the SPY pair "SPY window", and the run table's returns "full window".
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import pandas as pd
+import streamlit as st
+
+from hedge_fund.dashboard.data import RootState
+from hedge_fund.dashboard.format import NO_SPY
+from hedge_fund.dashboard.states import usable_workspace
+from hedge_fund.viz.format import (
+    Headline,
+    fmt_date,
+    fmt_number,
+    fmt_percent,
+    headlines,
+    return_note,
+)
+from hedge_fund.viz.views import BacktestRun, backtest_view, overview_view
+
+COLUMNS_PER_ROW = 3
+RUN_NOTE = (
+    "Run figures (return, SPY, excess) are over each run's whole window, which can be longer "
+    "than the SPY span of the NAV chart."
+)
+
+
+def show_headlines(shown: Sequence[Headline], per_row: int = COLUMNS_PER_ROW) -> None:
+    """``st.metric`` cards, ``per_row`` to a row; the last row may be shorter."""
+    for start in range(0, len(shown), per_row):
+        row = shown[start : start + per_row]
+        for column, item in zip(st.columns(per_row), row, strict=False):
+            column.metric(item.label, item.value, help=item.hint)
+
+
+def run_table(runs: Sequence[BacktestRun]) -> pd.DataFrame:
+    """One formatted row per run; the three return columns are full-window figures."""
+    # Pre-formatted strings: raw floats would show NaN as blank, not "n/a", so sorting is lexical.
+    return pd.DataFrame(
+        [
+            {
+                "Run": run.run_id,
+                "Window": f"{fmt_date(run.start)} to {fmt_date(run.end)}",
+                "Trading days": run.trading_days,
+                "Rebalances": run.rebalances,
+                "Return (full window)": fmt_percent(run.total_return),
+                "SPY (full window)": fmt_percent(run.benchmark_return),
+                "Excess (full window)": fmt_percent(run.excess_return),
+                "Max drawdown": fmt_percent(run.max_drawdown),
+                "Sharpe": fmt_number(run.sharpe),
+                "Beta": fmt_number(run.beta),
+                "Breaker days": run.breaker_days,
+            }
+            for run in runs
+        ]
+    )
+
+
+def render(state: RootState) -> None:
+    st.title("Overview")
+    workspace = usable_workspace(state)
+    if workspace is None:
+        return
+    view = overview_view(workspace.snapshots, workspace.benchmark, workspace.cycles)
+    show_headlines(headlines(view))
+    st.caption(
+        return_note(
+            view.benchmark_window,
+            view.benchmark_partial,
+            has_return=view.benchmark_return is not None,
+            no_spy=NO_SPY,
+        )
+    )
+    runs = backtest_view(workspace.backtests, workspace.snapshots, workspace.benchmark).runs
+    if runs:
+        st.subheader("Backtest runs")
+        st.dataframe(run_table(runs), hide_index=True)
+        st.caption(RUN_NOTE)

@@ -40,5 +40,6 @@ def test_package_exports() -> None:
         "DEFAULT_ORDERS",
         "OrderParams",
         "generate_orders",
+        "order_prices",
         "validate_order_params",
     ]

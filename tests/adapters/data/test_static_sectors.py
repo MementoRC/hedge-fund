@@ -1,11 +1,13 @@
 """Tests for the universe-first sector decorator."""
 
 from datetime import date
+from fractions import Fraction
 from types import MappingProxyType
 
 import pandas as pd
 
 from hedge_fund.adapters.data.static_sectors import StaticSectorProvider
+from hedge_fund.domain.ledger import Split
 from hedge_fund.universe import Universe
 from tests.factories import make_closes
 from tests.fakes import FakeProvider, assert_closes_equal
@@ -30,6 +32,14 @@ def test_all_universe_hits_skip_inner() -> None:
     result = StaticSectorProvider(fake, UNIVERSE).sectors(["BBB", "AAA"])
     assert result == {"BBB": "Financials", "AAA": "Energy"}
     assert fake.sectors_calls == []
+
+
+def test_splits_pass_through() -> None:
+    split = Split("AAA", date(2026, 9, 15), Fraction(2))
+    fake = FakeProvider(make_closes(["AAA"]), {}, splits=[split])
+    start, end = date(2026, 6, 1), date(2026, 9, 30)
+    assert StaticSectorProvider(fake, UNIVERSE).splits(["AAA"], start, end) == (split,)
+    assert fake.splits_calls == [(("AAA",), start, end)]
 
 
 def test_closes_pass_through() -> None:

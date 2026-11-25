@@ -6,14 +6,16 @@ from datetime import date
 
 import pytest
 
+from hedge_fund.domain.cost import ModelUsage, ResearchRunError
 from hedge_fund.domain.research import Rating, RunRecord, Verdict
 from hedge_fund.domain.shortlist import Candidate, Shortlist, Side
 from hedge_fund.engine.research.conviction import ConvictionParams
-from hedge_fund.services.research import _previous_weekday, research_shortlist
+from hedge_fund.services.research import research_shortlist
 from tests.fakes import ScriptedResearcher
 
 AS_OF = date(2026, 9, 30)  # Wednesday
 TODAY = date(2026, 9, 30)
+USAGE = (ModelUsage("m", 3, 100, 10, 0, 0),)
 
 
 def _candidate(ticker: str, side: Side = Side.LONG) -> Candidate:
@@ -22,23 +24,6 @@ def _candidate(ticker: str, side: Side = Side.LONG) -> Candidate:
 
 def _shortlist(*candidates: Candidate, as_of: date = AS_OF) -> Shortlist:
     return Shortlist(as_of=as_of, candidates=candidates, trimmed={})
-
-
-# --- _previous_weekday -----------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("today", "expected"),
-    [
-        (date(2026, 10, 6), date(2026, 10, 5)),  # Tuesday -> Monday
-        (date(2026, 10, 2), date(2026, 10, 1)),  # Friday -> Thursday
-        (date(2026, 10, 3), date(2026, 10, 2)),  # Saturday -> Friday
-        (date(2026, 10, 4), date(2026, 10, 2)),  # Sunday -> Friday
-        (date(2026, 10, 5), date(2026, 10, 2)),  # Monday -> Friday
-    ],
-)
-def test_previous_weekday(today: date, expected: date) -> None:
-    assert _previous_weekday(today) == expected
 
 
 # --- orchestration ---------------------------------------------------------
@@ -141,6 +126,21 @@ def test_all_runs_failing_is_all_insufficient() -> None:
     assert [name.verdict for name in out.names] == [Verdict.INSUFFICIENT, Verdict.INSUFFICIENT]
 
 
+def test_a_research_run_error_keeps_its_cause_text_and_usage() -> None:
+    researcher = ScriptedResearcher({("A", 0): ResearchRunError("RuntimeError: boom", USAGE)})
+    out = research_shortlist(researcher, _shortlist(_candidate("A")), k=2, today=TODAY)
+    failed, ok = out.names[0].runs
+    assert failed.error == "RuntimeError: boom"
+    assert failed.usage == USAGE
+    assert ok.usage is None
+
+
+def test_a_plain_exception_has_unknown_usage() -> None:
+    researcher = ScriptedResearcher({("A", 0): RuntimeError("boom")})
+    out = research_shortlist(researcher, _shortlist(_candidate("A")), k=1, today=TODAY)
+    assert out.names[0].runs[0].usage is None
+
+
 def test_keyboard_interrupt_propagates() -> None:
     researcher = ScriptedResearcher({("A", 1): KeyboardInterrupt()})
     with pytest.raises(KeyboardInterrupt):
@@ -202,6 +202,16 @@ def test_wrong_as_of_becomes_error_record() -> None:
 
 def test_wrong_run_index_becomes_error_record() -> None:
     _assert_mismatch_error({"run_index": 7}, "run 7")
+
+
+def test_a_mismatched_record_keeps_its_usage() -> None:
+    researcher = _MismatchResearcher(("A", 1), ticker="B", usage=USAGE)
+    out = research_shortlist(
+        researcher, _shortlist(_candidate("A")), k=2, max_workers=1, today=TODAY
+    )
+    bad = out.names[0].runs[1]
+    assert bad.error is not None
+    assert bad.usage == USAGE
 
 
 RELEASE_TIMEOUT = 5.0

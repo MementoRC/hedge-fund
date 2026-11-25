@@ -2,10 +2,12 @@
 
 from collections.abc import Sequence
 from datetime import date
+from fractions import Fraction
 
 import pandas as pd
 import pytest
 
+from hedge_fund.domain.ledger import Split
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.services.fundamentals import build_fundamentals_snapshot
 from tests.factories import make_facts
@@ -36,6 +38,13 @@ def test_resolved_tickers_get_current_and_prior_metrics() -> None:
         pd.Timestamp("2025-06-30"),
         pd.Timestamp("2026-08-01"),
     ]
+
+
+def test_splits_restate_shares_reported_before_their_ex_date() -> None:
+    fake = FakeFundamentalsProvider(make_facts(["AAA", "BBB"]))  # dei shares 50, cover 2026-07-25
+    splits = [Split(ticker="AAA", ex_date=date(2026, 8, 15), ratio=Fraction(4))]
+    snapshot = build_fundamentals_snapshot(fake, ["AAA", "BBB"], AS_OF, ciks=CIKS, splits=splits)
+    assert snapshot.snapshot.current["shares_outstanding"].to_dict() == {"AAA": 200.0, "BBB": 50.0}
 
 
 def test_tickers_are_normalized_and_deduplicated() -> None:

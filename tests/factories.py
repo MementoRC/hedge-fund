@@ -1,17 +1,27 @@
 """Deterministic price and fundamentals fixtures for engine tests."""
 
-from collections.abc import Callable, Mapping, Sequence
+import dataclasses
+from collections.abc import Mapping, Sequence
 from datetime import date
+from fractions import Fraction
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS, FundamentalsSnapshot
+from hedge_fund.demo.facts import FUNDAMENTALS_AS_OF as FUNDAMENTALS_AS_OF
+from hedge_fund.demo.facts import make_fundamentals as make_fundamentals
+from hedge_fund.demo.facts import make_passing_facts as make_passing_facts
+from hedge_fund.demo.facts import make_passing_fundamentals as make_passing_fundamentals
+from hedge_fund.domain.backtest import Dividend, FrozenData, MemberSpan
+from hedge_fund.domain.ledger import Split
+from hedge_fund.domain.research import Verdict
+from hedge_fund.domain.shortlist import Side
 from hedge_fund.domain.snapshot import PriceSnapshot
+from hedge_fund.domain.verification import Observation, ObservationStatus
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts
 
 END_DATE = "2026-09-30"
-FUNDAMENTALS_AS_OF = date(2026, 9, 30)
 
 
 def make_closes(tickers: Sequence[str], n_days: int = 300, seed: int = 0) -> pd.DataFrame:
@@ -27,6 +37,19 @@ def make_closes(tickers: Sequence[str], n_days: int = 300, seed: int = 0) -> pd.
         vol = rng.uniform(0.005, 0.03)
         data[ticker] = 100.0 * np.exp(np.cumsum(rng.normal(drift, vol, n_days)))
     return pd.DataFrame(data, index=index)
+
+
+def make_macro(index: pd.DatetimeIndex, seed: int = 0) -> pd.DataFrame:
+    """Random-walk DGS10 (percent) and VIXCLS (index points) on ``index``: float64, unnamed."""
+    rng = np.random.default_rng(seed)
+    n = len(index)
+    return pd.DataFrame(
+        {
+            "DGS10": 4.0 + np.cumsum(rng.normal(0.0, 0.05, n)),
+            "VIXCLS": 20.0 + np.cumsum(rng.normal(0.0, 0.8, n)),
+        },
+        index=pd.DatetimeIndex(index).rename(None),
+    )
 
 
 def snapshot_from(closes: pd.DataFrame, sectors: Mapping[str, str]) -> PriceSnapshot:
@@ -49,68 +72,6 @@ def make_crowded_closes(
         log_returns[ticker] = log_returns[ticker] + strength * latent
     rebuilt = np.exp(log_returns.cumsum()) * closes.iloc[0]
     return pd.concat([closes.iloc[:1], rebuilt]).set_axis(closes.index)
-
-
-def make_fundamentals(
-    tickers: Sequence[str] = ("AAA", "BBB", "CCC"), seed: int = 0
-) -> FundamentalsSnapshot:
-    """Valid snapshot: positive random metrics, E 2026-06-30, E′ 2025-06-30, filed 2026-08-01."""
-    rng = np.random.default_rng(seed)
-    index = sorted(tickers)
-    names = list(METRIC_NAMES)
-    shape = (len(index), len(names))
-    current = pd.DataFrame(rng.uniform(1.0, 1000.0, shape), index=index, columns=names)
-    prior = pd.DataFrame(rng.uniform(1.0, 1000.0, shape), index=index, columns=names)
-    dates = dict(zip(PERIOD_COLUMNS, ["2026-06-30", "2025-06-30", "2026-08-01"], strict=True))
-    periods = pd.DataFrame(
-        {column: pd.Timestamp(value) for column, value in dates.items()}, index=index
-    ).astype("datetime64[ns]")
-    return FundamentalsSnapshot(
-        as_of=FUNDAMENTALS_AS_OF, current=current, prior=prior, periods=periods
-    )
-
-
-_PASSING_CURRENT: dict[str, Callable[[float], float]] = {
-    "net_income": lambda k: 100.0 * k * k,
-    "operating_cash_flow": lambda k: 150.0 * k * k,
-    "total_assets": lambda k: 1000.0,
-    "long_term_debt": lambda k: 100.0,
-    "current_assets": lambda k: 500.0,
-    "current_liabilities": lambda k: 200.0,
-    "shares_outstanding": lambda k: 100.0 * k,
-    "gross_profit": lambda k: 400.0 * k,
-    "revenue": lambda k: 800.0 * k,
-    "retained_earnings": lambda k: 300.0,
-    "operating_income": lambda k: 150.0 * k,
-    "total_liabilities": lambda k: 500.0,
-}
-_PASSING_PRIOR: dict[str, Callable[[float], float]] = {
-    "net_income": lambda k: 80.0 * k * k,
-    "total_assets": lambda k: 1000.0,
-    "long_term_debt": lambda k: 200.0,
-    "current_assets": lambda k: 400.0,
-    "current_liabilities": lambda k: 250.0,
-    "shares_outstanding": lambda k: 100.0 * k,
-    "gross_profit": lambda k: 300.0,
-    "revenue": lambda k: 700.0,
-}
-
-
-def make_passing_fundamentals(
-    tickers: Sequence[str] = ("AAA", "BBB", "CCC"),
-) -> FundamentalsSnapshot:
-    """``make_fundamentals`` with gate inputs set so every ticker has F = 9 and Z > 1.81.
-
-    Values scale with k = 1 + 0.1 * i (i = sorted ticker position) so fundamental factor
-    raw values still differ across tickers.
-    """
-    base = make_fundamentals(tickers)
-    current, prior = base.current.copy(), base.prior.copy()
-    for i, ticker in enumerate(current.index):
-        k = 1.0 + 0.1 * i
-        current.loc[ticker, list(_PASSING_CURRENT)] = [f(k) for f in _PASSING_CURRENT.values()]
-        prior.loc[ticker, list(_PASSING_PRIOR)] = [f(k) for f in _PASSING_PRIOR.values()]
-    return FundamentalsSnapshot(base.as_of, current, prior, base.periods)
 
 
 def make_facts(tickers: Sequence[str]) -> pd.DataFrame:
@@ -139,3 +100,65 @@ def make_facts(tickers: Sequence[str]) -> pd.DataFrame:
             (t, shares, None, "2026-07-25", 50.0, "2026-08-01", "10-Q", f"{t}-q226"),
         ]
     return coerce_facts(pd.DataFrame(rows, columns=list(FACT_COLUMNS)))
+
+
+def make_frozen_data(**changes: Any) -> FrozenData:
+    """A small frozen store: AAA, BBB and SPY on the 30 business days to 2024-02-09.
+
+    AAA splits 2:1 ex 2024-01-22 (the stored prices are post-split throughout) and pays 0.5
+    ex 2024-02-01. BBB leaves the index effective 2024-01-29, when CCC (unpriced, no
+    sector, no CIK) joins. ``changes`` replace fields.
+    DGS10 and VIXCLS (make_macro) span the same 30 days.
+    """
+    days = pd.bdate_range("2024-01-01", periods=30)
+    closes = make_closes(["AAA", "BBB", "SPY"], n_days=30).set_axis(days, axis=0)
+    base = FrozenData(
+        start=date(2024, 1, 1),
+        end=date(2024, 2, 9),
+        opens=closes * 0.99,
+        closes=closes,
+        splits=(Split("AAA", date(2024, 1, 22), Fraction(2)),),
+        dividends=(Dividend("AAA", date(2024, 2, 1), 0.5),),
+        facts=make_facts(["AAA", "BBB"]),
+        sectors={"AAA": "Energy", "BBB": "Financials"},
+        ciks={"AAA": "0000000001", "BBB": "0000000002"},
+        membership=(
+            MemberSpan("AAA", date(2020, 1, 2), None),
+            MemberSpan("BBB", date(2020, 1, 2), date(2024, 1, 29)),
+            MemberSpan("CCC", date(2024, 1, 29), None),
+        ),
+        unpriced=("CCC",),
+        no_sector=("CCC",),
+        no_cik=("CCC",),
+        sic_sectors=(),
+        macro=make_macro(days),
+    )
+    if "macro" not in changes and "closes" in changes:
+        changes["macro"] = make_macro(changes["closes"].index)  # follow the replaced calendar
+    return dataclasses.replace(base, **changes)
+
+
+def make_observation(**changes: Any) -> Observation:
+    """A SCORED long CONFIRM observation at the 5-day horizon; ``changes`` replace fields."""
+    base = Observation(
+        as_of=date(2026, 9, 1),
+        ticker="AAA",
+        sector="Tech",
+        side=Side.LONG,
+        verdict=Verdict.CONFIRM,
+        mean=1.0,
+        std=0.0,
+        agreement=1.0,
+        valid=3,
+        horizon=5,
+        base_date=date(2026, 9, 1),
+        end_date=date(2026, 9, 8),
+        name_return=0.06,
+        spy_return=0.01,
+        aligned_excess=0.05,
+        hit=True,
+        executed=False,
+        status=ObservationStatus.SCORED,
+        reason=None,
+    )
+    return dataclasses.replace(base, **changes)

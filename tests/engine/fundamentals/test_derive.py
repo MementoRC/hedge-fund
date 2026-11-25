@@ -2,12 +2,14 @@
 
 import math
 from datetime import date, timedelta
+from fractions import Fraction
 from typing import Any
 
 import pandas as pd
 import pytest
 
 from hedge_fund.domain.fundamentals import METRIC_NAMES, PERIOD_COLUMNS
+from hedge_fund.domain.ledger import Split
 from hedge_fund.engine.fundamentals.derive import (
     ANNUAL,
     HALF_YEAR,
@@ -604,11 +606,12 @@ def _share_history() -> pd.DataFrame:
 
 
 def test_current_shares_come_from_the_latest_filing_with_a_cover_count() -> None:
-    assert current_shares(_share_history()) == 49.0
+    shares = current_shares(_share_history())
+    assert (shares.value, shares.on) == (49.0, pd.Timestamp("2024-04-25"))
 
 
 def test_current_shares_ignore_a_filing_made_on_as_of() -> None:
-    assert current_shares(pit_filter(_share_history(), date(2024, 5, 1))) == 52.0
+    assert current_shares(pit_filter(_share_history(), date(2024, 5, 1))).value == 52.0
 
 
 def test_current_shares_are_chosen_by_filing_date_not_cover_date() -> None:
@@ -619,12 +622,12 @@ def test_current_shares_are_chosen_by_filing_date_not_cover_date() -> None:
         ],
         ignore_index=True,
     )
-    assert current_shares(visible) == 47.0
+    assert current_shares(visible).value == 47.0
 
 
 def test_prior_shares_come_from_the_filing_that_first_reported_prior_end() -> None:
     visible = _share_history()
-    assert prior_shares(visible, pd.Timestamp("2023-03-31")) == 52.0
+    assert prior_shares(visible, pd.Timestamp("2023-03-31")).value == 52.0
     versioned = select_versions(visible)
     discarded = versioned.loc[versioned["end"] == pd.Timestamp("2023-03-31"), "accn"]
     assert discarded.tolist() == ["q1-24"]  # version selection alone would lose q1-23
@@ -632,8 +635,8 @@ def test_prior_shares_come_from_the_filing_that_first_reported_prior_end() -> No
 
 def test_shares_are_nan_without_a_dei_fact() -> None:
     visible = _frame(_fact("Revenues", "2024-03-31", 110.0, start="2024-01-01"))
-    assert math.isnan(current_shares(visible))
-    assert math.isnan(prior_shares(visible, pd.Timestamp("2024-03-31")))
+    assert math.isnan(current_shares(visible).value)
+    assert math.isnan(prior_shares(visible, pd.Timestamp("2024-03-31")).value)
 
 
 def test_prior_shares_are_nan_when_the_reporting_filing_has_no_cover_count() -> None:
@@ -643,11 +646,11 @@ def test_prior_shares_are_nan_when_the_reporting_filing_has_no_cover_count() -> 
         ),
         _fact(SHARES, "2023-02-01", 53.0, filed="2023-02-15", form="10-K", accn="k22"),
     )
-    assert math.isnan(prior_shares(visible, pd.Timestamp("2023-03-31")))
+    assert math.isnan(prior_shares(visible, pd.Timestamp("2023-03-31")).value)
 
 
 def test_prior_shares_are_nan_when_no_filing_reported_the_period() -> None:
-    assert math.isnan(prior_shares(_share_history(), pd.Timestamp("2019-01-01")))
+    assert math.isnan(prior_shares(_share_history(), pd.Timestamp("2019-01-01")).value)
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -657,7 +660,7 @@ def test_current_shares_same_day_filings_go_to_the_greater_accession(reverse: bo
         _fact(SHARES, "2024-04-25", 48.0, accn="0001-24-000001"),
     ]
     visible = _frame(*(reversed(rows) if reverse else rows))
-    assert current_shares(visible) == 49.0
+    assert current_shares(visible).value == 49.0
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -670,7 +673,7 @@ def test_prior_shares_first_reporter_and_cover_date_ignore_row_order(reverse: bo
         _fact(SHARES, "2023-04-25", 52.0, filed="2023-05-01", accn="0001-23-000001"),
     ]
     visible = _frame(*(reversed(rows) if reverse else rows))
-    assert prior_shares(visible, pd.Timestamp("2023-03-31")) == 52.0
+    assert prior_shares(visible, pd.Timestamp("2023-03-31")).value == 52.0
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -681,8 +684,8 @@ def test_shares_use_the_later_cover_date_of_the_chosen_filing(reverse: bool) -> 
         _fact(SHARES, "2024-04-20", 47.0, accn="q1-24"),
     ]
     visible = _frame(*(reversed(rows) if reverse else rows))
-    assert current_shares(visible) == 49.0
-    assert prior_shares(visible, pd.Timestamp("2024-03-31")) == 49.0
+    assert current_shares(visible).value == 49.0
+    assert prior_shares(visible, pd.Timestamp("2024-03-31")).value == 49.0
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -696,8 +699,8 @@ def test_shares_are_nan_when_the_filing_has_distinct_counts_at_the_cover_date(
         _fact(SHARES, "2024-04-20", 49.0, accn="q1-24"),  # earlier cover date: not a fallback
     ]
     visible = _frame(*(reversed(rows) if reverse else rows))
-    assert math.isnan(current_shares(visible))
-    assert math.isnan(prior_shares(visible, pd.Timestamp("2024-03-31")))
+    assert math.isnan(current_shares(visible).value)
+    assert math.isnan(prior_shares(visible, pd.Timestamp("2024-03-31")).value)
 
 
 def test_shares_identical_duplicate_counts_are_not_ambiguous() -> None:
@@ -706,8 +709,8 @@ def test_shares_identical_duplicate_counts_are_not_ambiguous() -> None:
         _fact(SHARES, "2024-04-25", 49.0, accn="q1-24"),
         _fact(SHARES, "2024-04-25", 49.0, accn="q1-24"),
     )
-    assert current_shares(visible) == 49.0
-    assert prior_shares(visible, pd.Timestamp("2024-03-31")) == 49.0
+    assert current_shares(visible).value == 49.0
+    assert prior_shares(visible, pd.Timestamp("2024-03-31")).value == 49.0
 
 
 def test_us_gaap_shares_fallback_at_instant() -> None:
@@ -834,6 +837,63 @@ def test_prior_shares_see_the_filing_that_version_selection_discards() -> None:
     ]
     derived = derive_fundamentals(_frame(*rows), ["AAA"], AS_OF)
     assert derived.prior.loc["AAA", "shares_outstanding"] == 52.0
+
+
+def _tenfold(ex_date: date, ticker: str = "AAA") -> Split:
+    return Split(ticker=ticker, ex_date=ex_date, ratio=Fraction(10))
+
+
+def test_current_and_prior_shares_are_restated_across_a_split_after_their_cover_dates() -> None:
+    splits = [_tenfold(date(2024, 5, 15))]  # after both covers (2024-04-25, 2023-04-25)
+    derived = derive_fundamentals(_frame(*_history("AAA")), ["AAA"], AS_OF, splits)
+    assert derived.current.loc["AAA", "shares_outstanding"] == pytest.approx(490.0)
+    assert derived.prior.loc["AAA", "shares_outstanding"] == pytest.approx(520.0)
+
+
+def test_a_split_after_as_of_or_not_after_the_cover_date_does_not_restate_current_shares() -> None:
+    facts = _frame(*_history("AAA"))
+    later = derive_fundamentals(facts, ["AAA"], AS_OF, [_tenfold(AS_OF + timedelta(days=1))])
+    assert later.current.loc["AAA", "shares_outstanding"] == 49.0
+    assert later.prior.loc["AAA", "shares_outstanding"] == 52.0
+    on_cover = derive_fundamentals(facts, ["AAA"], AS_OF, [_tenfold(date(2024, 4, 25))])
+    assert on_cover.current.loc["AAA", "shares_outstanding"] == 49.0  # the cover is post-split
+    assert on_cover.prior.loc["AAA", "shares_outstanding"] == pytest.approx(520.0)
+
+
+def test_a_split_between_the_covers_does_not_read_as_dilution() -> None:
+    rows = [
+        {**row, "value": 104.0} if row["tag"] == SHARES and row["accn"] == "AAA-q124" else row
+        for row in _history("AAA")
+    ]
+    splits = [Split(ticker="AAA", ex_date=date(2023, 6, 1), ratio=Fraction(2))]
+    derived = derive_fundamentals(_frame(*rows), ["AAA"], AS_OF, splits)
+    assert derived.current.loc["AAA", "shares_outstanding"] == 104.0
+    assert derived.prior.loc["AAA", "shares_outstanding"] == 104.0
+
+
+def test_us_gaap_fallback_shares_are_restated_from_the_period_end() -> None:
+    rows = [row for row in _history("AAA") if row["tag"] != SHARES]
+    facts = _frame(*rows, _fact("CommonStockSharesOutstanding", "2024-03-31", 47.0))
+    after = derive_fundamentals(facts, ["AAA"], AS_OF, [_tenfold(date(2024, 5, 15))])
+    assert after.current.loc["AAA", "shares_outstanding"] == pytest.approx(470.0)
+    before = derive_fundamentals(facts, ["AAA"], AS_OF, [_tenfold(date(2024, 3, 15))])
+    assert before.current.loc["AAA", "shares_outstanding"] == 47.0
+
+
+def test_other_tickers_splits_do_not_restate_shares() -> None:
+    facts = _frame(*_history("AAA"), *_history("BBB"))
+    derived = derive_fundamentals(
+        facts, ["AAA", "BBB"], AS_OF, [_tenfold(date(2024, 5, 15), "BBB")]
+    )
+    assert derived.current.loc["AAA", "shares_outstanding"] == 49.0
+    assert derived.prior.loc["AAA", "shares_outstanding"] == 52.0
+    assert derived.current.loc["BBB", "shares_outstanding"] == pytest.approx(490.0)
+
+
+def test_nan_shares_stay_nan_across_a_split() -> None:
+    rows = [row for row in _history("AAA") if row["tag"] != SHARES]
+    derived = derive_fundamentals(_frame(*rows), ["AAA"], AS_OF, [_tenfold(date(2024, 5, 15))])
+    assert math.isnan(derived.current.loc["AAA", "shares_outstanding"])
 
 
 def test_values_use_the_latest_visible_restatement() -> None:

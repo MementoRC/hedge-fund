@@ -52,7 +52,6 @@ from tests.fakes import (
 START = date(2024, 1, 29)
 END = date(2024, 2, 2)  # Jan 29, 30, 31, Feb 1, 2: one rebalance, Feb 1
 FEB_1 = date(2024, 2, 1)
-EXTRA = Candidate("ZZZ", "Energy", Side.LONG, 1, 1.0)
 
 
 def _planned(deps: CycleDeps, as_of: date) -> Shortlist:
@@ -60,9 +59,23 @@ def _planned(deps: CycleDeps, as_of: date) -> Shortlist:
     return Shortlist(as_of, (Candidate("AAA", "Energy", Side.LONG, 1, 1.0),), {})
 
 
+@dataclass(frozen=True)
+class FakePlanData:
+    as_of: date
+
+
+def _plan_data(deps: CycleDeps, as_of: date) -> FakePlanData:
+    return FakePlanData(as_of)
+
+
+def _select(deps: CycleDeps, data: FakePlanData) -> Shortlist:
+    return _planned(deps, data.as_of)
+
+
 @pytest.fixture(autouse=True)
 def _plan(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("hedge_fund.services.backtest.plan_shortlist", _planned)
+    monkeypatch.setattr("hedge_fund.services.backtest.plan_data", _plan_data)
+    monkeypatch.setattr("hedge_fund.services.backtest.select_shortlist", _select)
 
 
 class RecordingResearcher:
@@ -133,6 +146,7 @@ class Call:
     options: CycleOptions
     started: datetime
     snapshots_before: int
+    data: object = None
 
 
 @dataclass
@@ -141,7 +155,6 @@ class StubCycle:
 
     store: InMemorySnapshotStore
     outcome: CycleOutcome = CycleOutcome.SUBMITTED
-    shortlist: Callable[[Shortlist], Shortlist | None] = lambda planned: planned
     raises: Exception | None = None
     calls: list[Call] = field(default_factory=list)
 
@@ -153,13 +166,13 @@ class StubCycle:
         today: date,
         options: CycleOptions,
         now: Callable[[], datetime],
+        data: object,
     ) -> CycleReport:
         started = now()
-        self.calls.append(Call(deps, as_of, today, options, started, len(self.store.saved)))
+        self.calls.append(Call(deps, as_of, today, options, started, len(self.store.saved), data))
         if self.raises is not None:
             raise self.raises
-        planned = _planned(deps, as_of)
-        return _cycle_report(as_of, started, self.outcome, self.shortlist(planned))
+        return _cycle_report(as_of, started, self.outcome, _planned(deps, as_of))
 
 
 def _run(
@@ -332,6 +345,7 @@ def test_cycle_arguments() -> None:
     assert call.deps.prices.as_of == FEB_1
     assert call.deps.researcher is researcher.made[-1]
     assert researcher.shortlists[-1] == _planned(call.deps, FEB_1)
+    assert call.data == FakePlanData(FEB_1)
 
 
 def test_each_rebalance_reads_the_macro_series_as_of_its_day() -> None:
@@ -351,10 +365,10 @@ def test_each_rebalance_reads_the_macro_series_as_of_its_day() -> None:
 
 
 def test_planning_failure_aborts_with_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail(deps: CycleDeps, as_of: date) -> Shortlist:
+    def fail(deps: CycleDeps, as_of: date) -> FakePlanData:
         raise ValueError("no fundamentals")
 
-    monkeypatch.setattr("hedge_fund.services.backtest.plan_shortlist", fail)
+    monkeypatch.setattr("hedge_fund.services.backtest.plan_data", fail)
     cycle = StubCycle(InMemorySnapshotStore())
     with pytest.raises(
         BacktestError, match=f"shortlist planning failed on {FEB_1}: no fund"
@@ -413,36 +427,6 @@ def test_a_cycle_exception_aborts_with_the_cause() -> None:
     with pytest.raises(BacktestError, match=f"run_cycle failed on {FEB_1}: boom") as raised:
         _run(raises=boom)
     assert raised.value.__cause__ is boom
-
-
-def test_a_shortlist_mismatch_aborts() -> None:
-    with pytest.raises(BacktestError, match="shortlist mismatch"):
-        _run(shortlist=lambda planned: replace(planned, candidates=(*planned.candidates, EXTRA)))
-
-
-def test_a_flipped_side_aborts() -> None:
-    def flip(planned: Shortlist) -> Shortlist:
-        return replace(
-            planned, candidates=tuple(replace(c, side=Side.SHORT) for c in planned.candidates)
-        )
-
-    with pytest.raises(BacktestError, match="shortlist mismatch"):
-        _run(shortlist=flip)
-
-
-def test_a_changed_sector_aborts() -> None:
-    def move(planned: Shortlist) -> Shortlist:
-        return replace(
-            planned, candidates=tuple(replace(c, sector="Tech") for c in planned.candidates)
-        )
-
-    with pytest.raises(BacktestError, match="shortlist mismatch"):
-        _run(shortlist=move)
-
-
-def test_a_report_without_a_shortlist_does_not_abort() -> None:
-    report, _, _ = _run(shortlist=lambda planned: None)
-    assert report.rebalances == 1
 
 
 def test_report_fields() -> None:

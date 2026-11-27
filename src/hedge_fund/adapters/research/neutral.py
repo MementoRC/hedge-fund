@@ -13,9 +13,9 @@ _RATINGS = {Side.LONG: Rating.BUY, Side.SHORT: Rating.SELL}
 class NeutralResearcher:
     """BUY for each shortlisted long, SELL for each short: every name is CONFIRM.
 
-    Built per rebalance from the shortlist ``run_cycle`` will build (``plan_shortlist``).
-    A name or date that is not that shortlist's raises; the research service records the
-    error, and the backtest loop aborts on the resulting shortlist mismatch.
+    Built per rebalance from the shortlist ``run_cycle`` will build (``select_shortlist`` on
+    the planned data). A name or date that is not that shortlist's raises; the research
+    service records the error and the backtest loop aborts on the resulting outcome.
     """
 
     def __init__(self, shortlist: Shortlist) -> None:

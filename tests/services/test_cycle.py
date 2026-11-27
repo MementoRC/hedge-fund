@@ -414,6 +414,30 @@ def test_plan_shortlist_is_the_shortlist_the_cycle_builds() -> None:
     assert cycle.plan_shortlist(world.deps, AS_OF) == report.shortlist
 
 
+def test_run_cycle_reuses_the_planned_data_instead_of_recomputing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = _run(World(), options=DRY)
+    world = World()
+    data = cycle.plan_data(world.deps, AS_OF)
+
+    def fail(deps: object, as_of: object) -> object:
+        raise AssertionError("plan_data recomputed")
+
+    monkeypatch.setattr(cycle, "plan_data", fail)
+    report = run_cycle(
+        world.deps,
+        as_of=AS_OF,
+        today=TODAY,
+        options=DRY,
+        now=Clock(EVENING),
+        data=data,
+    )
+    assert report.shortlist == expected.shortlist
+    assert report.price_unresolved == expected.price_unresolved
+    assert report.fundamentals_unresolved == expected.fundamentals_unresolved
+
+
 def test_plan_data_reports_unresolved_names_without_a_run() -> None:
     prices = FakeProvider(FRAME, {**SECTORS, "NOPRICE": "Tech"})
     listed = universe({**SECTORS, "NOSEC": "Tech", "NOPRICE": "Tech"})

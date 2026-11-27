@@ -429,6 +429,39 @@ def test_a_cycle_exception_aborts_with_the_cause() -> None:
     assert raised.value.__cause__ is boom
 
 
+def test_a_cycle_that_built_another_shortlist_aborts() -> None:
+    other = Shortlist(FEB_1, (Candidate("BBB", "Energy", Side.LONG, 1, 1.0),), {})
+
+    def cycle(
+        deps: CycleDeps,
+        *,
+        as_of: date,
+        today: date,
+        options: CycleOptions,
+        now: Callable[[], datetime],
+        data: object,
+    ) -> CycleReport:
+        return _cycle_report(as_of, now(), CycleOutcome.SUBMITTED, other)
+
+    with pytest.raises(BacktestError, match=f"shortlist mismatch on {FEB_1}"):
+        run_backtest(_deps(), start=START, end=END, cycle=cycle)
+
+
+def test_a_cycle_report_without_a_shortlist_is_accepted() -> None:
+    def cycle(
+        deps: CycleDeps,
+        *,
+        as_of: date,
+        today: date,
+        options: CycleOptions,
+        now: Callable[[], datetime],
+        data: object,
+    ) -> CycleReport:
+        return _cycle_report(as_of, now(), CycleOutcome.SUBMITTED, None)
+
+    assert run_backtest(_deps(), start=START, end=END, cycle=cycle).rebalances == 1
+
+
 def test_report_fields() -> None:
     deps = _deps(store_digest="c" * 64, cash=100_000.0, costs=SimCosts(slippage_bps=7.0))
     report, _, _ = _run(deps)

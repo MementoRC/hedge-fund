@@ -166,7 +166,7 @@ def _rebalance(
     cycle: CycleRunner,
     clock: SimClock,
 ) -> CycleReport:
-    """One cycle on ``day``, fed the planned data and the shortlist built from it (the same by construction)."""
+    """One cycle on ``day``, fed the planned data and the shortlist built from it, checked against what it did."""
     base = CycleDeps(
         universe=universe.members(day),
         prices=deps.prices(day),
@@ -199,7 +199,15 @@ def _rebalance(
         raise BacktestError(f"run_cycle failed on {day}: {exc}") from exc
     if report.outcome not in ACCEPTED_OUTCOMES:
         raise BacktestError(f"run_cycle on {day} ended {report.outcome.value}: {report.error}")
+    if report.shortlist is not None and _sides(report.shortlist) != _sides(planned):
+        raise BacktestError(f"shortlist mismatch on {day}: the cycle built another shortlist")
     return report
+
+
+def _sides(shortlist: Shortlist) -> dict[str, tuple[str, str]]:
+    # ticker, side and sector are all that decisions read (researcher: ticker+side; sizing,
+    # sector caps and risk: sector); depth, composite and trimmed are never read downstream.
+    return {c.ticker: (c.side.value, c.sector) for c in shortlist.candidates}
 
 
 def _benchmark(data: FrozenData, window: tuple[date, ...], end: date) -> NavHistory:

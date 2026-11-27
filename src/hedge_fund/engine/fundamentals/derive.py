@@ -11,6 +11,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
+from functools import cached_property
 from typing import NamedTuple
 
 import numpy as np
@@ -163,23 +164,7 @@ def flow_ttm(facts: pd.DataFrame, end: pd.Timestamp) -> float:
     YTD(end - 1 year) the same-class fact ending at `end - 1 year` whose start is within ±7
     days of YTD(end).start - 1 year. Nearest `end` wins among matches.
     """
-    durations = facts.loc[facts["start"].notna()]
-    classes = duration_classes(durations)
-    annual = durations.loc[classes == ANNUAL]
-    full_year = _nearest(annual, "end", end)
-    if full_year is not None:
-        return float(full_year["value"])
-    found = _ytd(durations, classes, annual, end)
-    if found is None:
-        return math.nan
-    ytd, ytd_class = found
-    fy_prior = _nearest(annual, "end", ytd["start"] - ONE_DAY)
-    same_class = durations.loc[classes == ytd_class]
-    starts_match = (same_class["start"] - (ytd["start"] - ONE_YEAR)).abs() <= TOLERANCE
-    ytd_prior = _nearest(same_class.loc[starts_match], "end", end - ONE_YEAR)
-    if fy_prior is None or ytd_prior is None:
-        return math.nan
-    return float(ytd["value"] + fy_prior["value"] - ytd_prior["value"])
+    return _FlowFacts(facts).ttm(end)
 
 
 def first_complete(
@@ -190,17 +175,13 @@ def first_complete(
     Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
     `value_at` sees one tag's facts only, so the pieces of one value never mix tags.
     """
-    for tag in tags:
-        value = value_at(versioned.loc[versioned["tag"] == tag], end)
-        if not math.isnan(value):
-            return value
-    return math.nan
+    by_tag = {tag: versioned.loc[versioned["tag"] == tag] for tag in tags}
+    return _first_complete(by_tag, tags, end, value_at)
 
 
 def stock_value(facts: pd.DataFrame, end: pd.Timestamp) -> float:
     """Instant value nearest `end` (±7 days) from ONE tag's versioned facts, else NaN."""
-    hit = _nearest(facts.loc[facts["start"].isna()], "end", end)
-    return math.nan if hit is None else float(hit["value"])
+    return _StockFacts(facts).at(end)
 
 
 def current_shares(visible: pd.DataFrame) -> CoverShares:
@@ -245,16 +226,30 @@ def _cover_count(dei: pd.DataFrame) -> CoverShares:
     return CoverShares(float(values[0]), cover_date) if len(values) == 1 else _NO_COVER
 
 
-def metric_values(versioned: pd.DataFrame, end: pd.Timestamp) -> dict[str, float]:
-    """Every metric at `end` by the tag rule (shares: only the us-gaap fallback tag here).
+def _first_complete[T](
+    by_tag: Mapping[str, T],
+    tags: Sequence[str],
+    end: pd.Timestamp,
+    value_at: Callable[[T, pd.Timestamp], float],
+) -> float:
+    """`first_complete` over facts already split by tag; a tag without facts is skipped."""
+    for tag in tags:
+        facts = by_tag.get(tag)
+        if facts is None:
+            continue
+        value = value_at(facts, end)
+        if not math.isnan(value):
+            return value
+    return math.nan
 
-    Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
-    """
+
+def _metric_values(by_tag: Mapping[str, _TagFacts], end: pd.Timestamp) -> dict[str, float]:
+    """Every metric at `end` by the tag rule (shares: only the us-gaap fallback tag here)."""
     values: dict[str, float] = {}
     for spec in METRICS:
-        value_at: ValueAt = flow_ttm if spec.kind == "flow" else stock_value
+        value_at = _TagFacts.ttm if spec.kind == "flow" else _TagFacts.stock
         tags = [tag for tag in spec.tags if tag != SHARES_DEI_TAG]
-        values[spec.name] = first_complete(versioned, tags, end, value_at)
+        values[spec.name] = _first_complete(by_tag, tags, end, value_at)
     return values
 
 
@@ -285,11 +280,12 @@ def derive_ticker(
     def restate(on: pd.Timestamp) -> float:
         return float(split_factor(ticker, on.date(), splits, through=as_of))
 
-    current = metric_values(versioned, end)
+    by_tag = {str(tag): _TagFacts(group) for tag, group in versioned.groupby("tag", sort=False)}
+    current = _metric_values(by_tag, end)
     _set_shares(current, current_shares(visible), end, restate)
     prior = dict.fromkeys(METRIC_NAMES, math.nan)
     if not pd.isna(prior_end):
-        prior = metric_values(versioned, prior_end)
+        prior = _metric_values(by_tag, prior_end)
         _set_shares(prior, prior_shares(visible, prior_end), prior_end, restate)
     return TickerFundamentals(
         current=current, prior=prior, periods=(end, prior_end, last_filed(visible))
@@ -350,21 +346,136 @@ def _metric_frame(rows: list[Mapping[str, float]], index: list[str]) -> pd.DataF
     )
 
 
-def _ytd(
-    durations: pd.DataFrame, classes: pd.Series, annual: pd.DataFrame, end: pd.Timestamp
-) -> tuple[pd.Series, str] | None:
-    """Longest year-to-date fact ending at `end`; a quarter counts only right after a year."""
-    for label in _YTD_CLASSES:
-        pool = durations.loc[classes == label]
-        if label == QUARTER:
-            opens_year = [
-                _nearest(annual, "end", start - ONE_DAY) is not None for start in pool["start"]
-            ]
-            pool = pool.loc[np.asarray(opens_year, dtype=bool)]
-        hit = _nearest(pool, "end", end)
-        if hit is not None:
-            return hit, label
-    return None
+_TOLERANCE_NS = TOLERANCE.value
+_DAY_NS = ONE_DAY.value
+
+
+def _ns(moment: pd.Timestamp) -> int:
+    return int(moment.as_unit("ns").value)
+
+
+def _int64(column: pd.Series) -> np.ndarray:
+    return np.asarray(column.to_numpy(dtype="datetime64[ns]").view("int64"), dtype=np.int64)
+
+
+class _Pool:
+    """Facts sorted by `end`, answering `_nearest` lookups by binary search.
+
+    Facts without an `end` never match (as in `_nearest`, where their distance is NaT).
+    """
+
+    def __init__(self, facts: pd.DataFrame) -> None:
+        ordered = facts.loc[facts["end"].notna()].sort_values("end", kind="stable")
+        self.frame = ordered.reset_index(drop=True)
+        self.ends = _int64(self.frame["end"])
+        self.starts = _int64(self.frame["start"])
+        self.values = self.frame["value"].to_numpy(dtype="float64")
+
+    def nearest(self, target: int, *, start_near: int | None = None) -> int | None:
+        """Position of the fact whose `end` is nearest `target` (ns) within TOLERANCE, or None.
+
+        With `start_near`, only facts whose `start` is within TOLERANCE of it qualify. An equal
+        distance goes to the earlier `end`; facts sharing that `end` are ordered by
+        `_nearest`, so the result is the one it would pick.
+        """
+        low = int(np.searchsorted(self.ends, target - _TOLERANCE_NS, side="left"))
+        high = int(np.searchsorted(self.ends, target + _TOLERANCE_NS, side="right"))
+        positions = np.arange(low, high)
+        if start_near is not None:
+            positions = positions[np.abs(self.starts[low:high] - start_near) <= _TOLERANCE_NS]
+        if positions.size == 0:
+            return None
+        distance = np.abs(self.ends[positions] - target)
+        best = positions[distance == distance.min()]
+        tied = best[self.ends[best] == self.ends[best[0]]]
+        if tied.size == 1:
+            return int(tied[0])
+        keys = [name for name in self.frame.columns if name != "end"]
+        return int(self.frame.iloc[tied].sort_values(keys, kind="stable").index[0])
+
+
+class _FlowFacts:
+    """One tag's duration facts, grouped by duration class once, for TTM lookups."""
+
+    def __init__(self, facts: pd.DataFrame) -> None:
+        durations = facts.loc[facts["start"].notna()]
+        classes = duration_classes(durations)
+        self._pools = {
+            label: _Pool(durations.loc[classes == label]) for label in (ANNUAL, *_YTD_CLASSES)
+        }
+        # A quarter is a year-to-date candidate only right after an annual fact.
+        annual = self._pools[ANNUAL]
+        quarter = self._pools[QUARTER]
+        opens_year = np.fromiter(
+            (annual.nearest(int(start) - _DAY_NS) is not None for start in quarter.starts),
+            dtype=bool,
+            count=len(quarter.starts),
+        )
+        self._candidates = {
+            NINE_MONTH: self._pools[NINE_MONTH],
+            HALF_YEAR: self._pools[HALF_YEAR],
+            QUARTER: _Pool(quarter.frame.loc[opens_year]),
+        }
+
+    def ttm(self, end: pd.Timestamp) -> float:
+        if pd.isna(end):
+            return math.nan
+        target = _ns(end)
+        annual = self._pools[ANNUAL]
+        full_year = annual.nearest(target)
+        if full_year is not None:
+            return float(annual.values[full_year])
+        for label, pool in self._candidates.items():
+            hit = pool.nearest(target)
+            if hit is not None:
+                return self._identity(label, pool, hit, end)
+        return math.nan
+
+    def _identity(self, label: str, pool: _Pool, hit: int, end: pd.Timestamp) -> float:
+        annual = self._pools[ANNUAL]
+        same_class = self._pools[label]
+        start = int(pool.starts[hit])
+        fy_prior = annual.nearest(start - _DAY_NS)
+        ytd_prior = same_class.nearest(
+            _ns(end - ONE_YEAR), start_near=_ns(pd.Timestamp(start) - ONE_YEAR)
+        )
+        if fy_prior is None or ytd_prior is None:
+            return math.nan
+        return float(pool.values[hit] + annual.values[fy_prior] - same_class.values[ytd_prior])
+
+
+class _StockFacts:
+    """One tag's instant facts, sorted by `end`."""
+
+    def __init__(self, facts: pd.DataFrame) -> None:
+        self._pool = _Pool(facts.loc[facts["start"].isna()])
+
+    def at(self, end: pd.Timestamp) -> float:
+        if pd.isna(end):
+            return math.nan
+        hit = self._pool.nearest(_ns(end))
+        return math.nan if hit is None else float(self._pool.values[hit])
+
+
+class _TagFacts:
+    """One tag's versioned facts; each lookup structure is built on first use."""
+
+    def __init__(self, facts: pd.DataFrame) -> None:
+        self._facts = facts
+
+    @cached_property
+    def _flow(self) -> _FlowFacts:
+        return _FlowFacts(self._facts)
+
+    @cached_property
+    def _stock(self) -> _StockFacts:
+        return _StockFacts(self._facts)
+
+    def ttm(self, end: pd.Timestamp) -> float:
+        return self._flow.ttm(end)
+
+    def stock(self, end: pd.Timestamp) -> float:
+        return self._stock.at(end)
 
 
 def _non_dei(facts: pd.DataFrame) -> pd.Series:

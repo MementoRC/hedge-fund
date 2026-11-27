@@ -952,6 +952,83 @@ def test_all_unresolved_gives_empty_frames_with_the_contract_columns() -> None:
     assert dict(derived.unresolved) == {"AAA": NO_FILINGS}
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+def test_annual_facts_sharing_an_end_go_to_the_earlier_start_in_any_row_order(
+    reverse: bool,
+) -> None:
+    rows = [
+        _fact("Revenues", "2024-12-31", 500.0, start="2024-01-01", form="10-K"),
+        _fact("Revenues", "2024-12-31", 999.0, start="2023-12-30", form="10-K"),
+    ]
+    facts = _frame(*(reversed(rows) if reverse else rows))
+    assert flow_ttm(facts, pd.Timestamp("2024-12-31")) == 999.0
+
+
+def test_a_nan_annual_value_is_incomplete_and_the_next_tag_is_tried() -> None:
+    tags = ["us-gaap:Revenues", "us-gaap:SalesRevenueNet"]
+    facts = _frame(
+        _fact("Revenues", "2024-12-31", math.nan, start="2024-01-01", form="10-K"),
+        _fact("SalesRevenueNet", "2024-12-31", 777.0, start="2024-01-01", form="10-K"),
+    )
+    assert math.isnan(flow_ttm(facts.loc[facts["tag"] == tags[0]], pd.Timestamp("2024-12-31")))
+    assert first_complete(facts, tags, pd.Timestamp("2024-12-31"), flow_ttm) == 777.0
+
+
+def test_the_latest_amendment_of_a_period_is_the_annual_value() -> None:
+    original = _fact("Revenues", "2024-12-31", 500.0, start="2024-01-01", form="10-K")
+    amended = _fact(
+        "Revenues",
+        "2024-12-31",
+        480.0,
+        start="2024-01-01",
+        form="10-K/A",
+        filed="2025-06-01",
+        accn="AAA-amended",
+    )
+    versioned = select_versions(_frame(original, amended))
+    assert flow_ttm(versioned, pd.Timestamp("2024-12-31")) == 480.0
+
+
+@pytest.mark.parametrize(("gap_days", "opens_year"), [(7, True), (8, False)])
+def test_quarter_opens_a_year_within_seven_days_of_the_annual_end(
+    gap_days: int, opens_year: bool
+) -> None:
+    quarter_start = date(2024, 1, 1) + timedelta(days=gap_days)
+    quarter_end = quarter_start + timedelta(days=89)
+    facts = _frame(
+        _fact("Revenues", "2023-12-31", 400.0, start="2023-01-01", form="10-K"),
+        _fact("Revenues", quarter_end.isoformat(), 110.0, start=quarter_start.isoformat()),
+        _fact("Revenues", "2023-03-31", 100.0, start="2023-01-01"),
+    )
+    value = flow_ttm(facts, pd.Timestamp(quarter_end))
+    assert (value == pytest.approx(410.0)) if opens_year else math.isnan(value)
+
+
+def test_facts_without_an_end_never_match() -> None:
+    facts = _frame(
+        _fact("Revenues", "2024-12-31", 500.0, start="2024-01-01", form="10-K"),
+        {**_fact("Revenues", "2024-12-31", 1.0, start="2024-01-01"), "end": None},
+        {**_fact("Assets", "2024-12-31", 1.0), "end": None},
+    )
+    assert flow_ttm(facts, pd.Timestamp("2024-12-31")) == 500.0
+    assert math.isnan(stock_value(facts, pd.Timestamp("2024-12-31")))
+
+
+def test_derive_fundamentals_matches_the_per_tag_lookups() -> None:
+    facts = _frame(*_history("AAA"))
+    derived = derive_fundamentals(facts, ["AAA"], AS_OF)
+    versioned = select_versions(pit_filter(facts, AS_OF))
+    end = pd.Timestamp(derived.periods.loc["AAA", PERIOD_COLUMNS[0]])
+    for spec in METRICS:
+        if spec.name == "shares_outstanding":
+            continue
+        value_at = flow_ttm if spec.kind == "flow" else stock_value
+        tags = [tag for tag in spec.tags if tag != SHARES]
+        expected = first_complete(versioned, tags, end, value_at)
+        actual = derived.current.loc["AAA", spec.name]
+        assert (actual == expected) or (math.isnan(actual) and math.isnan(expected))
+
+
 def test_unresolved_is_sorted_by_ticker() -> None:
     derived = derive_fundamentals(_frame(*_history("AAA")), ["ZZZ", "AAA", "MMM"], AS_OF)
     assert list(derived.unresolved) == ["MMM", "ZZZ"]

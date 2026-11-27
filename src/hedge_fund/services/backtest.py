@@ -35,7 +35,7 @@ from hedge_fund.ports.macro import MacroProvider
 from hedge_fund.ports.research import Researcher, ResearchStore
 from hedge_fund.ports.sim_broker import SimBroker
 from hedge_fund.services.account import load_nav_history, record_snapshot
-from hedge_fund.services.cycle import CycleDeps, CycleParams, plan_shortlist, run_cycle
+from hedge_fund.services.cycle import CycleDeps, CycleParams, plan_data, run_cycle, select_shortlist
 
 MIN_TRADING_DAYS = 3  # the metrics need a curve of at least three points
 
@@ -166,7 +166,7 @@ def _rebalance(
     cycle: CycleRunner,
     clock: SimClock,
 ) -> CycleReport:
-    """One cycle on ``day``, fed the shortlist it will build, checked against what it did."""
+    """One cycle on ``day``, fed the planned data and the shortlist built from it, checked against what it did."""
     base = CycleDeps(
         universe=universe.members(day),
         prices=deps.prices(day),
@@ -181,7 +181,8 @@ def _rebalance(
         params=deps.params,
     )
     try:
-        planned = plan_shortlist(base, day)
+        data = plan_data(base, day)
+        planned = select_shortlist(base, data)
     except Exception as exc:
         raise BacktestError(f"shortlist planning failed on {day}: {exc}") from exc
     options = CycleOptions(any_time=True, fresh_research=True, budget=None)
@@ -192,6 +193,7 @@ def _rebalance(
             today=day,
             options=options,
             now=clock,
+            data=data,
         )
     except Exception as exc:
         raise BacktestError(f"run_cycle failed on {day}: {exc}") from exc

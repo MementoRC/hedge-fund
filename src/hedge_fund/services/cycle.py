@@ -198,8 +198,12 @@ def run_cycle(
     today: date,
     options: CycleOptions,
     now: Callable[[], datetime],
+    data: PlanData | None = None,
 ) -> CycleReport:
     """Run one cycle for ``as_of``, save its report and return it.
+
+    ``data`` is the ``plan_data`` result for ``as_of`` when the caller (the backtest) already
+    has it; the data stage then reuses it instead of fetching again.
 
     ``as_of`` is ``today``, or the previous weekday while ``started_at`` is before the 09:30
     New York open on ``today``: after it the account's equity is no longer that day's close.
@@ -216,7 +220,7 @@ def run_cycle(
     """
     run = _Run(as_of=as_of, started_at=now(), dry_run=options.dry_run)
     try:
-        outcome = _cycle(deps, run, today=today, options=options, now=now)
+        outcome = _cycle(deps, run, today=today, options=options, now=now, data=data)
     except BaseException as error:
         failed = CycleOutcome.ERROR if isinstance(error, Exception) else CycleOutcome.INTERRUPTED
         try:
@@ -241,6 +245,7 @@ def _cycle(
     today: date,
     options: CycleOptions,
     now: Callable[[], datetime],
+    data: PlanData | None,
 ) -> CycleOutcome:
     """Steps 0-12; the caller saves the report (step 13).
 
@@ -264,7 +269,7 @@ def _cycle(
     state = check_breakers(nav, params=deps.params.breakers)
     if state.daily_tripped or state.drawdown_tripped:
         return CycleOutcome.HALTED_PREFLIGHT
-    planned = _plan(deps, run, current, nav, today=today, options=options)
+    planned = _plan(deps, run, current, nav, today=today, options=options, data=data)
     if planned is None:
         return CycleOutcome.NOTHING_TO_DO
     verdict, plan = planned
@@ -281,6 +286,7 @@ def _plan(
     *,
     today: date,
     options: CycleOptions,
+    data: PlanData | None,
 ) -> tuple[RiskVerdict, OrderPlan] | None:
     """Steps 4-10: data, shortlist, research, portfolio, risk, prices and orders.
 
@@ -288,7 +294,8 @@ def _plan(
     """
     params = deps.params
     run.stage = "data"
-    data = plan_data(deps, run.as_of)
+    if data is None:
+        data = plan_data(deps, run.as_of)
     run.price_unresolved = data.price_unresolved
     run.fundamentals_unresolved = data.fundamentals_unresolved
     snapshot = data.prices
@@ -493,11 +500,6 @@ def select_shortlist(deps: CycleDeps, data: PlanData) -> Shortlist:
     return shortlist(
         score(data.prices, data.fundamentals, macro=data.macro), params=deps.params.shortlist
     )
-
-
-def plan_shortlist(deps: CycleDeps, as_of: date) -> Shortlist:
-    """The shortlist ``run_cycle`` would build on ``as_of`` (the backtest precomputes it)."""
-    return select_shortlist(deps, plan_data(deps, as_of))
 
 
 def _research(

@@ -1,7 +1,7 @@
 """Golden end-to-end backtest: the real stack over a small frozen store, nothing patched.
 
 ``write_store`` -> ``load_store`` -> ``build_backtest_deps`` -> ``run_backtest`` (the real
-``plan_shortlist`` and ``run_cycle``, default ``CycleParams``) and, on a fresh root, the CLI
+``plan_data``, ``select_shortlist`` and ``run_cycle``, default ``CycleParams``) and, on a fresh root, the CLI
 ``backtest run``. The store is hedge_fund.demo.world. The golden numbers below were generated
 once from this code and pasted in, so they are regression goldens, not recomputed here; they
 are pinned to 1e-9 relative (shares are whole numbers, so only float noise could move them).

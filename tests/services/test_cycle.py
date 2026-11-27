@@ -408,10 +408,11 @@ def test_unresolved_names_are_reported_and_only_priced_names_get_fundamentals() 
     assert world.fundamentals.calls == [tuple(ticker for ticker in SECTORS if ticker != "T0")]
 
 
-def test_plan_shortlist_is_the_shortlist_the_cycle_builds() -> None:
+def test_select_shortlist_on_plan_data_is_the_shortlist_the_cycle_builds() -> None:
     world = World()
     report = _run(world, options=DRY)
-    assert cycle.plan_shortlist(world.deps, AS_OF) == report.shortlist
+    data = cycle.plan_data(world.deps, AS_OF)
+    assert cycle.select_shortlist(world.deps, data) == report.shortlist
 
 
 def test_run_cycle_reuses_the_planned_data_instead_of_recomputing(

@@ -167,18 +167,6 @@ def flow_ttm(facts: pd.DataFrame, end: pd.Timestamp) -> float:
     return _FlowFacts(facts).ttm(end)
 
 
-def first_complete(
-    versioned: pd.DataFrame, tags: Sequence[str], end: pd.Timestamp, value_at: ValueAt
-) -> float:
-    """Value from the first tag, in order, that yields a complete value at `end`, else NaN.
-
-    Precondition: `versioned` holds one ticker's facts after `pit_filter` and `select_versions`.
-    `value_at` sees one tag's facts only, so the pieces of one value never mix tags.
-    """
-    by_tag = {tag: versioned.loc[versioned["tag"] == tag] for tag in tags}
-    return _first_complete(by_tag, tags, end, value_at)
-
-
 def stock_value(facts: pd.DataFrame, end: pd.Timestamp) -> float:
     """Instant value nearest `end` (±7 days) from ONE tag's versioned facts, else NaN."""
     return _StockFacts(facts).at(end)
@@ -232,7 +220,12 @@ def _first_complete[T](
     end: pd.Timestamp,
     value_at: Callable[[T, pd.Timestamp], float],
 ) -> float:
-    """`first_complete` over facts already split by tag; a tag without facts is skipped."""
+    """Value from the first tag, in order, that yields a complete value at `end`, else NaN.
+
+    `by_tag` holds one ticker's facts after `pit_filter` and `select_versions`, split by tag.
+    `value_at` sees one tag's facts only, so the pieces of one value never mix tags. A tag
+    without facts is skipped.
+    """
     for tag in tags:
         facts = by_tag.get(tag)
         if facts is None:

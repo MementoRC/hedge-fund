@@ -502,11 +502,6 @@ def select_shortlist(deps: CycleDeps, data: PlanData) -> Shortlist:
     )
 
 
-def plan_shortlist(deps: CycleDeps, as_of: date) -> Shortlist:
-    """The shortlist ``run_cycle`` would build on ``as_of`` (the backtest precomputes it)."""
-    return select_shortlist(deps, plan_data(deps, as_of))
-
-
 def _research(
     deps: CycleDeps, run: _Run, candidates: Shortlist, *, today: date, options: CycleOptions
 ) -> ResearchResult | None:

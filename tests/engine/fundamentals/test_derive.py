@@ -1,6 +1,7 @@
 """Tests for point-in-time fundamentals derivation (pure, hand-built facts)."""
 
 import math
+from collections.abc import Callable, Sequence
 from datetime import date, timedelta
 from fractions import Fraction
 from typing import Any
@@ -19,10 +20,10 @@ from hedge_fund.engine.fundamentals.derive import (
     NO_REFERENCE_PERIOD,
     QUARTER,
     STALE_FUNDAMENTALS,
+    _first_complete,
     current_shares,
     derive_fundamentals,
     duration_classes,
-    first_complete,
     flow_ttm,
     last_filed,
     pit_filter,
@@ -36,6 +37,17 @@ from hedge_fund.engine.fundamentals.metrics import METRICS, MetricSpec
 from hedge_fund.ports.fundamentals import FACT_COLUMNS, coerce_facts, empty_facts
 
 SHARES = "dei:EntityCommonStockSharesOutstanding"
+
+
+def first_complete(
+    versioned: pd.DataFrame,
+    tags: Sequence[str],
+    end: pd.Timestamp,
+    value_at: Callable[[pd.DataFrame, pd.Timestamp], float],
+) -> float:
+    """The tag rule over one frame, split by tag as `derive_ticker` splits it."""
+    by_tag = {tag: versioned.loc[versioned["tag"] == tag] for tag in tags}
+    return _first_complete(by_tag, tags, end, value_at)
 
 
 def _fact(

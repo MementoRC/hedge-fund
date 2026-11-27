@@ -14,7 +14,7 @@ from tests.cycle_world import AS_OF, EVENING, TODAY, Clock, World
 
 def test_a_dry_cycle_with_the_neutral_researcher_confirms_every_name() -> None:
     world = World()
-    planned = cycle.plan_shortlist(world.deps, AS_OF)
+    planned = cycle.select_shortlist(world.deps, cycle.plan_data(world.deps, AS_OF))
     assert planned.candidates
     deps = dataclasses.replace(world.deps, researcher=NeutralResearcher(planned))
     report = run_cycle(

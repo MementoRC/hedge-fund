@@ -117,6 +117,11 @@ def load_store(root: Path) -> FrozenData:
     )
 
 
+def store_created_at(root: Path) -> datetime:
+    """The freeze timestamp in the manifest under ``root`` (FrozenStoreError as load_store)."""
+    return datetime.fromisoformat(_manifest(root)["created_at"])
+
+
 def _encode(data: FrozenData) -> dict[str, tuple[str, bytes]]:
     """Each kind's file suffix and bytes."""
     splits = pd.DataFrame(

@@ -94,8 +94,15 @@ def build_frozen_data(
         no_cik=tuple(ticker for ticker in members if ticker not in member_ciks),
         sic_sectors=from_sic,
         macro=_macro_frame(sources.macro, start, end, closes.index[-1]),
-        flagged=tuple(item for item in flagged if item.span.overlaps(start, end)),
+        flagged=frozen_flagged(flagged, start, end),
     )
+
+
+def frozen_flagged(
+    flagged: Sequence[FlaggedSpan], start: date, end: date
+) -> tuple[FlaggedSpan, ...]:
+    """The flagged spans a store over start..end freezes: those overlapping the window."""
+    return tuple(item for item in flagged if item.span.overlaps(start, end))
 
 
 def _histories(

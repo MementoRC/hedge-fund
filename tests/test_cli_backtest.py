@@ -353,6 +353,22 @@ def test_run_prints_the_summary_and_writes_the_report(
     assert stubbed[0].data.end == date(2024, 2, 9)
 
 
+def test_run_writes_the_coverage_report_and_prints_its_line(
+    stubbed: list[BacktestDeps], tmp_path: Path
+) -> None:
+    store, root = _write(tmp_path / "store"), tmp_path / "run"
+    result = _run("--store", str(store), "--root", str(root), "--start", "2024-01-01")
+    assert result.exit_code == 0, result.output
+    coverage_file = root / "coverage" / "2024-01-01_2024-02-09_abc123def456.json"
+    body = json.loads(coverage_file.read_text(encoding="utf-8"))
+    assert body["window"] == {"start": "2024-01-01", "end": "2024-02-09"}
+    assert body["priced_member_days"] == 50
+    lines = result.stdout.splitlines()
+    summary = "Coverage: 83.3% of member-days priced | spans zero 1, partial 0, full 2"
+    assert f"{summary} | flagged member-days 0" in lines
+    assert f"coverage report {coverage_file}" in lines
+
+
 def test_run_notes_a_mid_month_start(stubbed: list[BacktestDeps], tmp_path: Path) -> None:
     store = _write(tmp_path / "store")
     args = ["--store", str(store), "--root", str(tmp_path / "run"), "--start", "2024-01-10"]
@@ -485,6 +501,65 @@ def test_run_a_start_before_the_floor_exits_1_from_the_real_guard(tmp_path: Path
     result = _run("--store", str(store), "--root", str(tmp_path / "run"), "--start", "2007-12-31")
     assert result.exit_code == 1
     assert "2008-01-01" in result.stderr
+
+
+def _reflag(*args: str) -> Result:
+    return runner.invoke(cli.app, ["backtest", "reflag", *args])
+
+
+def _digest(store: Path) -> str:
+    return hashlib.sha256((store / MANIFEST).read_bytes()).hexdigest()
+
+
+def test_reflag_copies_the_store_with_the_packaged_flags_and_the_freeze_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "resource_text", lambda name: FLAGGED)
+    stale = FlaggedSpan(MemberSpan("BBB", date(2023, 6, 1), date(2024, 1, 3)), "Stale Corp")
+    store, out = tmp_path / "store", tmp_path / "out"
+    write_store(store, make_frozen_data(flagged=(stale,)), created_at=NOW)
+    old_digest = _digest(store)
+    result = _reflag("--store", str(store), "--out", str(out))
+    assert result.exit_code == 0, result.output
+    expected = FlaggedSpan(MemberSpan("AAA", date(2023, 6, 1), date(2024, 1, 5)), "ticker reused")
+    assert load_store(out).flagged == (expected,)
+    old, new = (json.loads((root / MANIFEST).read_text("utf-8")) for root in (store, out))
+    assert new["created_at"] == old["created_at"] == NOW.isoformat()
+    assert {k: v for k, v in new.items() if k != "files"} == {
+        k: v for k, v in old.items() if k != "files"
+    }
+    pd.testing.assert_frame_equal(load_store(out).closes, load_store(store).closes)
+    assert new["files"]["flagged"] != old["files"]["flagged"]
+    assert _digest(store) == old_digest
+    lines = result.stdout.splitlines()
+    assert f"from {store}: manifest sha256 {old_digest}" in lines
+    assert any(line.endswith(_digest(out)) for line in lines)
+    assert "added: 1" in lines
+    assert "  AAA 2023-06-01..2024-01-05" in lines
+    assert "removed: 1" in lines
+    assert "  BBB 2023-06-01..2024-01-03" in lines
+
+
+def test_reflag_refuses_an_existing_out(tmp_path: Path) -> None:
+    store, out = _write(tmp_path / "store"), tmp_path / "out"
+    out.mkdir()
+    result = _reflag("--store", str(store), "--out", str(out))
+    _clean_failure(result)
+    assert "already exists" in result.stderr
+
+
+def test_reflag_refuses_the_store_itself_as_out(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    result = _reflag("--store", str(store), "--out", str(store))
+    _clean_failure(result)
+    assert "source store" in result.stderr
+
+
+def test_reflag_a_missing_store_exits_1_cleanly(tmp_path: Path) -> None:
+    result = _reflag("--store", str(tmp_path / "none"), "--out", str(tmp_path / "out"))
+    _clean_failure(result)
+    assert "cannot reflag" in result.stderr
+    assert not (tmp_path / "out").exists()
 
 
 def test_run_the_default_start_outside_the_store_exits_1(tmp_path: Path) -> None:

@@ -54,6 +54,16 @@ These remain after the rules above, and every report prints them:
 - Ticker reuse not listed in the flagged-spans file may remain: a reused symbol can return another company's prices, CIK and facts.
 - With monthly rebalances the breakers act only on the one-day move at cycle time; the would-trip breaker-day counts are the main evidence of breaker behaviour.
 
+### Membership coverage (survivorship)
+
+Every `backtest run` also writes `coverage/<run-id>.json` beside the report and prints one `Coverage:` line. For each membership span it counts the trading days in the run window on which the member had a stored close, and sums them over all spans. The headline fraction is priced member-days over all member-days, so a long-lived member weighs more than a short-lived one. Days covered by a flagged span are counted separately and left out of both sides. The file also lists every span with its window days, flagged days, priced days, first priced date and coverage, and counts the spans with zero, partial and full coverage.
+
+An unpriced member-day is a day the replay cannot trade that name, so the result rests on the survivors. Names that failed or were acquired are the ones yfinance most often lacks, so a coverage below 100% biases the results upward, and the shortfall is not spread evenly across years. Read the fraction with the Honesty counts below, not instead of them.
+
+The flagged-spans list is frozen into the store, so editing the packaged file changes nothing for an existing store. `hedge-fund backtest reflag --store SRC --out DST` writes a copy of SRC with only its flagged spans replaced by the packaged list, without fetching anything. It prints both digests and the spans added and removed. The copy has a new digest and so new run ids, and the original is untouched; an existing `--out` is refused.
+
+Known gap: IR has a single open-ended membership row that joins the old Ingersoll-Rand (to 2020-03) to today's IR, whose stored prices begin in 2017-05. An exact-span flag cannot yet separate them, so IR is not flagged.
+
 ## Honesty counts
 
 Next to the performance metrics (return against SPY, volatility, Sharpe ratio, maximum drawdown, turnover, trading costs and beta), the report gives counts of the unpriced members by reason (one reason is having no sector), members with no fundamentals, distinct flagged tickers excluded from a rebalance-day universe, held names that were closed out because they stopped trading, rejected orders, would-trip breaker days, and cycle outcomes such as blocked and halted. They show how much of the universe and how many cycles the result actually rests on.

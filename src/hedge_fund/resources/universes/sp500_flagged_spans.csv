@@ -6,3 +6,6 @@ CEG,1996-01-02,2012-03-13,Constellation Energy Group; symbol now the 2022 Conste
 DD,1996-01-02,2017-09-01,E. I. du Pont de Nemours; symbol now the 2019 DuPont de Nemours
 DOW,1996-01-02,2017-09-01,The Dow Chemical Company; symbol now the 2019 Dow Inc.
 DELL,1996-09-06,2013-10-29,Dell Inc.; symbol now Dell Technologies
+PARA,2022-02-17,2025-08-08,yfinance now serves another security under PARA (closes ~98000 in 2022; five reverse splits 2024-2026; dividends at or above the prior close); not Paramount's data
+CPWR,1999-01-04,2012-01-03,yfinance history under CPWR is a different security (2010-11 closes 6.46 -> 0.35 with a 9x one-day jump; reverse splits in 2017)
+EP,1999-10-26,2012-05-25,yfinance history under EP is a different security (2010-12 closes 4.32 -> 0.96 vs El Paso's ~$10-35; reverse splits 2013/2022)

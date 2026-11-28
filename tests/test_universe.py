@@ -147,7 +147,17 @@ def test_the_packaged_flagged_spans_parse_and_reach_the_floor() -> None:
         "DELL",
         "KRFT",
         "KFT",
+        "PARA",
+        "CPWR",
+        "EP",
     }
+
+
+def test_the_packaged_flagged_spans_cover_the_corrupt_store_tickers() -> None:
+    flagged = {
+        item.span.ticker for item in parse_flagged_spans(resource_text("sp500_flagged_spans"))
+    }
+    assert {"PARA", "CPWR", "EP"} <= flagged
 
 
 def test_every_packaged_flagged_span_is_an_existing_membership_span() -> None:

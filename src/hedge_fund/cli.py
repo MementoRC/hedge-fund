@@ -30,6 +30,7 @@ from hedge_fund.adapters.approval import ConsoleApprovalGate
 from hedge_fund.adapters.approval.auto import AutoApprovalGate
 from hedge_fund.adapters.attribution import JsonAttributionReportStore
 from hedge_fund.adapters.attribution.json_report import ATTRIBUTIONS_DIR
+from hedge_fund.adapters.backtest.coverage_report import save_coverage_report
 from hedge_fund.adapters.backtest.report import (
     BACKTEST_DIR,
     load_backtest_reports,
@@ -55,6 +56,7 @@ from hedge_fund.adapters.data.frozen_store import (
     MANIFEST,
     check_fresh_root,
     load_store,
+    store_created_at,
     write_store,
 )
 from hedge_fund.adapters.data.sec_sources import SecLookups
@@ -87,6 +89,7 @@ from hedge_fund.domain.attribution import (
 from hedge_fund.domain.backtest import (
     MEMBERSHIP_FLOOR,
     BacktestReport,
+    FlaggedSpan,
     FrozenData,
     Honesty,
     Performance,
@@ -106,6 +109,7 @@ from hedge_fund.domain.verification import (
     VerifyOutcome,
 )
 from hedge_fund.engine.backtest.calendar import in_window, rebalance_days, trading_days
+from hedge_fund.engine.backtest.coverage import CoverageReport
 from hedge_fund.engine.backtest.membership import (
     ever_members,
     parse_flagged_spans,
@@ -116,6 +120,8 @@ from hedge_fund.ports.broker import BrokerError
 from hedge_fund.ports.fundamentals import FundamentalsProviderError
 from hedge_fund.services.attribute import AttributeDeps, AttributionSaveError, run_attribute
 from hedge_fund.services.backtest import BacktestDeps, BacktestError, run_backtest
+from hedge_fund.services.backtest_coverage import store_coverage
+from hedge_fund.services.backtest_reflag import reflag
 from hedge_fund.services.backtest_snapshot import SnapshotSources, build_frozen_data
 from hedge_fund.services.cycle import (
     CycleDeps,
@@ -540,6 +546,49 @@ def backtest_snapshot(
     typer.echo(_snapshot_summary(data, root, digest))
 
 
+@backtest_app.command("reflag")
+def backtest_reflag(
+    store: Annotated[
+        Path, typer.Option("--store", help="A frozen store from `backtest snapshot`.")
+    ],
+    out: Annotated[Path, typer.Option("--out", help="The new store's root; must not exist.")],
+) -> None:
+    """Copy a frozen store with its flagged spans replaced by the packaged list (offline).
+
+    Nothing is fetched: prices, facts, membership and the freeze time are copied unchanged, so
+    the copy's digest (and so its run ids) differs only through the flagged spans. Refuses an
+    existing --out or the source store itself. Exit 0 with the digests and the spans added and
+    removed, 1 on any failure.
+    """
+    try:
+        if out.resolve() == store.resolve():
+            raise ValueError(f"--out {out} is the source store")
+        if store.resolve() in out.resolve().parents:
+            raise ValueError(f"--out {out} is inside the source store")
+        if out.exists():
+            raise ValueError(f"--out {out} already exists")
+        data = load_store(store)
+        old_digest = _manifest_digest(store)
+        created_at = store_created_at(store)
+        flagged = parse_flagged_spans(resource_text(FLAGGED_SPANS))
+        result = reflag(data, flagged)
+        try:
+            new_digest = write_store(out, result.data, created_at=created_at)
+        except BaseException:
+            # out did not exist before this call, so whatever is there is our partial write
+            shutil.rmtree(out, ignore_errors=True)
+            raise
+    except Exception as exc:
+        _fail(f"cannot reflag: {type(exc).__name__}: {exc}", exc)
+    lines = [
+        f"reflagged store {out}: manifest sha256 {new_digest}",
+        f"from {store}: manifest sha256 {old_digest}",
+        *_section("added", [_flagged_text(item) for item in result.added]),
+        *_section("removed", [_flagged_text(item) for item in result.removed]),
+    ]
+    typer.echo("\n".join(lines))
+
+
 @backtest_app.command("run")
 def backtest_run(
     store: Annotated[
@@ -565,7 +614,7 @@ def backtest_run(
     """
     try:
         data = load_store(store)
-        digest = hashlib.sha256((store / MANIFEST).read_bytes()).hexdigest()
+        digest = _manifest_digest(store)
     except Exception as exc:  # a corrupt store can raise KeyError or a parquet reader error
         _fail(f"cannot start the backtest: {type(exc).__name__}: {exc}", exc)
     try:
@@ -578,12 +627,16 @@ def backtest_run(
     try:
         deps = build_backtest_deps(root, data, store_digest=digest, cash=cash, costs=costs)
         report = run_backtest(deps, start=first, end=last)
+        # Compute the coverage before the write-once report is committed, so a failure here
+        # leaves the root without a half-published run.
+        coverage = store_coverage(data, first, last)
         path = save_backtest_report(root, report)
+        coverage_path = save_coverage_report(root, report.run_id, coverage)
     except (BacktestError, SimulationError) as exc:
         _fail(str(exc), exc)
     except Exception as exc:
         _fail(f"{type(exc).__name__}: {exc}", exc)
-    typer.echo(_backtest_summary(report, data, path))
+    typer.echo(_backtest_summary(report, data, path, coverage, coverage_path))
 
 
 @demo_app.command("build")
@@ -717,13 +770,35 @@ def _demo_run_id(root: Path, store_digest: str) -> str:
     return report.run_id
 
 
+def _manifest_digest(store: Path) -> str:
+    return hashlib.sha256((store / MANIFEST).read_bytes()).hexdigest()
+
+
+def _flagged_text(item: FlaggedSpan) -> str:
+    return f"{item.span.ticker} {item.span.start}..{item.span.end or ''}"
+
+
 def _refuse_root_in_store(root: Path, store: Path) -> None:
     resolved = root.resolve()
     if resolved == store.resolve() or store.resolve() in resolved.parents:
         raise ValueError(f"--root {root} is the store or inside it")
 
 
-def _backtest_summary(report: BacktestReport, data: FrozenData, path: Path) -> str:
+def _coverage_line(coverage: CoverageReport) -> str:
+    return (
+        f"Coverage: {_percent(coverage.coverage)} of member-days priced | "
+        f"spans zero {coverage.zero_spans}, partial {coverage.partial_spans}, "
+        f"full {coverage.full_spans} | flagged member-days {coverage.flagged_member_days}"
+    )
+
+
+def _backtest_summary(
+    report: BacktestReport,
+    data: FrozenData,
+    path: Path,
+    coverage: CoverageReport,
+    coverage_path: Path,
+) -> str:
     metrics = report.metrics
     lines = [
         f"backtest run {report.run_id}",
@@ -751,7 +826,7 @@ def _backtest_summary(report: BacktestReport, data: FrozenData, path: Path) -> s
     )
     lines += _section("honesty", _honesty_lines(metrics.honesty))
     lines += _section("residual biases", list(report.biases))
-    lines.append(f"report {path}")
+    lines += [_coverage_line(coverage), f"report {path}", f"coverage report {coverage_path}"]
     return "\n".join(lines)
 
 

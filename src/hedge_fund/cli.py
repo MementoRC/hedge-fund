@@ -563,6 +563,8 @@ def backtest_reflag(
     try:
         if out.resolve() == store.resolve():
             raise ValueError(f"--out {out} is the source store")
+        if store.resolve() in out.resolve().parents:
+            raise ValueError(f"--out {out} is inside the source store")
         if out.exists():
             raise ValueError(f"--out {out} already exists")
         data = load_store(store)
@@ -570,7 +572,12 @@ def backtest_reflag(
         created_at = store_created_at(store)
         flagged = parse_flagged_spans(resource_text(FLAGGED_SPANS))
         result = reflag(data, flagged)
-        new_digest = write_store(out, result.data, created_at=created_at)
+        try:
+            new_digest = write_store(out, result.data, created_at=created_at)
+        except BaseException:
+            # out did not exist before this call, so whatever is there is our partial write
+            shutil.rmtree(out, ignore_errors=True)
+            raise
     except Exception as exc:
         _fail(f"cannot reflag: {type(exc).__name__}: {exc}", exc)
     lines = [
@@ -620,8 +627,10 @@ def backtest_run(
     try:
         deps = build_backtest_deps(root, data, store_digest=digest, cash=cash, costs=costs)
         report = run_backtest(deps, start=first, end=last)
-        path = save_backtest_report(root, report)
+        # Compute the coverage before the write-once report is committed, so a failure here
+        # leaves the root without a half-published run.
         coverage = store_coverage(data, first, last)
+        path = save_backtest_report(root, report)
         coverage_path = save_coverage_report(root, report.run_id, coverage)
     except (BacktestError, SimulationError) as exc:
         _fail(str(exc), exc)

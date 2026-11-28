@@ -555,6 +555,46 @@ def test_reflag_refuses_the_store_itself_as_out(tmp_path: Path) -> None:
     assert "source store" in result.stderr
 
 
+def test_reflag_refuses_an_out_inside_the_store(tmp_path: Path) -> None:
+    store = _write(tmp_path / "store")
+    before = sorted(store.iterdir())
+    result = _reflag("--store", str(store), "--out", str(store / "copy"))
+    _clean_failure(result)
+    assert "inside" in result.stderr
+    assert sorted(store.iterdir()) == before
+
+
+def test_reflag_removes_a_partial_out_when_the_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, out = _write(tmp_path / "store"), tmp_path / "out"
+
+    def broken(root: Path, *args: object, **kwargs: object) -> str:
+        root.mkdir()
+        (root / "opens.parquet").write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli, "write_store", broken)
+    result = _reflag("--store", str(store), "--out", str(out))
+    _clean_failure(result)
+    assert "disk full" in result.stderr
+    assert not out.exists()
+
+
+def test_run_publishes_no_report_when_the_coverage_cannot_be_computed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, root = _write(tmp_path / "store"), tmp_path / "run"
+
+    def broken(*args: object, **kwargs: object) -> object:
+        raise ValueError("no coverage")
+
+    monkeypatch.setattr(cli, "store_coverage", broken)
+    result = _run("--store", str(store), "--root", str(root), "--start", "2008-01-01")
+    assert result.exit_code == 1
+    assert not list((root / cli.BACKTEST_DIR).glob("*"))
+
+
 def test_reflag_a_missing_store_exits_1_cleanly(tmp_path: Path) -> None:
     result = _reflag("--store", str(tmp_path / "none"), "--out", str(tmp_path / "out"))
     _clean_failure(result)
